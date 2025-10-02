@@ -14,7 +14,6 @@ import jsPDF from 'jspdf';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
-const SCREENSHOT_SERVICE_BASE = 'https://image.thum.io/get/png/width/1600/fullpage';
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const { VITE_SCENARIO_API_URL } = import.meta.env ?? {};
 const SCENARIO_API_URL =
@@ -306,6 +305,11 @@ function transformCloneForExport(root) {
   const capturePlaceholders = root.querySelectorAll('[data-capture-placeholder]');
   capturePlaceholders.forEach((node) => {
     node.classList.add('bg-white');
+  });
+
+  const hideOnExport = root.querySelectorAll('[data-hide-on-export]');
+  hideOnExport.forEach((node) => {
+    node.style.display = 'none';
   });
 }
 
@@ -599,6 +603,7 @@ export default function App() {
   const [showTableModal, setShowTableModal] = useState(false);
   const [capturedPreview, setCapturedPreview] = useState(null);
   const [livePreview, setLivePreview] = useState(null);
+  const [livePreviewReady, setLivePreviewReady] = useState(false);
   const [captureStatus, setCaptureStatus] = useState('idle');
   const [captureError, setCaptureError] = useState('');
   const [collapsedSections, setCollapsedSections] = useState({
@@ -615,6 +620,7 @@ export default function App() {
     propertyNetAfterTax: true,
   });
   const pageRef = useRef(null);
+  const iframeRef = useRef(null);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
   const [syncStatus, setSyncStatus] = useState('idle');
@@ -736,7 +742,6 @@ export default function App() {
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
   const hasPropertyUrl = normalizedPropertyUrl !== '';
   const isLivePreviewActive = Boolean(livePreview?.iframeUrl);
-  const livePreviewReady = Boolean(livePreview?.screenshotUrl);
   const hasCapturedSnapshot = Boolean(capturedPreview);
   const showListingPreview = isLivePreviewActive || hasCapturedSnapshot;
 
@@ -780,7 +785,7 @@ export default function App() {
       const offsetY = (pageHeight - renderHeight) / 2;
       pdf.addImage(imageData, 'PNG', offsetX, offsetY, renderWidth, renderHeight);
 
-      const captureSource = capturedPreview?.imageUrl || (livePreviewReady ? livePreview?.screenshotUrl : '');
+      const captureSource = capturedPreview?.imageUrl || '';
       if (captureSource) {
         try {
           const captureData = await getImageDataForPdf(captureSource);
@@ -1052,6 +1057,7 @@ export default function App() {
     setShowLoadPanel(false);
     setCapturedPreview(scenario.preview ?? null);
     setLivePreview(null);
+    setLivePreviewReady(false);
     setCaptureStatus('idle');
     setCaptureError('');
   };
@@ -1064,101 +1070,183 @@ export default function App() {
     setCaptureStatus('loading');
     setCaptureError('');
     setCapturedPreview(null);
-    const timestamp = Date.now();
-    const encodedTarget = encodeURI(normalizedUrl);
-    const captureBase = `${SCREENSHOT_SERVICE_BASE}/${encodedTarget}`;
-    const captureSrc = captureBase.includes('?')
-      ? `${captureBase}&cacheBust=${timestamp}`
-      : `${captureBase}?cacheBust=${timestamp}`;
-
-    const previewState = {
+    setLivePreview({
       originalUrl: normalizedUrl,
       iframeUrl: normalizedUrl,
-      screenshotUrl: '',
       capturedAt: new Date().toISOString(),
-    };
-    setLivePreview(previewState);
-
-    if (typeof Image === 'undefined') {
-      setLivePreview({ ...previewState, screenshotUrl: captureSrc });
-      setCaptureStatus('idle');
-      return;
-    }
-
-    const screenshotImage = new Image();
-    screenshotImage.crossOrigin = 'anonymous';
-    screenshotImage.onload = () => {
-      setLivePreview((prev) => {
-        if (!prev || prev.originalUrl !== normalizedUrl) return prev;
-        return { ...prev, screenshotUrl: captureSrc };
-      });
-      setCaptureStatus('idle');
-    };
-    screenshotImage.onerror = () => {
-      setCaptureStatus('idle');
-      setCaptureError('Unable to load preview. Please check the URL and try again.');
-    };
-    screenshotImage.src = captureSrc;
+    });
+    setLivePreviewReady(false);
   };
 
-  const handleTakeSnapshot = () => {
+  const handleTakeSnapshot = async () => {
     if (!livePreview) return;
-    if (!livePreview.screenshotUrl) {
-      setCaptureError('Preview not ready yet. Please wait for the screenshot to finish loading.');
-      return;
-    }
-
     const originalUrl = livePreview.originalUrl || ensureAbsoluteUrl(inputs.propertyUrl ?? '');
     if (!originalUrl) return;
 
-    setCaptureStatus('loading');
-    setCaptureError('');
-
-    if (typeof document === 'undefined') {
-      setCapturedPreview({
-        originalUrl,
-        imageUrl: livePreview.screenshotUrl,
-        capturedAt: new Date().toISOString(),
-      });
-      setCaptureStatus('idle');
-      setLivePreview(null);
+    const iframeElement = iframeRef.current;
+    if (!iframeElement) {
+      setCaptureError('Preview not ready yet. Please wait for the page to finish loading.');
       return;
     }
 
-    const workingImage = new Image();
-    workingImage.crossOrigin = 'anonymous';
-    workingImage.onload = () => {
+    if (!livePreviewReady) {
+      setCaptureError('Preview not ready yet. Please wait for the page to finish loading.');
+      return;
+    }
+
+    setCaptureStatus('saving');
+    setCaptureError('');
+
+    const stopStream = (stream) => {
+      if (!stream) return;
+      stream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch (error) {
+          /* noop */
+        }
+      });
+    };
+
+    const captureWithDisplayMedia = async () => {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+        return null;
+      }
+
+      let stream;
       try {
-        const naturalWidth = workingImage.naturalWidth || workingImage.width || 1;
-        const naturalHeight = workingImage.naturalHeight || workingImage.height || 1;
-        const canvas = document.createElement('canvas');
-        canvas.width = naturalWidth;
-        canvas.height = naturalHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(workingImage, 0, 0, naturalWidth, naturalHeight);
-        const dataUrl = canvas.toDataURL('image/png');
-        setCapturedPreview({
-          originalUrl,
-          imageUrl: dataUrl,
-          capturedAt: new Date().toISOString(),
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            frameRate: 1,
+            displaySurface: 'browser',
+            logicalSurface: true,
+            preferCurrentTab: true,
+          },
+          audio: false,
         });
       } catch (error) {
-        setCaptureError('Unable to capture the listing preview. Please try again.');
-      } finally {
-        setCaptureStatus('idle');
-        setLivePreview(null);
+        return null;
       }
+
+      const track = stream.getVideoTracks()[0];
+      if (!track) {
+        stopStream(stream);
+        return null;
+      }
+
+      const elementRect = iframeElement.getBoundingClientRect();
+
+      const computeCrop = (sourceWidth, sourceHeight) => {
+        const viewportWidth = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : elementRect.width;
+        const viewportHeight = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : elementRect.height;
+        const scaleX = viewportWidth > 0 ? sourceWidth / viewportWidth : 1;
+        const scaleY = viewportHeight > 0 ? sourceHeight / viewportHeight : 1;
+        let sx = Math.round((elementRect.left < 0 ? 0 : elementRect.left) * scaleX);
+        let sy = Math.round((elementRect.top < 0 ? 0 : elementRect.top) * scaleY);
+        let sw = Math.round(elementRect.width * scaleX);
+        let sh = Math.round(elementRect.height * scaleY);
+        sw = Math.max(1, Math.min(sw, sourceWidth));
+        sh = Math.max(1, Math.min(sh, sourceHeight));
+        if (sx + sw > sourceWidth) {
+          sx = Math.max(0, sourceWidth - sw);
+        }
+        if (sy + sh > sourceHeight) {
+          sy = Math.max(0, sourceHeight - sh);
+        }
+        return { sx, sy, sw, sh };
+      };
+
+      if (typeof window !== 'undefined' && typeof window.CropTarget !== 'undefined' && typeof track.cropTo === 'function') {
+        try {
+          const cropTarget = await window.CropTarget.fromElement(iframeElement);
+          await track.cropTo(cropTarget);
+        } catch (error) {
+          console.warn('Element cropping not available:', error);
+        }
+      }
+
+      const extractFrame = async () => {
+        if (typeof window !== 'undefined' && typeof window.ImageCapture !== 'undefined') {
+          try {
+            const imageCapture = new window.ImageCapture(track);
+            const bitmap = await imageCapture.grabFrame();
+            const canvas = document.createElement('canvas');
+            const crop = computeCrop(bitmap.width, bitmap.height);
+            canvas.width = crop.sw;
+            canvas.height = crop.sh;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(bitmap, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
+            return canvas.toDataURL('image/png');
+          } catch (error) {
+            console.warn('ImageCapture grabFrame failed:', error);
+          }
+        }
+
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.muted = true;
+        video.playsInline = true;
+        try {
+          await video.play();
+        } catch (error) {
+          /* ignore */
+        }
+
+        await new Promise((resolve) => {
+          const timeout = window.setTimeout(resolve, 750);
+          video.onloadeddata = () => {
+            window.clearTimeout(timeout);
+            resolve();
+          };
+        });
+
+        const settings = track.getSettings ? track.getSettings() : {};
+        const width = settings.width || iframeElement.clientWidth || 1280;
+        const height = settings.height || iframeElement.clientHeight || 720;
+        const canvas = document.createElement('canvas');
+        const crop = computeCrop(width, height);
+        canvas.width = crop.sw;
+        canvas.height = crop.sh;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
+        video.pause();
+        return canvas.toDataURL('image/png');
+      };
+
+      const dataUrl = await extractFrame();
+      stopStream(stream);
+      return dataUrl;
     };
-    workingImage.onerror = () => {
+
+    let imageDataUrl = null;
+    try {
+      imageDataUrl = await captureWithDisplayMedia();
+    } catch (error) {
+      console.warn('Display media capture failed:', error);
+    }
+
+    if (!imageDataUrl) {
       setCaptureStatus('idle');
-      setCaptureError('Unable to capture the listing preview. You can still open the URL directly.');
-    };
-    workingImage.src = livePreview.screenshotUrl;
+      setCaptureError(
+        'Unable to capture the listing preview. Please allow screen capture for this tab or try a supported browser.'
+      );
+      return;
+    }
+
+    setCapturedPreview({
+      originalUrl,
+      imageUrl: imageDataUrl,
+      capturedAt: new Date().toISOString(),
+    });
+    setCaptureStatus('idle');
+    setLivePreview(null);
+    setLivePreviewReady(false);
   };
 
   const handleClearCapture = () => {
     setCapturedPreview(null);
     setLivePreview(null);
+    setLivePreviewReady(false);
     setCaptureError('');
     setCaptureStatus('idle');
   };
@@ -1267,9 +1355,9 @@ export default function App() {
                       type="button"
                       onClick={handleCaptureUrl}
                       className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                      disabled={!hasPropertyUrl || captureStatus === 'loading'}
+                      disabled={!hasPropertyUrl || captureStatus === 'loading' || captureStatus === 'saving'}
                     >
-                      {captureStatus === 'loading' ? 'Loading…' : 'Capture'}
+                      {captureStatus === 'loading' ? 'Loading…' : captureStatus === 'saving' ? 'Saving…' : 'Capture'}
                     </button>
                   </div>
                 </div>
@@ -1285,6 +1373,10 @@ export default function App() {
                   <div>Last snapshot: {friendlyDateTime(capturedPreview.capturedAt)}</div>
                 ) : null}
                 {captureError ? <div className="text-rose-600">{captureError}</div> : null}
+                <div>
+                  Tip: when taking a snapshot your browser may ask to capture this tab — choose “Allow” so the saved image
+                  matches what you see.
+                </div>
                 {capturedPreview?.originalUrl ? (
                   <div>
                     Source:{' '}
@@ -1763,7 +1855,7 @@ export default function App() {
 
         {showListingPreview ? (
           <section className="mt-6">
-            <div className="rounded-2xl bg-white p-3 shadow-sm" data-capture-placeholder>
+            <div className="rounded-2xl bg-white p-3 shadow-sm" data-capture-placeholder data-hide-on-export>
               <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-800">
@@ -1788,9 +1880,9 @@ export default function App() {
                       type="button"
                       onClick={handleTakeSnapshot}
                       className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                      disabled={captureStatus === 'loading'}
+                      disabled={captureStatus === 'saving' || !livePreviewReady}
                     >
-                      {captureStatus === 'loading' ? 'Saving…' : 'Take snapshot'}
+                      {captureStatus === 'saving' ? 'Saving…' : 'Take snapshot'}
                     </button>
                   ) : null}
                   <button
@@ -1809,14 +1901,29 @@ export default function App() {
                 {isLivePreviewActive ? (
                   <>
                     <iframe
+                      ref={iframeRef}
                       src={livePreview.iframeUrl}
                       title="Property listing preview"
                       className="h-full w-full border-0"
                       allowFullScreen
+                      onLoad={() => {
+                        setLivePreviewReady(true);
+                        setCaptureStatus('idle');
+                        setCaptureError('');
+                      }}
+                      onError={() => {
+                        setCaptureStatus('idle');
+                        setLivePreviewReady(false);
+                        setCaptureError('Unable to load the listing inside the preview frame.');
+                      }}
                     />
-                    {captureStatus === 'loading' ? (
+                    {captureStatus === 'saving' ? (
                       <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/80 px-4 text-center text-sm text-slate-600">
-                        {livePreviewReady ? 'Saving snapshot…' : 'Preparing preview…'}
+                        Saving snapshot…
+                      </div>
+                    ) : captureStatus === 'loading' || !livePreviewReady ? (
+                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/80 px-4 text-center text-sm text-slate-600">
+                        Preparing preview…
                       </div>
                     ) : null}
                   </>
