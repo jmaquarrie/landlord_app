@@ -44,6 +44,8 @@ const DEFAULT_INPUTS = {
   firstTimeBuyer: false,
   incomePerson1: 50000,
   incomePerson2: 30000,
+  ownershipShare1: 0.5,
+  ownershipShare2: 0.5,
   reinvestIncome: false,
   reinvestPct: 0.5,
 };
@@ -60,9 +62,9 @@ const SCORE_TOOLTIPS = {
   overall:
     'Overall score combines cash-on-cash, cap rate, DSCR, NPV, and first-year cash flow. Higher is better (0-100).',
   delta:
-    'Wealth delta compares property net proceeds plus cumulative cash flow to the index fund alternative at exit.',
+    'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
   deltaAfterTax:
-    'After-tax wealth delta compares property net proceeds plus after-tax cash flow to the index fund alternative at exit.',
+    'After-tax wealth delta compares property net proceeds plus after-tax cash flow (and reinvested fund) to the index alternative at exit.',
 };
 
 function personalAllowance(income) {
@@ -161,12 +163,12 @@ function calcStampDuty(price, buyerType, propertiesOwned, firstTimeBuyer) {
   return roundTo(tax, 2);
 }
 
-function scoreDeal({ coc, cap, dscr, npv10, cashflowYear1 }) {
+function scoreDeal({ coc, cap, dscr, npv, cashflowYear1 }) {
   let s = 0;
   s += Math.min(40, coc * 100 * 1.2);
   s += Math.min(25, cap * 100 * 0.8);
   s += Math.min(15, Math.max(0, (dscr - 1) * 25));
-  s += Math.min(15, Math.max(0, npv10 / 20000));
+  s += Math.min(15, Math.max(0, npv / 20000));
   s += Math.min(5, Math.max(0, cashflowYear1 / 1000));
   return Math.max(0, Math.min(100, s));
 }
@@ -215,6 +217,11 @@ function calculateEquity(rawInputs) {
 
   const baseIncome1 = inputs.incomePerson1 ?? 0;
   const baseIncome2 = inputs.incomePerson2 ?? 0;
+  const sharePct1 = Number.isFinite(inputs.ownershipShare1) ? inputs.ownershipShare1 : 0.5;
+  const sharePct2 = Number.isFinite(inputs.ownershipShare2) ? inputs.ownershipShare2 : 0.5;
+  const shareTotal = sharePct1 + sharePct2;
+  const normalizedShare1 = shareTotal > 0 ? sharePct1 / shareTotal : 0.5;
+  const normalizedShare2 = shareTotal > 0 ? sharePct2 / shareTotal : 0.5;
 
   const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
   const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
@@ -300,12 +307,10 @@ function calculateEquity(rawInputs) {
     propertyGross: inputs.purchasePrice,
     propertyNet: initialNetEquity,
     propertyNetAfterTax: initialNetEquity,
-    rentalTaxCumulative: 0,
   });
 
   const propertyTaxes = [];
   const indexGrowth = Number.isFinite(inputs.indexFundGrowth) ? inputs.indexFundGrowth : DEFAULT_INDEX_GROWTH;
-  let cumulativeTax = 0;
 
   for (let y = 1; y <= inputs.exitYear; y++) {
     const gross = rent * (1 - inputs.vacancyPct);
@@ -318,12 +323,12 @@ function calculateEquity(rawInputs) {
 
     const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
     const taxableProfit = noi - interestPaid;
-    const share = taxableProfit / 2;
-    const taxOwnerA = calcIncomeTax(baseIncome1 + share) - calcIncomeTax(baseIncome1);
-    const taxOwnerB = calcIncomeTax(baseIncome2 + share) - calcIncomeTax(baseIncome2);
+    const shareOwnerA = taxableProfit * normalizedShare1;
+    const shareOwnerB = taxableProfit * normalizedShare2;
+    const taxOwnerA = calcIncomeTax(baseIncome1 + shareOwnerA) - calcIncomeTax(baseIncome1);
+    const taxOwnerB = calcIncomeTax(baseIncome2 + shareOwnerB) - calcIncomeTax(baseIncome2);
     const propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
     propertyTaxes.push(propertyTax);
-    cumulativeTax += propertyTax;
     const afterTaxCash = cash - propertyTax;
     cumulativeCashAfterTax += afterTaxCash;
     const investableCash = Math.max(0, afterTaxCash);
@@ -369,14 +374,13 @@ function calculateEquity(rawInputs) {
       propertyGross: propertyGrossValue,
       propertyNet: propertyNetValue,
       propertyNetAfterTax: propertyNetAfterTaxValue,
-      rentalTaxCumulative: cumulativeTax,
     });
 
     rent *= 1 + inputs.rentGrowth;
   }
 
-  const npv10 = npv(inputs.discountRate, cf);
-  const score = scoreDeal({ cap, coc, dscr, npv10, cashflowYear1 });
+  const npvValue = npv(inputs.discountRate, cf);
+  const score = scoreDeal({ cap, coc, dscr, npv: npvValue, cashflowYear1 });
 
   const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
   const propertyGrossWealthAtExit = futureValue + exitCumCash;
@@ -410,7 +414,7 @@ function calculateEquity(rawInputs) {
     remaining,
     futureValue,
     sellingCosts,
-    npv10,
+    npv: npvValue,
     score,
     cf,
     chart,
@@ -432,6 +436,7 @@ function calculateEquity(rawInputs) {
     propertyNetWealthAfterTax,
     wealthDeltaAfterTax,
     wealthDeltaAfterTaxPct,
+    exitYear: inputs.exitYear,
   };
 }
 
@@ -574,8 +579,19 @@ export default function App() {
     </div>
   );
 
-  const rentDown = equity.cashflowYear1 - inputs.monthlyRent * 12 * 0.1;
-  const rentUp = equity.cashflowYear1 + inputs.monthlyRent * 12 * 0.1;
+  const sensitivityResults = useMemo(() => {
+    const rent = Number.isFinite(inputs.monthlyRent) ? inputs.monthlyRent : 0;
+    const scenarioBase = equity.cashflowYear1AfterTax;
+    const evaluate = (multiplier) => {
+      const adjustedRent = Math.max(0, roundTo(rent * multiplier, 2));
+      return calculateEquity({ ...inputs, monthlyRent: adjustedRent }).cashflowYear1AfterTax;
+    };
+    return {
+      base: scenarioBase,
+      down: evaluate(0.9),
+      up: evaluate(1.1),
+    };
+  }, [equity.cashflowYear1AfterTax, inputs]);
 
   const handleSaveScenario = () => {
     if (typeof window === 'undefined') return;
@@ -630,41 +646,44 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-6xl px-4 py-6">
-        <header className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Property Forecaster</h1>
-            <button
-              type="button"
-              onClick={handlePrint}
-              className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-            >
-              🖨️ Print
-            </button>
-          </div>
-          <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">
-            <div
-              className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}
-              title={SCORE_TOOLTIPS.overall}
-            >
-              Score: {Math.round(equity.score)} / 100
+      <div className="mx-auto max-w-6xl px-4">
+        <div className="sticky top-0 z-30 -mx-4 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-slate-50/80 print:relative print:mx-0 print:border-0 print:bg-white">
+          <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Property Forecaster</h1>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                🖨️ Print
+              </button>
             </div>
-            <div
-              className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}
-              title={SCORE_TOOLTIPS.delta}
-            >
-              Δ vs index: {currency(equity.wealthDelta)} ({formatPercent(equity.wealthDeltaPct)})
+            <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">
+              <div
+                className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}
+                title={SCORE_TOOLTIPS.overall}
+              >
+                Score: {Math.round(equity.score)} / 100
+              </div>
+              <div
+                className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}
+                title={SCORE_TOOLTIPS.delta}
+              >
+                Δ vs index: {currency(equity.wealthDelta)} ({formatPercent(equity.wealthDeltaPct)})
+              </div>
+              <div
+                className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDeltaAfterTax)}`}
+                title={SCORE_TOOLTIPS.deltaAfterTax}
+              >
+                Δ after tax: {currency(equity.wealthDeltaAfterTax)} ({formatPercent(equity.wealthDeltaAfterTaxPct)})
+              </div>
             </div>
-            <div
-              className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDeltaAfterTax)}`}
-              title={SCORE_TOOLTIPS.deltaAfterTax}
-            >
-              Δ after tax: {currency(equity.wealthDeltaAfterTax)} ({formatPercent(equity.wealthDeltaAfterTaxPct)})
-            </div>
-          </div>
-        </header>
+          </header>
+        </div>
 
-        <section className="mb-4 grid gap-3 md:grid-cols-2">
+        <main className="py-6">
+          <section className="mb-4 grid gap-3 md:grid-cols-2">
           {textInput('propertyAddress', 'Property address')}
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-600">Property URL</label>
@@ -758,9 +777,12 @@ export default function App() {
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {moneyInput('incomePerson1', 'Owner A income (£)', 1000)}
                   {moneyInput('incomePerson2', 'Owner B income (£)', 1000)}
+                  {pctInput('ownershipShare1', 'Owner A ownership %')}
+                  {pctInput('ownershipShare2', 'Owner B ownership %')}
                 </div>
                 <p className="mt-1 text-[11px] text-slate-500">
-                  Property profits are split 50/50 between two owners to approximate yearly income tax on rental earnings.
+                  Rental profit is allocated according to the ownership percentages above before applying each owner’s marginal tax
+                  bands. Percentages are normalised if they do not sum to 100%.
                 </p>
               </CollapsibleSection>
 
@@ -897,18 +919,21 @@ export default function App() {
                 <Line label="Estimated equity then" value={currency(equity.futureValue - equity.remaining - equity.sellingCosts)} bold />
               </SummaryCard>
 
-              <SummaryCard title="NPV (10‑yr cashflows)">
+              <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`}>
                 <Line label={`Discount @ ${formatPercent(inputs.discountRate)}`} value="" />
-                <Line label="NPV" value={currency(equity.npv10)} bold />
-                <p className="mt-2 text-xs text-slate-500">Positive NPV means the deal beats your hurdle rate.</p>
+                <Line label="NPV" value={currency(equity.npv)} bold />
+                <p className="mt-2 text-xs text-slate-500">
+                  Net present value discounts each year of cash flow (including sale proceeds) over {inputs.exitYear} years back
+                  to today at your hurdle rate. Positive values indicate the property outperforms your discount rate target.
+                </p>
               </SummaryCard>
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
               <h3 className="mb-2 text-sm font-semibold">Wealth trajectory vs Index Fund</h3>
               <p className="mb-2 text-[11px] text-slate-500">
-                Comparison of the index fund alternative against property value plus cumulative rent (gross), net proceeds after
-                debt payoff, after-tax net proceeds, and the running total of rental income tax, all at {formatPercent(inputs.indexFundGrowth)}
+                Comparison of the index fund alternative against property gross wealth (value + rent), property net wealth
+                (proceeds + cashflows), and property net wealth after rental tax, all at {formatPercent(inputs.indexFundGrowth)}
                 index growth.
               </p>
               <div className="h-72 w-full">
@@ -951,14 +976,6 @@ export default function App() {
                       fill="rgba(147,51,234,0.2)"
                       strokeWidth={2}
                     />
-                    <Area
-                      type="monotone"
-                      dataKey="rentalTaxCumulative"
-                      name="Rental income tax (cumulative)"
-                      stroke="#ef4444"
-                      fill="rgba(239,68,68,0.2)"
-                      strokeWidth={2}
-                    />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -980,24 +997,11 @@ export default function App() {
                 </div>
               </SummaryCard>
 
-              <SummaryCard title="Sensitivity: rent ±10% (Year 1 cash flow)">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-600">Rent −10%</span>
-                  <span className={`rounded-lg px-2 py-1 text-sm ${rentDown >= 0 ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}>
-                    {currency(rentDown)}
-                  </span>
-                </div>
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="text-sm text-slate-600">Base</span>
-                  <span className={`rounded-lg px-2 py-1 text-sm ${equity.cashflowYear1 >= 0 ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}>
-                    {currency(equity.cashflowYear1)}
-                  </span>
-                </div>
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="text-sm text-slate-600">Rent +10%</span>
-                  <span className={`rounded-lg px-2 py-1 text-sm ${rentUp >= 0 ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}>
-                    {currency(rentUp)}
-                  </span>
+              <SummaryCard title="Sensitivity: rent ±10% (Year 1 after-tax cash flow)">
+                <div className="space-y-0.5">
+                  <SensitivityRow label="Rent −10%" value={sensitivityResults.down} />
+                  <SensitivityRow label="Base" value={sensitivityResults.base} />
+                  <SensitivityRow label="Rent +10%" value={sensitivityResults.up} />
                 </div>
               </SummaryCard>
             </div>
@@ -1006,8 +1010,8 @@ export default function App() {
               <h3 className="mb-2 text-sm font-semibold">Notes</h3>
               <ul className="list-disc pl-5 text-xs leading-5 text-slate-700">
                 <li>
-                  Rental income tax is approximated using the 2024/25 UK personal allowance and bands, splitting profits evenly
-                  between two owners. Mortgage interest relief nuances (e.g., Section 24 caps) are not modelled.
+                  Rental income tax is approximated using the 2024/25 UK personal allowance and bands, allocating profits based on
+                  the ownership percentages provided. Mortgage interest relief nuances (e.g., Section 24 caps) are not modelled.
                 </li>
                 <li>
                   SDLT is approximate (England &amp; NI bands + 5% higher-rate surcharge when individuals will own 2+ properties or
@@ -1116,9 +1120,10 @@ export default function App() {
         <footer className="mt-4 text-center text-[11px] text-slate-500">
           Built for quick, sensible go/no‑go decisions — refine in a full spreadsheet before offering.
         </footer>
-      </div>
+      </main>
+    </div>
 
-      {showTableModal && (
+    {showTableModal && (
         <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
           <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
@@ -1144,7 +1149,7 @@ export default function App() {
                       <th className="px-4 py-2 text-right font-semibold">Yield on cost</th>
                       <th className="px-4 py-2 text-right font-semibold">Cash-on-cash</th>
                       <th className="px-4 py-2 text-right font-semibold">DSCR</th>
-                      <th className="px-4 py-2 text-right font-semibold">NPV (10y)</th>
+                      <th className="px-4 py-2 text-right font-semibold">NPV (exit horizon)</th>
                       <th className="px-4 py-2 text-right font-semibold">Year 1 cash flow</th>
                     </tr>
                   </thead>
@@ -1157,7 +1162,7 @@ export default function App() {
                         <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.yoc)}</td>
                         <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.coc)}</td>
                         <td className="px-4 py-2 text-right text-slate-700">{metrics.dscr > 0 ? metrics.dscr.toFixed(2) : '—'}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.npv10)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.npv)} ({metrics.exitYear}y)</td>
                         <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashflowYear1)}</td>
                       </tr>
                     ))}
@@ -1186,6 +1191,21 @@ function Line({ label, value, bold = false }) {
     <div className="flex items-center justify-between text-xs">
       <span className="text-slate-600">{label}</span>
       <span className={bold ? 'font-semibold text-slate-800' : 'text-slate-800'}>{value}</span>
+    </div>
+  );
+}
+
+function SensitivityRow({ label, value }) {
+  const numericValue = Number.isFinite(value) ? value : 0;
+  const positive = numericValue >= 0;
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-slate-600">{label}</span>
+      <span
+        className={`rounded-lg px-2 py-0.5 ${positive ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}
+      >
+        {currency(numericValue)}
+      </span>
     </div>
   );
 }
