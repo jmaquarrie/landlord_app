@@ -202,6 +202,69 @@ const friendlyDateTime = (iso) => {
   }
 };
 
+function prepareFormValuesForExport(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') {
+    return () => {};
+  }
+
+  const cleanups = [];
+
+  const setAttr = (node, attr, value) => {
+    const previous = node.getAttribute(attr);
+    if (value === null || value === undefined) {
+      node.removeAttribute(attr);
+    } else {
+      node.setAttribute(attr, value);
+    }
+    cleanups.push(() => {
+      if (previous === null || previous === undefined) {
+        node.removeAttribute(attr);
+      } else {
+        node.setAttribute(attr, previous);
+      }
+    });
+  };
+
+  const inputs = root.querySelectorAll('input');
+  inputs.forEach((node) => {
+    const type = (node.getAttribute('type') || '').toLowerCase();
+    if (type === 'checkbox' || type === 'radio') {
+      setAttr(node, 'checked', node.checked ? 'checked' : null);
+    } else {
+      setAttr(node, 'value', node.value ?? '');
+    }
+  });
+
+  const textareas = root.querySelectorAll('textarea');
+  textareas.forEach((node) => {
+    const previous = node.textContent;
+    node.textContent = node.value ?? '';
+    cleanups.push(() => {
+      node.textContent = previous;
+    });
+  });
+
+  const selects = root.querySelectorAll('select');
+  selects.forEach((select) => {
+    const options = select.options || [];
+    for (let i = 0; i < options.length; i += 1) {
+      const option = options[i];
+      setAttr(option, 'selected', option.selected ? 'selected' : null);
+    }
+  });
+
+  return () => {
+    for (let i = cleanups.length - 1; i >= 0; i -= 1) {
+      const fn = cleanups[i];
+      try {
+        fn();
+      } catch (error) {
+        console.warn('Failed to restore element attribute after export', error);
+      }
+    }
+  };
+}
+
 function calculateEquity(rawInputs) {
   const inputs = { ...DEFAULT_INPUTS, ...rawInputs };
 
@@ -596,6 +659,7 @@ export default function App() {
     setShowTableModal(false);
     const element = pageRef.current;
     element.classList.add('exporting-pdf');
+    const restoreFormValues = prepareFormValuesForExport(element);
     try {
       const canvas = await html2canvas(element, {
         scale: 2,
@@ -627,6 +691,7 @@ export default function App() {
         window.alert('Unable to export PDF. Please try again.');
       }
     } finally {
+      restoreFormValues();
       element.classList.remove('exporting-pdf');
     }
   };
