@@ -14,6 +14,7 @@ import jsPDF from 'jspdf';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
+const SCREENSHOT_SERVICE_BASE = 'https://image.thum.io/get/png/width/1600';
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const { VITE_SCENARIO_API_URL } = import.meta.env ?? {};
 const SCENARIO_API_URL =
@@ -170,6 +171,14 @@ function calcStampDuty(price, buyerType, propertiesOwned, firstTimeBuyer) {
   return roundTo(tax, 2);
 }
 
+function ensureAbsoluteUrl(value) {
+  if (!value) return '';
+  const trimmed = value.trim();
+  if (trimmed === '') return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 function scoreDeal({ coc, cap, dscr, npv, cashflowYear1 }) {
   let s = 0;
   s += Math.min(40, coc * 100 * 1.2);
@@ -294,13 +303,9 @@ function transformCloneForExport(root) {
     control.parentNode?.replaceChild(replacement, control);
   });
 
-  const captureFrames = root.querySelectorAll('[data-capture-frame]');
-  captureFrames.forEach((frame) => {
-    const placeholder = doc.createElement('div');
-    placeholder.className = 'flex h-full w-full items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-4 text-center text-xs text-slate-600';
-    placeholder.textContent =
-      'Captured webpage preview is available when printing from the browser. External pages cannot be embedded in PDF exports.';
-    frame.parentNode?.replaceChild(placeholder, frame);
+  const capturePlaceholders = root.querySelectorAll('[data-capture-placeholder]');
+  capturePlaceholders.forEach((node) => {
+    node.classList.add('bg-white');
   });
 }
 
@@ -557,7 +562,9 @@ export default function App() {
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
-  const [capturedUrl, setCapturedUrl] = useState('');
+  const [capturedPreview, setCapturedPreview] = useState(null);
+  const [captureStatus, setCaptureStatus] = useState('idle');
+  const [captureError, setCaptureError] = useState('');
   const [collapsedSections, setCollapsedSections] = useState({
     buyerProfile: false,
     householdIncome: false,
@@ -690,7 +697,8 @@ export default function App() {
   );
 
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
-  const hasPropertyUrl = trimmedPropertyUrl !== '';
+  const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
+  const hasPropertyUrl = normalizedPropertyUrl !== '';
 
   const handlePrint = () => {
     if (typeof window === 'undefined') return;
@@ -759,29 +767,36 @@ export default function App() {
     const scenarioData = savedScenarios.map((scenario) => {
       const data = { ...DEFAULT_INPUTS, ...scenario.data };
       const metrics = calculateEquity(data);
-      return { scenario, data, metrics };
+      const preview = scenario.preview ?? null;
+      return { scenario, data, metrics, preview };
     });
 
     const inputKeys = new Set();
     const metricKeys = new Set();
+    const previewKeys = new Set();
 
-    scenarioData.forEach(({ data, metrics }) => {
+    scenarioData.forEach(({ data, metrics, preview }) => {
       Object.keys(data || {}).forEach((key) => inputKeys.add(key));
       Object.keys(metrics || {}).forEach((key) => metricKeys.add(key));
+      if (preview && typeof preview === 'object') {
+        Object.keys(preview).forEach((key) => previewKeys.add(key));
+      }
     });
 
     const sortedInputKeys = Array.from(inputKeys).sort();
     const sortedMetricKeys = Array.from(metricKeys).sort();
+    const sortedPreviewKeys = Array.from(previewKeys).sort();
 
     const header = [
       'scenario_id',
       'scenario_name',
       'saved_at_iso',
       ...sortedInputKeys.map((key) => `input_${key}`),
+      ...sortedPreviewKeys.map((key) => `preview_${key}`),
       ...sortedMetricKeys.map((key) => `metric_${key}`),
     ];
 
-    const rows = scenarioData.map(({ scenario, data, metrics }) => {
+    const rows = scenarioData.map(({ scenario, data, metrics, preview }) => {
       const row = [
         scenario.id ?? '',
         scenario.name ?? '',
@@ -789,6 +804,10 @@ export default function App() {
       ];
       sortedInputKeys.forEach((key) => {
         row.push(normaliseForCsv(data?.[key]));
+      });
+      sortedPreviewKeys.forEach((key) => {
+        const value = preview && typeof preview === 'object' ? preview[key] : '';
+        row.push(normaliseForCsv(value));
       });
       sortedMetricKeys.forEach((key) => {
         row.push(normaliseForCsv(metrics?.[key]));
@@ -829,6 +848,11 @@ export default function App() {
 
   const onText = (key, value) => {
     setInputs((prev) => ({ ...prev, [key]: value }));
+    if (key === 'propertyUrl') {
+      setCaptureError('');
+      setCaptureStatus('idle');
+      setCapturedPreview(null);
+    }
   };
   const onBuyerType = (value) =>
     setInputs((prev) => ({
@@ -932,11 +956,13 @@ export default function App() {
         propertyUrl: (inputs.propertyUrl ?? '').trim(),
       })
     );
+    const previewSnapshot = capturedPreview ? JSON.parse(JSON.stringify(capturedPreview)) : null;
     const scenario = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: label,
       savedAt: new Date().toISOString(),
       data: snapshot,
+      preview: previewSnapshot,
     };
     setSavedScenarios((prev) => [scenario, ...prev]);
     setSelectedScenarioId(scenario.id);
@@ -947,17 +973,56 @@ export default function App() {
     if (!scenario) return;
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setShowLoadPanel(false);
-    const nextUrl = (scenario.data?.propertyUrl ?? '').trim();
-    setCapturedUrl(nextUrl);
+    setCapturedPreview(scenario.preview ?? null);
+    setCaptureStatus('idle');
+    setCaptureError('');
   };
 
   const handleCaptureUrl = () => {
-    const url = (inputs.propertyUrl ?? '').trim();
-    if (!url) return;
-    setCapturedUrl(url);
+    const rawUrl = (inputs.propertyUrl ?? '').trim();
+    if (!rawUrl) return;
+    const normalizedUrl = ensureAbsoluteUrl(rawUrl);
+    if (!normalizedUrl) return;
+    const timestamp = Date.now();
+    const encodedTarget = encodeURI(normalizedUrl);
+    const captureBase = `${SCREENSHOT_SERVICE_BASE}/${encodedTarget}`;
+    const captureSrc = captureBase.includes('?')
+      ? `${captureBase}&cacheBust=${timestamp}`
+      : `${captureBase}?cacheBust=${timestamp}`;
+    setCaptureStatus('loading');
+    setCaptureError('');
+    if (typeof Image === 'undefined') {
+      setCapturedPreview({
+        originalUrl: normalizedUrl,
+        imageUrl: captureSrc,
+        capturedAt: new Date().toISOString(),
+      });
+      setCaptureStatus('idle');
+      return;
+    }
+
+    const testImage = new Image();
+    testImage.crossOrigin = 'anonymous';
+    testImage.onload = () => {
+      setCapturedPreview({
+        originalUrl: normalizedUrl,
+        imageUrl: captureSrc,
+        capturedAt: new Date().toISOString(),
+      });
+      setCaptureStatus('idle');
+    };
+    testImage.onerror = () => {
+      setCaptureStatus('idle');
+      setCaptureError('Unable to capture the listing preview. You can still open the URL directly.');
+    };
+    testImage.src = captureSrc;
   };
 
-  const handleClearCapture = () => setCapturedUrl('');
+  const handleClearCapture = () => {
+    setCapturedPreview(null);
+    setCaptureError('');
+    setCaptureStatus('idle');
+  };
 
   const handleRenameScenario = (id) => {
     if (typeof window === 'undefined') return;
@@ -1046,7 +1111,7 @@ export default function App() {
               />
               {hasPropertyUrl ? (
                 <a
-                  href={trimmedPropertyUrl}
+                  href={normalizedPropertyUrl}
                   target="_blank"
                   rel="noreferrer"
                   className="no-print inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
@@ -1058,10 +1123,24 @@ export default function App() {
                 type="button"
                 onClick={handleCaptureUrl}
                 className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                disabled={!hasPropertyUrl}
+                disabled={!hasPropertyUrl || captureStatus === 'loading'}
               >
-                Capture
+                {captureStatus === 'loading' ? 'Capturing…' : 'Capture'}
               </button>
+            </div>
+            <div className="space-y-1 text-[11px] leading-snug text-slate-500">
+              {capturedPreview?.capturedAt ? (
+                <div>Captured {friendlyDateTime(capturedPreview.capturedAt)}</div>
+              ) : null}
+              {captureError ? <div className="text-rose-600">{captureError}</div> : null}
+              {capturedPreview?.originalUrl ? (
+                <div>
+                  Source:{' '}
+                  <a href={capturedPreview.originalUrl} className="underline-offset-2 hover:underline" target="_blank" rel="noreferrer">
+                    {capturedPreview.originalUrl}
+                  </a>
+                </div>
+              ) : null}
             </div>
           </div>
         </section>
@@ -1530,11 +1609,16 @@ export default function App() {
           </section>
         </div>
 
-        {capturedUrl ? (
+        {capturedPreview ? (
           <section className="mt-6">
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-slate-800">Captured listing preview</h3>
+            <div className="rounded-2xl bg-white p-3 shadow-sm" data-capture-placeholder>
+              <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-800">Captured listing preview</h3>
+                  {capturedPreview.capturedAt ? (
+                    <p className="text-[11px] text-slate-500">Snapshot from {friendlyDateTime(capturedPreview.capturedAt)}</p>
+                  ) : null}
+                </div>
                 <button
                   type="button"
                   onClick={handleClearCapture}
@@ -1543,15 +1627,41 @@ export default function App() {
                   Clear capture
                 </button>
               </div>
-              <div className="aspect-[16/9] w-full overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <iframe
-                  src={capturedUrl}
-                  title="Captured property listing"
-                  className="h-full w-full"
-                  data-capture-frame="true"
-                  loading="lazy"
-                />
+              <div
+                className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
+                style={{ minHeight: '48rem' }}
+              >
+                {captureError ? (
+                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-rose-600">
+                    {captureError}
+                  </div>
+                ) : (
+                  <img
+                    src={capturedPreview.imageUrl}
+                    alt="Captured property listing"
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                    crossOrigin="anonymous"
+                    onError={() => {
+                      setCaptureError('Preview image could not be loaded. Please try capturing again.');
+                      setCapturedPreview(null);
+                    }}
+                  />
+                )}
               </div>
+              {capturedPreview.originalUrl ? (
+                <p className="mt-2 text-[11px] text-slate-500">
+                  Original listing:{' '}
+                  <a
+                    href={capturedPreview.originalUrl}
+                    className="underline-offset-2 hover:underline"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {capturedPreview.originalUrl}
+                  </a>
+                </p>
+              ) : null}
             </div>
           </section>
         ) : null}
