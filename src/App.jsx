@@ -793,15 +793,14 @@ export default function App() {
       const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
-      let renderWidth = (canvas.width * pageHeight) / canvas.height;
-      let renderHeight = pageHeight;
-      if (renderWidth > pageWidth) {
-        const scale = pageWidth / canvas.width;
-        renderWidth = pageWidth;
-        renderHeight = canvas.height * scale;
-      }
+      const margin = 20;
+      const availableWidth = pageWidth - margin * 2;
+      const availableHeight = pageHeight - margin * 2;
+      const scale = Math.min(availableWidth / canvas.width, availableHeight / canvas.height, 1);
+      const renderWidth = canvas.width * scale;
+      const renderHeight = canvas.height * scale;
       const offsetX = (pageWidth - renderWidth) / 2;
-      const offsetY = 0;
+      const offsetY = (pageHeight - renderHeight) / 2;
       pdf.addImage(imageData, 'PNG', offsetX, offsetY, renderWidth, renderHeight);
 
       const captureSource = capturedPreview?.imageUrl || '';
