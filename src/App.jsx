@@ -714,8 +714,7 @@ export default function App() {
                 {pctInput('discountRate', 'Discount rate %', 0.001)}
               </div>
                 <p className="mt-2 text-[11px] text-slate-500">
-                  SDLT model is simplified for England &amp; NI (residential bands + 5% higher-rate surcharge). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
-                </p>
+                  SDLT model is simplified for England &amp; NI</p>
             </div>
           </section>
 
