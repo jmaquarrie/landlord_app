@@ -286,6 +286,7 @@ function calculateEquity(rawInputs) {
   let exitCumCashAfterTax = 0;
   let exitNetSaleProceeds = 0;
   let indexVal = cashIn;
+  let reinvestFundValue = 0;
   const reinvestShare = inputs.reinvestIncome
     ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
     : 0;
@@ -323,6 +324,7 @@ function calculateEquity(rawInputs) {
     const investableCash = Math.max(0, afterTaxCash);
     const reinvestContribution = reinvestShare > 0 ? investableCash * reinvestShare : 0;
     cumulativeReinvested += reinvestContribution;
+    reinvestFundValue = reinvestFundValue * (1 + indexGrowth) + reinvestContribution;
 
     if (y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
@@ -333,8 +335,10 @@ function calculateEquity(rawInputs) {
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
       cf.push(cash + netSaleProceeds);
-      exitCumCash = cumulativeCashPreTax - cumulativeReinvested;
-      exitCumCashAfterTax = cumulativeCashAfterTax - cumulativeReinvested;
+      const cumulativeCashPreTaxNet = cumulativeCashPreTax - cumulativeReinvested;
+      const cumulativeCashAfterTaxNet = cumulativeCashAfterTax - cumulativeReinvested;
+      exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
+      exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
       exitNetSaleProceeds = netSaleProceeds;
     } else {
       cf.push(cash);
@@ -342,14 +346,13 @@ function calculateEquity(rawInputs) {
 
     const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     indexVal = indexVal * (1 + indexGrowth);
-    indexVal += reinvestContribution;
     const cumulativeCashPreTaxNet = cumulativeCashPreTax - cumulativeReinvested;
     const cumulativeCashAfterTaxNet = cumulativeCashAfterTax - cumulativeReinvested;
     chart.push({
       year: y,
       value: vt,
-      valuePlusRent: vt + cumulativeCashPreTaxNet,
-      propertyAfterTax: vt + cumulativeCashAfterTaxNet,
+      valuePlusRent: vt + cumulativeCashPreTaxNet + reinvestFundValue,
+      propertyAfterTax: vt + cumulativeCashAfterTaxNet + reinvestFundValue,
       indexFund: indexVal,
     });
 
@@ -408,6 +411,7 @@ function calculateEquity(rawInputs) {
     wealthDeltaPct,
     totalPropertyTax,
     totalReinvested: cumulativeReinvested,
+    reinvestFundValue,
     propertyTaxes,
     propertyNetWealthAfterTax,
     wealthDeltaAfterTax,
