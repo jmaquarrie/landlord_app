@@ -238,10 +238,12 @@ function prepareFormValuesForExport(root) {
     const type = (node.getAttribute('type') || '').toLowerCase();
     if (type === 'checkbox' || type === 'radio') {
       setAttr(node, 'checked', node.checked ? 'checked' : null);
+      setProp(node, 'defaultChecked', node.checked);
     } else {
       const value = node.value ?? '';
       setAttr(node, 'value', value);
       setProp(node, 'value', value);
+      setProp(node, 'defaultValue', value);
 
       if (type === 'number') {
         setAttr(node, 'data-export-original-type', type);
@@ -250,21 +252,41 @@ function prepareFormValuesForExport(root) {
         } catch (error) {
           console.warn('Unable to switch input type for export', error);
         }
+        cleanups.push(() => {
+          const originalType = node.getAttribute('data-export-original-type');
+          if (originalType) {
+            try {
+              node.setAttribute('type', originalType);
+            } catch (error) {
+              console.warn('Unable to restore input type after export', error);
+            }
+          } else {
+            node.removeAttribute('type');
+          }
+          node.removeAttribute('data-export-original-type');
+        });
       }
     }
   });
 
   const textareas = root.querySelectorAll('textarea');
   textareas.forEach((node) => {
-    const previous = node.textContent;
-    node.textContent = node.value ?? '';
+    const value = node.value ?? '';
+    setAttr(node, 'value', value);
+    setProp(node, 'value', value);
+    const previousTextContent = node.textContent;
+    node.textContent = value;
     cleanups.push(() => {
-      node.textContent = previous;
+      node.textContent = previousTextContent;
     });
+    setProp(node, 'defaultValue', value);
   });
 
   const selects = root.querySelectorAll('select');
   selects.forEach((select) => {
+    const value = select.value;
+    setAttr(select, 'value', value);
+    setProp(select, 'value', value);
     const options = select.options || [];
     for (let i = 0; i < options.length; i += 1) {
       const option = options[i];
