@@ -317,11 +317,11 @@ async function getImageDataForPdf(src) {
   if (!src) return null;
 
   if (typeof Image === 'undefined' || typeof document === 'undefined') {
-    if (src.startsWith('data:image/png')) {
-      return { dataUrl: src, format: 'PNG', width: 0, height: 0 };
-    }
     if (src.startsWith('data:image/jpeg') || src.startsWith('data:image/jpg')) {
       return { dataUrl: src, format: 'JPEG', width: 0, height: 0 };
+    }
+    if (src.startsWith('data:image/png')) {
+      return { dataUrl: src, format: 'PNG', width: 0, height: 0 };
     }
     return null;
   }
@@ -338,7 +338,8 @@ async function getImageDataForPdf(src) {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        resolve({ dataUrl: canvas.toDataURL('image/png'), format: 'PNG', width, height });
+        const jpegData = canvas.toDataURL('image/jpeg', 0.85);
+        resolve({ dataUrl: jpegData, format: 'JPEG', width, height });
       } catch (error) {
         reject(error);
       }
@@ -789,8 +790,8 @@ export default function App() {
           transformCloneForExport(cloneRoot);
         },
       });
-      const imageData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+      const imageData = canvas.toDataURL('image/jpeg', 0.85);
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4', compress: true });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const marginX = 12;
@@ -804,7 +805,7 @@ export default function App() {
       const renderHeight = canvas.height * scale;
       const offsetX = (pageWidth - renderWidth) / 2;
       const offsetY = marginTop;
-      pdf.addImage(imageData, 'PNG', offsetX, offsetY, renderWidth, renderHeight);
+      pdf.addImage(imageData, 'JPEG', offsetX, offsetY, renderWidth, renderHeight, undefined, 'FAST');
 
       const captureSource = capturedPreview?.imageUrl || '';
       if (captureSource) {
@@ -830,11 +831,13 @@ export default function App() {
             const captureOffsetY = (capturePageHeight - captureRenderHeight) / 2;
             pdf.addImage(
               captureData.dataUrl,
-              captureData.format || 'PNG',
+              captureData.format || 'JPEG',
               captureOffsetX,
               captureOffsetY,
               captureRenderWidth,
-              captureRenderHeight
+              captureRenderHeight,
+              undefined,
+              'FAST'
             );
           }
         } catch (error) {
@@ -1202,7 +1205,7 @@ export default function App() {
             canvas.height = crop.sh;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(bitmap, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
-            return canvas.toDataURL('image/png');
+            return canvas.toDataURL('image/jpeg', 0.85);
           } catch (error) {
             console.warn('ImageCapture grabFrame failed:', error);
           }
@@ -1236,7 +1239,7 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
         video.pause();
-        return canvas.toDataURL('image/png');
+        return canvas.toDataURL('image/jpeg', 0.85);
       };
 
       const dataUrl = await extractFrame();
