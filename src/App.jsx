@@ -14,7 +14,7 @@ import jsPDF from 'jspdf';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
-const SCREENSHOT_SERVICE_BASE = 'https://image.thum.io/get/png/width/1600';
+const SCREENSHOT_SERVICE_BASE = 'https://image.thum.io/get/png/width/1600/fullpage';
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const { VITE_SCENARIO_API_URL } = import.meta.env ?? {};
 const SCENARIO_API_URL =
@@ -563,7 +563,7 @@ export default function App() {
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
   const [capturedPreview, setCapturedPreview] = useState(null);
-  const [livePreviewUrl, setLivePreviewUrl] = useState('');
+  const [livePreview, setLivePreview] = useState(null);
   const [captureStatus, setCaptureStatus] = useState('idle');
   const [captureError, setCaptureError] = useState('');
   const [collapsedSections, setCollapsedSections] = useState({
@@ -580,6 +580,8 @@ export default function App() {
     propertyNetAfterTax: true,
   });
   const pageRef = useRef(null);
+  const previewScrollRef = useRef(null);
+  const previewImageRef = useRef(null);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
   const [syncStatus, setSyncStatus] = useState('idle');
@@ -700,7 +702,7 @@ export default function App() {
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
   const hasPropertyUrl = normalizedPropertyUrl !== '';
-  const isLivePreviewActive = livePreviewUrl !== '';
+  const isLivePreviewActive = Boolean(livePreview);
   const hasCapturedSnapshot = Boolean(capturedPreview);
   const showListingPreview = isLivePreviewActive || hasCapturedSnapshot;
 
@@ -856,7 +858,7 @@ export default function App() {
       setCaptureError('');
       setCaptureStatus('idle');
       setCapturedPreview(null);
-      setLivePreviewUrl('');
+      setLivePreview(null);
     }
   };
   const onBuyerType = (value) =>
@@ -979,7 +981,7 @@ export default function App() {
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setShowLoadPanel(false);
     setCapturedPreview(scenario.preview ?? null);
-    setLivePreviewUrl('');
+    setLivePreview(null);
     setCaptureStatus('idle');
     setCaptureError('');
   };
@@ -989,56 +991,124 @@ export default function App() {
     if (!rawUrl) return;
     const normalizedUrl = ensureAbsoluteUrl(rawUrl);
     if (!normalizedUrl) return;
-    setCaptureStatus('idle');
+    setCaptureStatus('loading');
     setCaptureError('');
     setCapturedPreview(null);
-    setLivePreviewUrl(normalizedUrl);
-  };
+    setLivePreview(null);
 
-  const handleTakeSnapshot = () => {
-    const sourceUrl = (livePreviewUrl || ensureAbsoluteUrl(inputs.propertyUrl ?? '')) ?? '';
-    if (!sourceUrl) return;
     const timestamp = Date.now();
-    const encodedTarget = encodeURI(sourceUrl);
+    const encodedTarget = encodeURI(normalizedUrl);
     const captureBase = `${SCREENSHOT_SERVICE_BASE}/${encodedTarget}`;
     const captureSrc = captureBase.includes('?')
       ? `${captureBase}&cacheBust=${timestamp}`
       : `${captureBase}?cacheBust=${timestamp}`;
-    setCaptureStatus('loading');
-    setCaptureError('');
 
     if (typeof Image === 'undefined') {
-      setCapturedPreview({
-        originalUrl: sourceUrl,
+      setLivePreview({
+        originalUrl: normalizedUrl,
         imageUrl: captureSrc,
+        naturalWidth: 0,
+        naturalHeight: 0,
         capturedAt: new Date().toISOString(),
       });
       setCaptureStatus('idle');
-      setLivePreviewUrl('');
       return;
     }
 
-    const testImage = new Image();
-    testImage.crossOrigin = 'anonymous';
-    testImage.onload = () => {
-      setCapturedPreview({
-        originalUrl: sourceUrl,
+    const previewImage = new Image();
+    previewImage.crossOrigin = 'anonymous';
+    previewImage.onload = () => {
+      setLivePreview({
+        originalUrl: normalizedUrl,
         imageUrl: captureSrc,
+        naturalWidth: previewImage.naturalWidth || previewImage.width || 0,
+        naturalHeight: previewImage.naturalHeight || previewImage.height || 0,
         capturedAt: new Date().toISOString(),
       });
       setCaptureStatus('idle');
-      setLivePreviewUrl('');
+      if (previewScrollRef.current) {
+        previewScrollRef.current.scrollTop = 0;
+      }
     };
-    testImage.onerror = () => {
+    previewImage.onerror = () => {
+      setCaptureStatus('idle');
+      setCaptureError('Unable to load preview. Please check the URL and try again.');
+    };
+    previewImage.src = captureSrc;
+  };
+
+  const handleTakeSnapshot = () => {
+    if (!livePreview || !previewScrollRef.current) return;
+
+    const container = previewScrollRef.current;
+    const imgEl = previewImageRef.current;
+    const originalUrl = livePreview.originalUrl || ensureAbsoluteUrl(inputs.propertyUrl ?? '');
+    if (!imgEl || !originalUrl) return;
+
+    const displayWidth = imgEl.clientWidth || container.clientWidth;
+    const displayHeight = container.clientHeight;
+    if (!displayWidth || !displayHeight) return;
+
+    const naturalWidth = livePreview.naturalWidth || displayWidth;
+    const naturalHeight = livePreview.naturalHeight || displayHeight;
+    const scale = naturalWidth / displayWidth;
+    const cropHeight = Math.min(naturalHeight, Math.max(1, Math.round(displayHeight * scale)));
+    const scrollOffset = Math.min(
+      Math.max(0, Math.round(container.scrollTop * scale)),
+      Math.max(0, naturalHeight - cropHeight)
+    );
+
+    setCaptureStatus('loading');
+    setCaptureError('');
+
+    if (typeof document === 'undefined') {
+      setCapturedPreview({
+        originalUrl,
+        imageUrl: livePreview.imageUrl,
+        capturedAt: new Date().toISOString(),
+      });
+      setCaptureStatus('idle');
+      setLivePreview(null);
+      return;
+    }
+
+    const workingImage = new Image();
+    workingImage.crossOrigin = 'anonymous';
+    workingImage.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = naturalWidth;
+      canvas.height = cropHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(
+        workingImage,
+        0,
+        scrollOffset,
+        naturalWidth,
+        cropHeight,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+      const dataUrl = canvas.toDataURL('image/png');
+      setCapturedPreview({
+        originalUrl,
+        imageUrl: dataUrl,
+        capturedAt: new Date().toISOString(),
+      });
+      setCaptureStatus('idle');
+      setLivePreview(null);
+    };
+    workingImage.onerror = () => {
       setCaptureStatus('idle');
       setCaptureError('Unable to capture the listing preview. You can still open the URL directly.');
     };
-    testImage.src = captureSrc;
+    workingImage.src = livePreview.imageUrl;
   };
 
   const handleClearCapture = () => {
     setCapturedPreview(null);
-    setLivePreviewUrl('');
+    setLivePreview(null);
     setCaptureError('');
     setCaptureStatus('idle');
   };
@@ -1148,10 +1218,10 @@ export default function App() {
               </button>
             </div>
             <div className="space-y-1 text-[11px] leading-snug text-slate-500">
-              {livePreviewUrl ? (
+              {isLivePreviewActive ? (
                 <div>Live preview open below — use “Take snapshot” to save it.</div>
               ) : null}
-              {captureStatus === 'loading' ? <div>Preparing snapshot…</div> : null}
+              {captureStatus === 'loading' ? <div>Working on listing preview…</div> : null}
               {capturedPreview?.capturedAt ? (
                 <div>Captured {friendlyDateTime(capturedPreview.capturedAt)}</div>
               ) : null}
@@ -1675,19 +1745,27 @@ export default function App() {
               </div>
               <div
                 className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
-                style={{ minHeight: '72rem' }}
+                style={{ height: '90rem' }}
               >
                 {captureStatus === 'loading' ? (
                   <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
                     Capturing snapshot…
                   </div>
                 ) : isLivePreviewActive ? (
-                  <iframe
-                    src={livePreviewUrl}
-                    title="Property listing preview"
-                    className="h-full w-full border-0"
-                    loading="lazy"
-                  />
+                  <div ref={previewScrollRef} className="h-full w-full overflow-auto">
+                    <img
+                      ref={previewImageRef}
+                      src={livePreview.imageUrl}
+                      alt="Live listing preview"
+                      className="block w-full"
+                      loading="lazy"
+                      crossOrigin="anonymous"
+                      onError={() => {
+                        setCaptureError('Preview image could not be loaded. Please try capturing again.');
+                        setLivePreview(null);
+                      }}
+                    />
+                  </div>
                 ) : hasCapturedSnapshot && capturedPreview?.imageUrl ? (
                   <img
                     src={capturedPreview.imageUrl}
@@ -1698,7 +1776,7 @@ export default function App() {
                     onError={() => {
                       setCaptureError('Preview image could not be loaded. Please try capturing again.');
                       setCapturedPreview(null);
-                      setLivePreviewUrl('');
+                      setLivePreview(null);
                     }}
                   />
                 ) : captureError ? (
@@ -1711,16 +1789,16 @@ export default function App() {
                   </div>
                 )}
               </div>
-              {capturedPreview?.originalUrl || livePreviewUrl ? (
+              {capturedPreview?.originalUrl || livePreview?.originalUrl ? (
                 <p className="mt-2 text-[11px] text-slate-500">
                   Original listing:{' '}
                   <a
-                    href={capturedPreview?.originalUrl ?? livePreviewUrl}
+                    href={capturedPreview?.originalUrl ?? livePreview?.originalUrl}
                     className="underline-offset-2 hover:underline"
                     target="_blank"
                     rel="noreferrer"
                   >
-                    {capturedPreview?.originalUrl ?? livePreviewUrl}
+                    {capturedPreview?.originalUrl ?? livePreview?.originalUrl}
                   </a>
                 </p>
               ) : null}
