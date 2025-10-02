@@ -404,6 +404,7 @@ function calculateEquity(rawInputs) {
   chart.push({
     year: 0,
     indexFund: indexVal,
+    propertyValue: inputs.purchasePrice,
     propertyGross: inputs.purchasePrice,
     propertyNet: initialNetEquity,
     propertyNetAfterTax: initialNetEquity,
@@ -471,6 +472,7 @@ function calculateEquity(rawInputs) {
     chart.push({
       year: y,
       indexFund: indexVal,
+      propertyValue: vt,
       propertyGross: propertyGrossValue,
       propertyNet: propertyNetValue,
       propertyNetAfterTax: propertyNetAfterTaxValue,
@@ -554,6 +556,7 @@ export default function App() {
   });
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
+    propertyValue: true,
     propertyGross: true,
     propertyNet: true,
     propertyNetAfterTax: true,
@@ -1255,9 +1258,8 @@ export default function App() {
             <div className="rounded-2xl bg-white p-3 shadow-sm">
               <h3 className="mb-2 text-sm font-semibold">Wealth trajectory vs Index Fund</h3>
               <p className="mb-2 text-[11px] text-slate-500">
-                Comparison of the index fund alternative against property gross wealth (value + rent), property net wealth
-                (proceeds + cashflows), and property net wealth after rental tax, all at {formatPercent(inputs.indexFundGrowth)}
-                index growth.
+                Comparison of the index fund alternative against property value, property gross wealth, property net wealth,
+                and property net wealth after rental tax, all at {formatPercent(inputs.indexFundGrowth)} index growth.
               </p>
               <div className="h-72 w-full">
                 <ResponsiveContainer>
@@ -1294,8 +1296,17 @@ export default function App() {
                     />
                     <Area
                       type="monotone"
+                      dataKey="propertyValue"
+                      name="Property value"
+                      stroke="#0ea5e9"
+                      fill="rgba(14,165,233,0.18)"
+                      strokeWidth={2}
+                      hide={!activeSeries.propertyValue}
+                    />
+                    <Area
+                      type="monotone"
                       dataKey="propertyGross"
-                      name="Property gross (value + rent)"
+                      name="Property gross"
                       stroke="#2563eb"
                       fill="rgba(37,99,235,0.2)"
                       strokeWidth={2}
@@ -1304,7 +1315,7 @@ export default function App() {
                     <Area
                       type="monotone"
                       dataKey="propertyNet"
-                      name="Property net (proceeds + cashflows)"
+                      name="Property net"
                       stroke="#16a34a"
                       fill="rgba(22,163,74,0.25)"
                       strokeWidth={2}
