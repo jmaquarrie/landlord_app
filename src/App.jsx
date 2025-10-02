@@ -263,6 +263,32 @@ function getControlDisplayValue(node) {
   return node.value ?? '';
 }
 
+function canvasToJpeg(canvas, { quality = 0.65, maxWidth = 1500, maxHeight = 2000 } = {}) {
+  if (!canvas) return '';
+  let targetCanvas = canvas;
+  const originalWidth = canvas.width || 1;
+  const originalHeight = canvas.height || 1;
+  const scale = Math.min(1, maxWidth / originalWidth, maxHeight / originalHeight);
+
+  if (scale < 1) {
+    if (typeof document !== 'undefined') {
+      const scaledCanvas = document.createElement('canvas');
+      scaledCanvas.width = Math.max(1, Math.round(originalWidth * scale));
+      scaledCanvas.height = Math.max(1, Math.round(originalHeight * scale));
+      const ctx = scaledCanvas.getContext('2d');
+      ctx.drawImage(canvas, 0, 0, originalWidth, originalHeight, 0, 0, scaledCanvas.width, scaledCanvas.height);
+      targetCanvas = scaledCanvas;
+    }
+  }
+
+  try {
+    return targetCanvas.toDataURL('image/jpeg', quality);
+  } catch (error) {
+    console.warn('Unable to convert canvas to JPEG:', error);
+    return '';
+  }
+}
+
 function transformCloneForExport(root) {
   if (!root) return;
   const doc = root.ownerDocument;
@@ -338,7 +364,7 @@ async function getImageDataForPdf(src) {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        const jpegData = canvas.toDataURL('image/jpeg', 0.85);
+        const jpegData = canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1800 });
         resolve({ dataUrl: jpegData, format: 'JPEG', width, height });
       } catch (error) {
         reject(error);
@@ -779,8 +805,11 @@ export default function App() {
     const element = pageRef.current;
     element.classList.add('exporting-pdf');
     try {
+      const exportScale = typeof window !== 'undefined' && window.devicePixelRatio
+        ? Math.min(1.3, window.devicePixelRatio)
+        : 1.2;
       const canvas = await html2canvas(element, {
-        scale: 2,
+        scale: exportScale,
         useCORS: true,
         windowWidth: element.scrollWidth,
         windowHeight: element.scrollHeight,
@@ -790,7 +819,7 @@ export default function App() {
           transformCloneForExport(cloneRoot);
         },
       });
-      const imageData = canvas.toDataURL('image/jpeg', 0.85);
+      const imageData = canvasToJpeg(canvas, { quality: 0.6, maxWidth: 1400, maxHeight: 2000 });
       const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4', compress: true });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
@@ -1205,7 +1234,7 @@ export default function App() {
             canvas.height = crop.sh;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(bitmap, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
-            return canvas.toDataURL('image/jpeg', 0.85);
+            return canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1600 });
           } catch (error) {
             console.warn('ImageCapture grabFrame failed:', error);
           }
@@ -1239,7 +1268,7 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
         video.pause();
-        return canvas.toDataURL('image/jpeg', 0.85);
+        return canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1600 });
       };
 
       const dataUrl = await extractFrame();
