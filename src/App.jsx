@@ -213,6 +213,32 @@ function csvEscape(value) {
   return stringValue;
 }
 
+function normaliseForCsv(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return '';
+    }
+    return String(roundTo(value, 6));
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
 function getControlDisplayValue(node) {
   const tag = node.tagName.toLowerCase();
   if (tag === 'select') {
@@ -703,7 +729,7 @@ export default function App() {
   };
 
   const handleExportTableCsv = () => {
-    if (scenarioTableData.length === 0) {
+    if (savedScenarios.length === 0) {
       if (typeof window !== 'undefined') {
         window.alert('No saved scenarios to export yet.');
       }
@@ -714,31 +740,51 @@ export default function App() {
       return;
     }
 
+    const scenarioData = savedScenarios.map((scenario) => {
+      const data = { ...DEFAULT_INPUTS, ...scenario.data };
+      const metrics = calculateEquity(data);
+      return { scenario, data, metrics };
+    });
+
+    const inputKeys = new Set();
+    const metricKeys = new Set();
+
+    scenarioData.forEach(({ data, metrics }) => {
+      Object.keys(data || {}).forEach((key) => inputKeys.add(key));
+      Object.keys(metrics || {}).forEach((key) => metricKeys.add(key));
+    });
+
+    const sortedInputKeys = Array.from(inputKeys).sort();
+    const sortedMetricKeys = Array.from(metricKeys).sort();
+
     const header = [
-      'Scenario',
-      'Saved at',
-      'Total cash in',
-      'Cash flow (after tax)',
-      'Mortgage payment (monthly)',
-      'Yield on cost',
-      'Property net after rental tax',
-      'Exit year',
+      'scenario_id',
+      'scenario_name',
+      'saved_at_iso',
+      ...sortedInputKeys.map((key) => `input_${key}`),
+      ...sortedMetricKeys.map((key) => `metric_${key}`),
     ];
 
-    const rows = scenarioTableData.map(({ scenario, metrics }) => [
-      scenario.name ?? '',
-      friendlyDateTime(scenario.savedAt),
-      currency(metrics.cashIn),
-      currency(metrics.cashflowYear1AfterTax),
-      currency(metrics.mortgage),
-      formatPercent(metrics.yoc),
-      currency(metrics.propertyNetWealthAfterTax),
-      metrics.exitYear,
-    ]);
+    const rows = scenarioData.map(({ scenario, data, metrics }) => {
+      const row = [
+        scenario.id ?? '',
+        scenario.name ?? '',
+        scenario.savedAt ? new Date(scenario.savedAt).toISOString() : '',
+      ];
+      sortedInputKeys.forEach((key) => {
+        row.push(normaliseForCsv(data?.[key]));
+      });
+      sortedMetricKeys.forEach((key) => {
+        row.push(normaliseForCsv(metrics?.[key]));
+      });
+      return row;
+    });
 
-    const csvContent = [header, ...rows]
+    const csvBody = [header, ...rows]
       .map((row) => row.map((value) => csvEscape(value)).join(','))
       .join('\n');
+
+    const csvContent = `\ufeff${csvBody}`;
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
