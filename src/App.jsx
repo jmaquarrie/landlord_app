@@ -17,6 +17,33 @@ const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
 
+const DEFAULT_INPUTS = {
+  purchasePrice: 250000,
+  depositPct: 0.25,
+  closingCostsPct: 0.01,
+  renovationCost: 0,
+  interestRate: 0.055,
+  mortgageYears: 30,
+  loanType: 'repayment',
+  monthlyRent: 1400,
+  vacancyPct: 0.05,
+  mgmtPct: 0.1,
+  repairsPct: 0.08,
+  insurancePerYear: 500,
+  otherOpexPerYear: 300,
+  annualAppreciation: 0.03,
+  rentGrowth: 0.02,
+  exitYear: 10,
+  sellingCostsPct: 0.02,
+  discountRate: 0.07,
+  buyerType: 'individual',
+  propertiesOwned: 0,
+  indexFundGrowth: DEFAULT_INDEX_GROWTH,
+  firstTimeBuyer: false,
+  incomePerson1: 50000,
+  incomePerson2: 30000,
+};
+
 const roundTo = (value, decimals = 2) => {
   if (!Number.isFinite(value)) return 0;
   const factor = Math.pow(10, decimals);
@@ -162,36 +189,222 @@ const friendlyDateTime = (iso) => {
   }
 };
 
-export default function App() {
-  const [inputs, setInputs] = useState({
-    purchasePrice: 250000,
-    depositPct: 0.25,
-    closingCostsPct: 0.01,
-    renovationCost: 0,
-    interestRate: 0.055,
-    mortgageYears: 30,
-    loanType: 'repayment',
-    monthlyRent: 1400,
-    vacancyPct: 0.05,
-    mgmtPct: 0.1,
-    repairsPct: 0.08,
-    insurancePerYear: 500,
-    otherOpexPerYear: 300,
-    annualAppreciation: 0.03,
-    rentGrowth: 0.02,
-    exitYear: 10,
-    sellingCostsPct: 0.02,
-    discountRate: 0.07,
-    buyerType: 'individual',
-    propertiesOwned: 0,
-    indexFundGrowth: DEFAULT_INDEX_GROWTH,
-    firstTimeBuyer: false,
-    incomePerson1: 50000,
-    incomePerson2: 30000,
+function calculateEquity(rawInputs) {
+  const inputs = { ...DEFAULT_INPUTS, ...rawInputs };
+
+  const stampDuty = calcStampDuty(
+    inputs.purchasePrice,
+    inputs.buyerType,
+    inputs.propertiesOwned,
+    inputs.firstTimeBuyer
+  );
+
+  const deposit = inputs.purchasePrice * inputs.depositPct;
+  const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
+  const closing = otherClosing + stampDuty;
+
+  const loan = inputs.purchasePrice - deposit;
+  const mortgageMonthly =
+    inputs.loanType === 'interest_only'
+      ? (loan * inputs.interestRate) / 12
+      : monthlyMortgagePayment({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears });
+
+  const baseIncome1 = inputs.incomePerson1 ?? 0;
+  const baseIncome2 = inputs.incomePerson2 ?? 0;
+
+  const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
+  const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
+  const monthlyRate = inputs.interestRate / 12;
+  let balance = loan;
+  const totalMonths = inputs.exitYear * 12;
+
+  for (let month = 1; month <= totalMonths; month++) {
+    const yearIndex = Math.ceil(month / 12) - 1;
+    if (yearIndex >= annualDebtService.length) break;
+
+    if (inputs.loanType !== 'interest_only' && (month > inputs.mortgageYears * 12 || balance <= 0)) {
+      break;
+    }
+
+    const interestPayment = balance * monthlyRate;
+    let payment =
+      inputs.loanType === 'interest_only'
+        ? balance * monthlyRate
+        : mortgageMonthly;
+
+    if (!Number.isFinite(payment)) payment = 0;
+
+    let principalPaid = inputs.loanType === 'interest_only' ? 0 : payment - interestPayment;
+
+    if (inputs.loanType !== 'interest_only') {
+      if (principalPaid > balance) {
+        principalPaid = balance;
+        payment = interestPayment + principalPaid;
+      }
+      balance = Math.max(0, balance - principalPaid);
+    }
+
+    annualInterest[yearIndex] += interestPayment;
+    annualDebtService[yearIndex] += payment;
+  }
+
+  const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
+  const variableOpex = inputs.monthlyRent * 12 * (inputs.mgmtPct + inputs.repairsPct);
+  const fixedOpex = inputs.insurancePerYear + inputs.otherOpexPerYear;
+  const opexYear1 = variableOpex + fixedOpex;
+  const noiYear1 = grossRentYear1 - (variableOpex + fixedOpex);
+  const debtServiceYear1 = annualDebtService[0] ?? mortgageMonthly * 12;
+  const cashflowYear1 = noiYear1 - debtServiceYear1;
+
+  const cap = noiYear1 / inputs.purchasePrice;
+  const cashIn = deposit + closing + inputs.renovationCost;
+  const coc = cashflowYear1 / cashIn;
+  const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
+
+  const months = Math.min(inputs.exitYear * 12, inputs.mortgageYears * 12);
+  const remaining =
+    inputs.loanType === 'interest_only'
+      ? loan
+      : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: months });
+
+  const futureValue = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, inputs.exitYear);
+  const sellingCosts = futureValue * inputs.sellingCostsPct;
+
+  const cf = [];
+  const initialOutlay = -cashIn;
+  cf.push(initialOutlay);
+
+  let rent = inputs.monthlyRent * 12;
+  let cumulativeCash = 0;
+  let exitCumCash = 0;
+  let exitCumCashAfterTax = 0;
+  let exitNetSaleProceeds = 0;
+  let indexVal = cashIn;
+  let cumulativeTax = 0;
+
+  const chart = [];
+  chart.push({
+    year: 0,
+    value: inputs.purchasePrice,
+    valuePlusRent: inputs.purchasePrice,
+    propertyAfterTax: inputs.purchasePrice,
+    indexFund: indexVal,
   });
+
+  const propertyTaxes = [];
+  const indexGrowth = Number.isFinite(inputs.indexFundGrowth) ? inputs.indexFundGrowth : DEFAULT_INDEX_GROWTH;
+
+  for (let y = 1; y <= inputs.exitYear; y++) {
+    const gross = rent * (1 - inputs.vacancyPct);
+    const varOpex = rent * (inputs.mgmtPct + inputs.repairsPct);
+    const fixed = inputs.insurancePerYear + inputs.otherOpexPerYear;
+    const noi = gross - (varOpex + fixed);
+    const debtService = annualDebtService[y - 1] ?? 0;
+    const cash = noi - debtService;
+    cumulativeCash += cash;
+
+    const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
+    const taxableProfit = noi - interestPaid;
+    const share = taxableProfit / 2;
+    const taxOwnerA = calcIncomeTax(baseIncome1 + share) - calcIncomeTax(baseIncome1);
+    const taxOwnerB = calcIncomeTax(baseIncome2 + share) - calcIncomeTax(baseIncome2);
+    const propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
+    propertyTaxes.push(propertyTax);
+    cumulativeTax += propertyTax;
+
+    if (y === inputs.exitYear) {
+      const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
+      const sell = fv * inputs.sellingCostsPct;
+      const rem =
+        inputs.loanType === 'interest_only'
+          ? loan
+          : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
+      const netSaleProceeds = fv - sell - rem;
+      cf.push(cash + netSaleProceeds);
+      exitCumCash = cumulativeCash;
+      exitCumCashAfterTax = cumulativeCash - cumulativeTax;
+      exitNetSaleProceeds = netSaleProceeds;
+    } else {
+      cf.push(cash);
+    }
+
+    const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
+    indexVal = indexVal * (1 + indexGrowth);
+    chart.push({
+      year: y,
+      value: vt,
+      valuePlusRent: vt + cumulativeCash,
+      propertyAfterTax: vt + cumulativeCash - cumulativeTax,
+      indexFund: indexVal,
+    });
+
+    rent *= 1 + inputs.rentGrowth;
+  }
+
+  const npv10 = npv(inputs.discountRate, cf);
+  const score = scoreDeal({ cap, coc, dscr, npv10, cashflowYear1 });
+
+  const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
+  const propertyGrossWealthAtExit = futureValue + exitCumCash;
+  const wealthDelta = propertyNetWealthAtExit - indexVal;
+  const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
+  const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
+  const propertyNetWealthAfterTax = propertyNetWealthAtExit - totalPropertyTax;
+  const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
+  const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
+  const propertyTaxYear1 = propertyTaxes[0] ?? 0;
+  const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
+
+  return {
+    deposit,
+    stampDuty,
+    otherClosing,
+    closing,
+    loan,
+    mortgage: mortgageMonthly,
+    grossRentYear1,
+    variableOpex,
+    fixedOpex,
+    opexYear1,
+    debtServiceYear1,
+    noiYear1,
+    cashflowYear1,
+    cashflowYear1AfterTax,
+    cap,
+    coc,
+    dscr,
+    remaining,
+    futureValue,
+    sellingCosts,
+    npv10,
+    score,
+    cf,
+    chart,
+    cashIn,
+    projectCost: inputs.purchasePrice + closing + inputs.renovationCost,
+    yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
+    indexValEnd: indexVal,
+    exitCumCash,
+    exitCumCashAfterTax,
+    exitNetSaleProceeds,
+    propertyNetWealthAtExit,
+    propertyGrossWealthAtExit,
+    wealthDelta,
+    wealthDeltaPct,
+    totalPropertyTax,
+    propertyTaxes,
+    propertyNetWealthAfterTax,
+    wealthDeltaAfterTax,
+    wealthDeltaAfterTaxPct,
+  };
+}
+
+export default function App() {
+  const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS }));
   const [savedScenarios, setSavedScenarios] = useState([]);
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
+  const [showTableModal, setShowTableModal] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -219,212 +432,23 @@ export default function App() {
     }
   }, [savedScenarios]);
 
-  const equity = useMemo(() => {
-    const stampDuty = calcStampDuty(
-      inputs.purchasePrice,
-      inputs.buyerType,
-      inputs.propertiesOwned,
-      inputs.firstTimeBuyer
-    );
+  const equity = useMemo(() => calculateEquity(inputs), [inputs]);
 
-    const deposit = inputs.purchasePrice * inputs.depositPct;
-    const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
-    const closing = otherClosing + stampDuty;
+  const scenarioTableData = useMemo(
+    () =>
+      savedScenarios.map((scenario) => ({
+        scenario,
+        metrics: calculateEquity({ ...DEFAULT_INPUTS, ...scenario.data }),
+      })),
+    [savedScenarios]
+  );
 
-    const loan = inputs.purchasePrice - deposit;
-    const mortgageMonthly =
-      inputs.loanType === 'interest_only'
-        ? (loan * inputs.interestRate) / 12
-        : monthlyMortgagePayment({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears });
-
-    const baseIncome1 = inputs.incomePerson1 ?? 0;
-    const baseIncome2 = inputs.incomePerson2 ?? 0;
-
-    const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
-    const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
-    const monthlyRate = inputs.interestRate / 12;
-    let balance = loan;
-    const totalMonths = inputs.exitYear * 12;
-
-    for (let month = 1; month <= totalMonths; month++) {
-      const yearIndex = Math.ceil(month / 12) - 1;
-      if (yearIndex >= annualDebtService.length) break;
-
-      if (inputs.loanType !== 'interest_only' && (month > inputs.mortgageYears * 12 || balance <= 0)) {
-        break;
-      }
-
-      const interestPayment = balance * monthlyRate;
-      let payment =
-        inputs.loanType === 'interest_only'
-          ? balance * monthlyRate
-          : mortgageMonthly;
-
-      if (!Number.isFinite(payment)) payment = 0;
-
-      let principalPaid = inputs.loanType === 'interest_only' ? 0 : payment - interestPayment;
-
-      if (inputs.loanType !== 'interest_only') {
-        if (principalPaid > balance) {
-          principalPaid = balance;
-          payment = interestPayment + principalPaid;
-        }
-        balance = Math.max(0, balance - principalPaid);
-      }
-
-      annualInterest[yearIndex] += interestPayment;
-      annualDebtService[yearIndex] += payment;
-    }
-
-    const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
-    const variableOpex = inputs.monthlyRent * 12 * (inputs.mgmtPct + inputs.repairsPct);
-    const fixedOpex = inputs.insurancePerYear + inputs.otherOpexPerYear;
-    const opexYear1 = variableOpex + fixedOpex;
-    const noiYear1 = grossRentYear1 - (variableOpex + fixedOpex);
-    const debtServiceYear1 = annualDebtService[0] ?? mortgageMonthly * 12;
-    const cashflowYear1 = noiYear1 - debtServiceYear1;
-
-    const cap = noiYear1 / inputs.purchasePrice;
-    const cashIn = deposit + closing + inputs.renovationCost;
-    const coc = cashflowYear1 / cashIn;
-    const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
-
-    const months = Math.min(inputs.exitYear * 12, inputs.mortgageYears * 12);
-    const remaining =
-      inputs.loanType === 'interest_only'
-        ? loan
-        : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: months });
-
-    const futureValue = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, inputs.exitYear);
-    const sellingCosts = futureValue * inputs.sellingCostsPct;
-
-    const cf = [];
-    const initialOutlay = -cashIn;
-    cf.push(initialOutlay);
-
-    let rent = inputs.monthlyRent * 12;
-    let cumulativeCash = 0;
-    let exitCumCash = 0;
-    let exitCumCashAfterTax = 0;
-    let exitNetSaleProceeds = 0;
-    let indexVal = cashIn;
-    let cumulativeTax = 0;
-
-    const chart = [];
-    chart.push({
-      year: 0,
-      value: inputs.purchasePrice,
-      valuePlusRent: inputs.purchasePrice,
-      propertyAfterTax: inputs.purchasePrice,
-      indexFund: indexVal,
-    });
-
-    const propertyTaxes = [];
-
-    for (let y = 1; y <= inputs.exitYear; y++) {
-      const gross = rent * (1 - inputs.vacancyPct);
-      const varOpex = rent * (inputs.mgmtPct + inputs.repairsPct);
-      const fixed = inputs.insurancePerYear + inputs.otherOpexPerYear;
-      const noi = gross - (varOpex + fixed);
-      const debtService = annualDebtService[y - 1] ?? 0;
-      const cash = noi - debtService;
-      cumulativeCash += cash;
-
-      const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
-      const taxableProfit = noi - interestPaid;
-      const share = taxableProfit / 2;
-      const taxOwnerA = calcIncomeTax(baseIncome1 + share) - calcIncomeTax(baseIncome1);
-      const taxOwnerB = calcIncomeTax(baseIncome2 + share) - calcIncomeTax(baseIncome2);
-      const propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
-      propertyTaxes.push(propertyTax);
-      cumulativeTax += propertyTax;
-
-      if (y === inputs.exitYear) {
-        const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
-        const sell = fv * inputs.sellingCostsPct;
-        const rem =
-          inputs.loanType === 'interest_only'
-            ? loan
-            : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
-        const netSaleProceeds = fv - sell - rem;
-        cf.push(cash + netSaleProceeds);
-        exitCumCash = cumulativeCash;
-        exitCumCashAfterTax = cumulativeCash - cumulativeTax;
-        exitNetSaleProceeds = netSaleProceeds;
-      } else {
-        cf.push(cash);
-      }
-
-      const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
-      indexVal = indexVal * (1 + inputs.indexFundGrowth);
-      chart.push({
-        year: y,
-        value: vt,
-        valuePlusRent: vt + cumulativeCash,
-        propertyAfterTax: vt + cumulativeCash - cumulativeTax,
-        indexFund: indexVal,
-      });
-
-      rent *= 1 + inputs.rentGrowth;
-    }
-
-    const npv10 = npv(inputs.discountRate, cf);
-    const score = scoreDeal({ cap, coc, dscr, npv10, cashflowYear1 });
-
-    const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
-    const propertyGrossWealthAtExit = futureValue + exitCumCash;
-    const wealthDelta = propertyNetWealthAtExit - indexVal;
-    const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
-    const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
-    const propertyNetWealthAfterTax = propertyNetWealthAtExit - totalPropertyTax;
-    const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
-    const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
-    const propertyTaxYear1 = propertyTaxes[0] ?? 0;
-    const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
-
-    return {
-      deposit,
-      stampDuty,
-      otherClosing,
-      closing,
-      loan,
-      mortgage: mortgageMonthly,
-      grossRentYear1,
-      variableOpex,
-      fixedOpex,
-      opexYear1,
-      debtServiceYear1,
-      noiYear1,
-      cashflowYear1,
-      cashflowYear1AfterTax,
-      cap,
-      coc,
-      dscr,
-      remaining,
-      futureValue,
-      sellingCosts,
-      npv10,
-      score,
-      cf,
-      chart,
-      cashIn,
-      projectCost: inputs.purchasePrice + closing + inputs.renovationCost,
-      yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
-      indexValEnd: indexVal,
-      exitCumCash,
-      exitCumCashAfterTax,
-      exitNetSaleProceeds,
-      propertyNetWealthAtExit,
-      propertyGrossWealthAtExit,
-      wealthDelta,
-      wealthDeltaPct,
-      totalPropertyTax,
-      propertyTaxes,
-      propertyNetWealthAfterTax,
-      wealthDeltaAfterTax,
-      wealthDeltaAfterTaxPct,
-    };
-  }, [inputs]);
+  const handlePrint = () => {
+    if (typeof window === 'undefined') return;
+    setShowLoadPanel(false);
+    setShowTableModal(false);
+    window.print();
+  };
 
   const onNum = (key, value, decimals = 2) => {
     setInputs((prev) => {
@@ -512,11 +536,47 @@ export default function App() {
     setShowLoadPanel(false);
   };
 
+  const handleRenameScenario = (id) => {
+    if (typeof window === 'undefined') return;
+    const scenario = savedScenarios.find((item) => item.id === id);
+    if (!scenario) return;
+    const nextName = window.prompt('Rename scenario', scenario.name);
+    if (nextName === null) return;
+    const trimmed = nextName.trim();
+    if (trimmed === '') return;
+    setSavedScenarios((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item))
+    );
+  };
+
+  const handleDeleteScenario = (id) => {
+    if (typeof window !== 'undefined') {
+      const confirmDelete = window.confirm('Delete this saved scenario?');
+      if (!confirmDelete) return;
+    }
+    setSavedScenarios((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      if (selectedScenarioId === id) {
+        setSelectedScenarioId(next[0]?.id ?? '');
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto max-w-6xl px-4 py-6">
-        <header className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Property Forecaster</h1>
+        <header className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Property Forecaster</h1>
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              🖨️ Print
+            </button>
+          </div>
           <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">
             <div
               className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}
@@ -768,16 +828,6 @@ export default function App() {
                 <Line label="Property net (proceeds + cashflows)" value={currency(equity.propertyNetWealthAtExit)} />
                 <Line label="Property net after rental tax" value={currency(equity.propertyNetWealthAfterTax)} />
                 <Line label="Rental income tax (cumulative)" value={currency(equity.totalPropertyTax)} />
-                <hr className="my-2" />
-                <div className="text-sm">
-                  {equity.propertyNetWealthAtExit > equity.indexValEnd ? (
-                    <span className="rounded bg-green-100 px-2 py-1 text-green-700">Property (net) outperforms index</span>
-                  ) : equity.propertyNetWealthAtExit < equity.indexValEnd ? (
-                    <span className="rounded bg-amber-100 px-2 py-1 text-amber-700">Index fund outperforms property (net)</span>
-                  ) : (
-                    <span className="rounded bg-slate-100 px-2 py-1 text-slate-700">Roughly equal</span>
-                  )}
-                </div>
                 <div className="mt-2 text-xs text-slate-600">
                   {equity.propertyNetWealthAfterTax > equity.indexValEnd
                     ? 'After rental tax, property (net) still leads the index.'
@@ -836,16 +886,23 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleSaveScenario}
-                  className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700"
+                  className="no-print rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700"
                 >
                   Save current scenario
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowLoadPanel((prev) => !prev)}
-                  className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700"
+                  className="no-print rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700"
                 >
                   {showLoadPanel ? 'Close saved scenarios' : 'Load saved scenario'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowTableModal(true)}
+                  className="no-print rounded-full bg-slate-800 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+                >
+                  Table view
                 </button>
               </div>
 
@@ -872,15 +929,36 @@ export default function App() {
                       <button
                         type="button"
                         onClick={handleLoadScenario}
-                        className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+                        className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
                       >
                         Load selected scenario
                       </button>
                       <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
                         {savedScenarios.map((scenario) => (
-                          <div key={`${scenario.id}-meta`} className="flex flex-col gap-1 px-3 py-2 text-[11px] text-slate-600">
-                            <span className="font-semibold text-slate-700">{scenario.name}</span>
-                            <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                          <div
+                            key={`${scenario.id}-meta`}
+                            className="flex flex-col gap-2 px-3 py-2 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
+                          >
+                            <div className="flex flex-col">
+                              <span className="font-semibold text-slate-700">{scenario.name}</span>
+                              <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                            </div>
+                            <div className="no-print flex items-center gap-2 text-[11px]">
+                              <button
+                                type="button"
+                                onClick={() => handleRenameScenario(scenario.id)}
+                                className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
+                              >
+                                Rename
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteScenario(scenario.id)}
+                                className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -896,6 +974,57 @@ export default function App() {
           Built for quick, sensible go/no‑go decisions — refine in a full spreadsheet before offering.
         </footer>
       </div>
+
+      {showTableModal && (
+        <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+          <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+              <h2 className="text-base font-semibold text-slate-800">Saved scenarios overview</h2>
+              <button
+                type="button"
+                onClick={() => setShowTableModal(false)}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="overflow-auto">
+              {scenarioTableData.length === 0 ? (
+                <p className="px-5 py-6 text-sm text-slate-600">No scenarios saved yet.</p>
+              ) : (
+                <table className="min-w-full divide-y divide-slate-200 text-sm">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th className="px-4 py-2 text-left font-semibold">Scenario</th>
+                      <th className="px-4 py-2 text-left font-semibold">Saved</th>
+                      <th className="px-4 py-2 text-right font-semibold">Cap rate</th>
+                      <th className="px-4 py-2 text-right font-semibold">Yield on cost</th>
+                      <th className="px-4 py-2 text-right font-semibold">Cash-on-cash</th>
+                      <th className="px-4 py-2 text-right font-semibold">DSCR</th>
+                      <th className="px-4 py-2 text-right font-semibold">NPV (10y)</th>
+                      <th className="px-4 py-2 text-right font-semibold">Year 1 cash flow</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {scenarioTableData.map(({ scenario, metrics }) => (
+                      <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
+                        <td className="px-4 py-2 font-semibold text-slate-800">{scenario.name}</td>
+                        <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.cap)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.yoc)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.coc)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{metrics.dscr > 0 ? metrics.dscr.toFixed(2) : '—'}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.npv10)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashflowYear1)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
