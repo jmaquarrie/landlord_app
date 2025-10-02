@@ -563,6 +563,7 @@ export default function App() {
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
   const [capturedPreview, setCapturedPreview] = useState(null);
+  const [livePreviewUrl, setLivePreviewUrl] = useState('');
   const [captureStatus, setCaptureStatus] = useState('idle');
   const [captureError, setCaptureError] = useState('');
   const [collapsedSections, setCollapsedSections] = useState({
@@ -699,6 +700,9 @@ export default function App() {
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
   const hasPropertyUrl = normalizedPropertyUrl !== '';
+  const isLivePreviewActive = livePreviewUrl !== '';
+  const hasCapturedSnapshot = Boolean(capturedPreview);
+  const showListingPreview = isLivePreviewActive || hasCapturedSnapshot;
 
   const handlePrint = () => {
     if (typeof window === 'undefined') return;
@@ -852,6 +856,7 @@ export default function App() {
       setCaptureError('');
       setCaptureStatus('idle');
       setCapturedPreview(null);
+      setLivePreviewUrl('');
     }
   };
   const onBuyerType = (value) =>
@@ -974,6 +979,7 @@ export default function App() {
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setShowLoadPanel(false);
     setCapturedPreview(scenario.preview ?? null);
+    setLivePreviewUrl('');
     setCaptureStatus('idle');
     setCaptureError('');
   };
@@ -983,21 +989,32 @@ export default function App() {
     if (!rawUrl) return;
     const normalizedUrl = ensureAbsoluteUrl(rawUrl);
     if (!normalizedUrl) return;
+    setCaptureStatus('idle');
+    setCaptureError('');
+    setCapturedPreview(null);
+    setLivePreviewUrl(normalizedUrl);
+  };
+
+  const handleTakeSnapshot = () => {
+    const sourceUrl = (livePreviewUrl || ensureAbsoluteUrl(inputs.propertyUrl ?? '')) ?? '';
+    if (!sourceUrl) return;
     const timestamp = Date.now();
-    const encodedTarget = encodeURI(normalizedUrl);
+    const encodedTarget = encodeURI(sourceUrl);
     const captureBase = `${SCREENSHOT_SERVICE_BASE}/${encodedTarget}`;
     const captureSrc = captureBase.includes('?')
       ? `${captureBase}&cacheBust=${timestamp}`
       : `${captureBase}?cacheBust=${timestamp}`;
     setCaptureStatus('loading');
     setCaptureError('');
+
     if (typeof Image === 'undefined') {
       setCapturedPreview({
-        originalUrl: normalizedUrl,
+        originalUrl: sourceUrl,
         imageUrl: captureSrc,
         capturedAt: new Date().toISOString(),
       });
       setCaptureStatus('idle');
+      setLivePreviewUrl('');
       return;
     }
 
@@ -1005,11 +1022,12 @@ export default function App() {
     testImage.crossOrigin = 'anonymous';
     testImage.onload = () => {
       setCapturedPreview({
-        originalUrl: normalizedUrl,
+        originalUrl: sourceUrl,
         imageUrl: captureSrc,
         capturedAt: new Date().toISOString(),
       });
       setCaptureStatus('idle');
+      setLivePreviewUrl('');
     };
     testImage.onerror = () => {
       setCaptureStatus('idle');
@@ -1020,6 +1038,7 @@ export default function App() {
 
   const handleClearCapture = () => {
     setCapturedPreview(null);
+    setLivePreviewUrl('');
     setCaptureError('');
     setCaptureStatus('idle');
   };
@@ -1129,6 +1148,10 @@ export default function App() {
               </button>
             </div>
             <div className="space-y-1 text-[11px] leading-snug text-slate-500">
+              {livePreviewUrl ? (
+                <div>Live preview open below — use “Take snapshot” to save it.</div>
+              ) : null}
+              {captureStatus === 'loading' ? <div>Preparing snapshot…</div> : null}
               {capturedPreview?.capturedAt ? (
                 <div>Captured {friendlyDateTime(capturedPreview.capturedAt)}</div>
               ) : null}
@@ -1609,33 +1632,63 @@ export default function App() {
           </section>
         </div>
 
-        {capturedPreview ? (
+        {showListingPreview ? (
           <section className="mt-6">
             <div className="rounded-2xl bg-white p-3 shadow-sm" data-capture-placeholder>
               <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-800">Captured listing preview</h3>
-                  {capturedPreview.capturedAt ? (
-                    <p className="text-[11px] text-slate-500">Snapshot from {friendlyDateTime(capturedPreview.capturedAt)}</p>
+                  <h3 className="text-sm font-semibold text-slate-800">
+                    {isLivePreviewActive ? 'Listing preview (live)' : 'Captured listing preview'}
+                  </h3>
+                  {isLivePreviewActive ? (
+                    <p className="text-[11px] text-slate-500">
+                      Viewing the live listing below. Use “Take snapshot” to store it with this scenario.
+                    </p>
+                  ) : capturedPreview?.capturedAt ? (
+                    <p className="text-[11px] text-slate-500">
+                      Snapshot from {friendlyDateTime(capturedPreview.capturedAt)}
+                    </p>
+                  ) : null}
+                  {captureError && !isLivePreviewActive ? (
+                    <p className="text-[11px] text-rose-600">{captureError}</p>
                   ) : null}
                 </div>
-                <button
-                  type="button"
-                  onClick={handleClearCapture}
-                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-                >
-                  Clear capture
-                </button>
+                <div className="no-print flex flex-wrap items-center gap-2 text-[11px]">
+                  {isLivePreviewActive ? (
+                    <button
+                      type="button"
+                      onClick={handleTakeSnapshot}
+                      className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
+                      disabled={captureStatus === 'loading'}
+                    >
+                      {captureStatus === 'loading' ? 'Saving…' : 'Take snapshot'}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={handleClearCapture}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Clear capture
+                  </button>
+                </div>
               </div>
               <div
                 className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
-                style={{ minHeight: '48rem' }}
+                style={{ minHeight: '72rem' }}
               >
-                {captureError ? (
-                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-rose-600">
-                    {captureError}
+                {captureStatus === 'loading' ? (
+                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
+                    Capturing snapshot…
                   </div>
-                ) : (
+                ) : isLivePreviewActive ? (
+                  <iframe
+                    src={livePreviewUrl}
+                    title="Property listing preview"
+                    className="h-full w-full border-0"
+                    loading="lazy"
+                  />
+                ) : hasCapturedSnapshot && capturedPreview?.imageUrl ? (
                   <img
                     src={capturedPreview.imageUrl}
                     alt="Captured property listing"
@@ -1645,20 +1698,29 @@ export default function App() {
                     onError={() => {
                       setCaptureError('Preview image could not be loaded. Please try capturing again.');
                       setCapturedPreview(null);
+                      setLivePreviewUrl('');
                     }}
                   />
+                ) : captureError ? (
+                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-rose-600">
+                    {captureError}
+                  </div>
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
+                    No preview available yet. Enter a property URL and choose “Capture”.
+                  </div>
                 )}
               </div>
-              {capturedPreview.originalUrl ? (
+              {capturedPreview?.originalUrl || livePreviewUrl ? (
                 <p className="mt-2 text-[11px] text-slate-500">
                   Original listing:{' '}
                   <a
-                    href={capturedPreview.originalUrl}
+                    href={capturedPreview?.originalUrl ?? livePreviewUrl}
                     className="underline-offset-2 hover:underline"
                     target="_blank"
                     rel="noreferrer"
                   >
-                    {capturedPreview.originalUrl}
+                    {capturedPreview?.originalUrl ?? livePreviewUrl}
                   </a>
                 </p>
               ) : null}
