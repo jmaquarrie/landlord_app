@@ -44,6 +44,8 @@ const DEFAULT_INPUTS = {
   firstTimeBuyer: false,
   incomePerson1: 50000,
   incomePerson2: 30000,
+  reinvestIncome: false,
+  reinvestPct: 0.5,
 };
 
 const roundTo = (value, decimals = 2) => {
@@ -277,12 +279,16 @@ function calculateEquity(rawInputs) {
   cf.push(initialOutlay);
 
   let rent = inputs.monthlyRent * 12;
-  let cumulativeCash = 0;
+  let cumulativeCashPreTax = 0;
+  let cumulativeCashAfterTax = 0;
+  let cumulativeReinvested = 0;
   let exitCumCash = 0;
   let exitCumCashAfterTax = 0;
   let exitNetSaleProceeds = 0;
   let indexVal = cashIn;
-  let cumulativeTax = 0;
+  const reinvestShare = inputs.reinvestIncome
+    ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
+    : 0;
 
   const chart = [];
   chart.push({
@@ -303,7 +309,7 @@ function calculateEquity(rawInputs) {
     const noi = gross - (varOpex + fixed);
     const debtService = annualDebtService[y - 1] ?? 0;
     const cash = noi - debtService;
-    cumulativeCash += cash;
+    cumulativeCashPreTax += cash;
 
     const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
     const taxableProfit = noi - interestPaid;
@@ -312,7 +318,11 @@ function calculateEquity(rawInputs) {
     const taxOwnerB = calcIncomeTax(baseIncome2 + share) - calcIncomeTax(baseIncome2);
     const propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
     propertyTaxes.push(propertyTax);
-    cumulativeTax += propertyTax;
+    const afterTaxCash = cash - propertyTax;
+    cumulativeCashAfterTax += afterTaxCash;
+    const investableCash = Math.max(0, afterTaxCash);
+    const reinvestContribution = reinvestShare > 0 ? investableCash * reinvestShare : 0;
+    cumulativeReinvested += reinvestContribution;
 
     if (y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
@@ -323,8 +333,8 @@ function calculateEquity(rawInputs) {
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
       cf.push(cash + netSaleProceeds);
-      exitCumCash = cumulativeCash;
-      exitCumCashAfterTax = cumulativeCash - cumulativeTax;
+      exitCumCash = cumulativeCashPreTax - cumulativeReinvested;
+      exitCumCashAfterTax = cumulativeCashAfterTax - cumulativeReinvested;
       exitNetSaleProceeds = netSaleProceeds;
     } else {
       cf.push(cash);
@@ -332,11 +342,14 @@ function calculateEquity(rawInputs) {
 
     const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     indexVal = indexVal * (1 + indexGrowth);
+    indexVal += reinvestContribution;
+    const cumulativeCashPreTaxNet = cumulativeCashPreTax - cumulativeReinvested;
+    const cumulativeCashAfterTaxNet = cumulativeCashAfterTax - cumulativeReinvested;
     chart.push({
       year: y,
       value: vt,
-      valuePlusRent: vt + cumulativeCash,
-      propertyAfterTax: vt + cumulativeCash - cumulativeTax,
+      valuePlusRent: vt + cumulativeCashPreTaxNet,
+      propertyAfterTax: vt + cumulativeCashAfterTaxNet,
       indexFund: indexVal,
     });
 
@@ -351,7 +364,7 @@ function calculateEquity(rawInputs) {
   const wealthDelta = propertyNetWealthAtExit - indexVal;
   const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
   const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
-  const propertyNetWealthAfterTax = propertyNetWealthAtExit - totalPropertyTax;
+  const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTax;
   const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
   const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
   const propertyTaxYear1 = propertyTaxes[0] ?? 0;
@@ -394,6 +407,7 @@ function calculateEquity(rawInputs) {
     wealthDelta,
     wealthDeltaPct,
     totalPropertyTax,
+    totalReinvested: cumulativeReinvested,
     propertyTaxes,
     propertyNetWealthAfterTax,
     wealthDeltaAfterTax,
@@ -756,6 +770,29 @@ export default function App() {
                 {smallInput('exitYear', 'Exit year', 1)}
                 {pctInput('sellingCostsPct', 'Selling costs %')}
                 {pctInput('discountRate', 'Discount rate %', 0.001)}
+                <div className="col-span-2 rounded-xl border border-slate-200 p-3">
+                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(inputs.reinvestIncome)}
+                      onChange={(e) =>
+                        setInputs((prev) => ({
+                          ...prev,
+                          reinvestIncome: e.target.checked,
+                        }))
+                      }
+                    />
+                    <span>Reinvest after-tax cash flow into index fund</span>
+                  </label>
+                  {inputs.reinvestIncome && (
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 sm:items-center">
+                      {pctInput('reinvestPct', 'Reinvest % of after-tax cash flow')}
+                      <p className="text-[11px] text-slate-500">
+                        Only positive after-tax cash flows are reinvested and compound alongside the index fund baseline.
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
                 <p className="mt-2 text-[11px] text-slate-500">
                   SDLT model is simplified for England &amp; NI (residential bands + 5% higher-rate surcharge). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
