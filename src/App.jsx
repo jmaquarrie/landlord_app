@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -9,6 +9,8 @@ import {
   Legend,
   CartesianGrid,
 } from 'recharts';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
@@ -457,6 +459,7 @@ export default function App() {
     purchaseCosts: false,
     rentalCashflow: false,
   });
+  const pageRef = useRef(null);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
   const [syncStatus, setSyncStatus] = useState('idle');
@@ -579,6 +582,47 @@ export default function App() {
     setShowLoadPanel(false);
     setShowTableModal(false);
     window.print();
+  };
+
+  const handleExportPdf = async () => {
+    if (!pageRef.current) return;
+    setShowLoadPanel(false);
+    setShowTableModal(false);
+    const element = pageRef.current;
+    element.classList.add('exporting-pdf');
+    try {
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        windowWidth: element.scrollWidth,
+        windowHeight: element.scrollHeight,
+        backgroundColor: '#ffffff',
+      });
+      const imageData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imageAspect = canvas.width / canvas.height;
+      let renderWidth = pageWidth;
+      let renderHeight = renderWidth / imageAspect;
+      if (renderHeight > pageHeight) {
+        renderHeight = pageHeight;
+        renderWidth = renderHeight * imageAspect;
+      }
+      const offsetX = (pageWidth - renderWidth) / 2;
+      const offsetY = (pageHeight - renderHeight) / 2;
+      pdf.addImage(imageData, 'PNG', offsetX, offsetY, renderWidth, renderHeight);
+      const safeAddress = inputs.propertyAddress?.trim();
+      const filename = safeAddress ? `${safeAddress.replace(/\s+/g, '-').toLowerCase()}.pdf` : 'property-forecast.pdf';
+      pdf.save(filename);
+    } catch (error) {
+      console.error('PDF export failed:', error);
+      if (typeof window !== 'undefined') {
+        window.alert('Unable to export PDF. Please try again.');
+      }
+    } finally {
+      element.classList.remove('exporting-pdf');
+    }
   };
 
   const onNum = (key, value, decimals = 2) => {
@@ -738,7 +782,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div ref={pageRef} className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto max-w-6xl px-4">
         <div className="sticky top-0 z-30 -mx-4 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-slate-50/80 print:relative print:mx-0 print:border-0 print:bg-white">
           <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -750,6 +794,13 @@ export default function App() {
                 className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
               >
                 🖨️ Print
+              </button>
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
+              >
+                📄 Export PDF
               </button>
             </div>
             <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">

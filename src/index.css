@@ -6,6 +6,18 @@ body {
   @apply bg-slate-50 text-slate-900;
 }
 
+.exporting-pdf {
+  background: white !important;
+}
+
+.exporting-pdf .no-print {
+  display: none !important;
+}
+
+.exporting-pdf .sticky {
+  position: static !important;
+}
+
 @media print {
   @page {
     size: A4 landscape;
