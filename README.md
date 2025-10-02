@@ -18,3 +18,63 @@ npm run build
 ```
 
 > **Note:** The default styling relies on Tailwind CSS, which is compiled during the build step.
+
+## Scenario persistence
+
+By default, saved scenarios live in the browser's `localStorage`. They are automatically restored when the app reloads on the same device.
+
+Set a `VITE_SCENARIO_API_URL` environment variable to synchronise scenarios with a backend service. When provided, the app will:
+
+- `GET <VITE_SCENARIO_API_URL>/scenarios` on load to hydrate the UI.
+- `PUT <VITE_SCENARIO_API_URL>/scenarios` with the full array of scenarios whenever you add, rename, or delete a save.
+
+The expected JSON shape is an array of objects in the form:
+
+```json
+[
+  {
+    "id": "1707249960000-ab12cd",
+    "name": "Manchester duplex",
+    "savedAt": "2024-10-16T14:52:00.123Z",
+    "data": {
+      "propertyAddress": "123 Example Street, Manchester",
+      "propertyUrl": "https://example.com/listing/123",
+      "purchasePrice": 250000,
+      "depositPct": 0.25
+      // ...rest of the input model
+    }
+  }
+]
+```
+
+### Sample Node backend
+
+You can create a lightweight Express server to satisfy the API contract:
+
+```js
+import express from 'express';
+import cors from 'cors';
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+let scenarios = [];
+
+app.get('/scenarios', (req, res) => {
+  res.json(scenarios);
+});
+
+app.put('/scenarios', (req, res) => {
+  if (!Array.isArray(req.body)) {
+    return res.status(400).json({ error: 'Expected an array of scenarios' });
+  }
+  scenarios = req.body;
+  res.json({ ok: true, count: scenarios.length });
+});
+
+const port = process.env.PORT || 4000;
+app.listen(port, () => console.log(`Scenario API listening on ${port}`));
+```
+
+Deploy the server (for example on Render, Railway, or Vercel serverless functions) and expose its base URL via `VITE_SCENARIO_API_URL`. With that in place, your saved scenarios stay in sync across devices and networks.

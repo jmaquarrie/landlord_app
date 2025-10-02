@@ -13,6 +13,11 @@ import {
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
+const { VITE_SCENARIO_API_URL } = import.meta.env ?? {};
+const SCENARIO_API_URL =
+  typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
+    ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
+    : '';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
@@ -452,6 +457,10 @@ export default function App() {
     purchaseCosts: false,
     rentalCashflow: false,
   });
+  const remoteEnabled = Boolean(SCENARIO_API_URL);
+  const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
+  const [syncStatus, setSyncStatus] = useState('idle');
+  const [syncError, setSyncError] = useState('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -478,6 +487,81 @@ export default function App() {
       console.warn('Unable to persist saved scenarios:', error);
     }
   }, [savedScenarios]);
+
+  useEffect(() => {
+    if (!remoteEnabled) return;
+    let cancelled = false;
+
+    const loadRemoteScenarios = async () => {
+      setSyncStatus('loading');
+      setSyncError('');
+      try {
+        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, { method: 'GET' });
+        if (!response.ok) {
+          throw new Error(`Remote load failed with status ${response.status}`);
+        }
+        const payload = await response.json();
+        if (!Array.isArray(payload)) {
+          throw new Error('Remote response was not an array');
+        }
+        if (!cancelled) {
+          setSavedScenarios(payload);
+          setSelectedScenarioId(payload[0]?.id ?? '');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSyncError(error instanceof Error ? error.message : 'Unable to load remote scenarios');
+        }
+      } finally {
+        if (!cancelled) {
+          setSyncStatus('idle');
+          setRemoteHydrated(true);
+        }
+      }
+    };
+
+    loadRemoteScenarios();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [remoteEnabled]);
+
+  useEffect(() => {
+    if (!remoteEnabled || !remoteHydrated) return;
+    let cancelled = false;
+
+    const pushRemoteScenarios = async () => {
+      setSyncStatus('syncing');
+      try {
+        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(savedScenarios),
+        });
+        if (!response.ok) {
+          throw new Error(`Remote sync failed with status ${response.status}`);
+        }
+        if (!cancelled) {
+          setSyncError('');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSyncError(error instanceof Error ? error.message : 'Unable to sync scenarios');
+        }
+      } finally {
+        if (!cancelled) {
+          setSyncStatus('idle');
+        }
+      }
+    };
+
+    pushRemoteScenarios();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [savedScenarios, remoteEnabled, remoteHydrated]);
 
   const equity = useMemo(() => calculateEquity(inputs), [inputs]);
 
@@ -599,7 +683,13 @@ export default function App() {
     const nameInput = window.prompt('Name this scenario', defaultLabel);
     if (nameInput === null) return;
     const label = nameInput.trim() === '' ? defaultLabel : nameInput.trim();
-    const snapshot = JSON.parse(JSON.stringify(inputs));
+    const snapshot = JSON.parse(
+      JSON.stringify({
+        ...inputs,
+        propertyAddress: (inputs.propertyAddress ?? '').trim(),
+        propertyUrl: (inputs.propertyUrl ?? '').trim(),
+      })
+    );
     const scenario = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: label,
@@ -613,7 +703,7 @@ export default function App() {
   const handleLoadScenario = () => {
     const scenario = savedScenarios.find((item) => item.id === selectedScenarioId);
     if (!scenario) return;
-    setInputs((prev) => ({ ...prev, ...scenario.data }));
+    setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setShowLoadPanel(false);
   };
 
@@ -1026,9 +1116,26 @@ export default function App() {
             <div className="p-3">
               <h3 className="mb-2 text-sm font-semibold">Scenario history</h3>
               <p className="text-xs text-slate-600">
-                Save your current inputs and reload any previous scenario to compare different deals quickly. Scenarios are stored locally in
-                your browser.
+                Save your current inputs and reload any previous scenario to compare different deals quickly.
               </p>
+              {remoteEnabled ? (
+                <p
+                  className={`text-xs ${syncError ? 'text-rose-600' : 'text-slate-500'}`}
+                  role={syncError ? 'alert' : undefined}
+                >
+                  {syncStatus === 'loading'
+                    ? 'Loading remote scenarios…'
+                    : syncStatus === 'syncing'
+                    ? 'Syncing scenarios with the remote service…'
+                    : syncError
+                    ? `Remote sync issue: ${syncError}`
+                    : 'Remote sync active (set via VITE_SCENARIO_API_URL).'}
+                </p>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Scenarios are stored locally in your browser. Set VITE_SCENARIO_API_URL to sync with a backend service.
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
@@ -1089,6 +1196,19 @@ export default function App() {
                             <div className="flex flex-col">
                               <span className="font-semibold text-slate-700">{scenario.name}</span>
                               <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                              {scenario.data?.propertyAddress ? (
+                                <span className="text-slate-500">{scenario.data.propertyAddress}</span>
+                              ) : null}
+                              {scenario.data?.propertyUrl ? (
+                                <a
+                                  href={scenario.data.propertyUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-slate-500 underline-offset-2 hover:underline"
+                                >
+                                  View listing
+                                </a>
+                              ) : null}
                             </div>
                             <div className="no-print flex items-center gap-2 text-[11px]">
                               <button
