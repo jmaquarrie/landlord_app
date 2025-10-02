@@ -65,6 +65,41 @@ const roundTo = (value, decimals = 2) => {
 
 const formatPercent = (value) => `${roundTo(value * 100, 2).toFixed(2)}%`;
 
+const encodeSharePayload = (payload) => {
+  try {
+    const json = JSON.stringify(payload);
+    if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
+      return window.btoa(unescape(encodeURIComponent(json)));
+    }
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(json, 'utf8').toString('base64');
+    }
+  } catch (error) {
+    console.warn('Unable to encode share payload:', error);
+  }
+  return '';
+};
+
+const decodeSharePayload = (value) => {
+  if (!value) return null;
+  try {
+    let json = '';
+    if (typeof window !== 'undefined' && typeof window.atob === 'function') {
+      json = decodeURIComponent(escape(window.atob(value)));
+    } else if (typeof Buffer !== 'undefined') {
+      json = Buffer.from(value, 'base64').toString('utf8');
+    }
+    if (!json) return null;
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+  } catch (error) {
+    console.warn('Unable to decode share payload:', error);
+  }
+  return null;
+};
+
 const SCORE_TOOLTIPS = {
   overall:
     'Overall score combines cash-on-cash, cap rate, DSCR, NPV, and first-year cash flow. Higher is better (0-100).',
@@ -652,12 +687,34 @@ export default function App() {
     propertyNet: true,
     propertyNetAfterTax: true,
   });
+  const [shareNotice, setShareNotice] = useState('');
   const pageRef = useRef(null);
   const iframeRef = useRef(null);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    const encoded = url.searchParams.get('scenario');
+    if (!encoded) return;
+    const payload = decodeSharePayload(encoded);
+    if (payload && typeof payload === 'object' && payload.inputs) {
+      setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
+      setCapturedPreview(null);
+      setLivePreview(null);
+      setLivePreviewReady(false);
+      setCaptureStatus('idle');
+      setCaptureError('');
+      setShareNotice('Loaded shared scenario');
+    }
+    url.searchParams.delete('scenario');
+    const nextSearch = url.searchParams.toString();
+    const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
+    window.history.replaceState({}, document.title, nextUrl);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -723,6 +780,12 @@ export default function App() {
       cancelled = true;
     };
   }, [remoteEnabled]);
+
+  useEffect(() => {
+    if (!shareNotice || typeof window === 'undefined') return;
+    const timeout = window.setTimeout(() => setShareNotice(''), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [shareNotice]);
 
   useEffect(() => {
     if (!remoteEnabled || !remoteHydrated) return;
@@ -1087,6 +1150,31 @@ export default function App() {
     return { data: sanitizedInputs, preview: previewSnapshot };
   };
 
+  const handleShareScenario = async () => {
+    if (typeof window === 'undefined') return;
+    try {
+      const snapshot = buildScenarioSnapshot();
+      const payload = { inputs: snapshot.data };
+      const encoded = encodeSharePayload(payload);
+      if (!encoded) {
+        throw new Error('Unable to encode scenario');
+      }
+      const url = new URL(window.location.href);
+      url.searchParams.set('scenario', encoded);
+      const shareUrl = url.toString();
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+        setShareNotice('Share link copied to clipboard');
+      } else {
+        window.prompt('Copy this share link', shareUrl);
+        setShareNotice('Share link ready');
+      }
+    } catch (error) {
+      console.error('Unable to share scenario', error);
+      setShareNotice('Unable to create share link');
+    }
+  };
+
   const handleSaveScenario = () => {
     if (typeof window === 'undefined') return;
     const addressLabel = (inputs.propertyAddress ?? '').trim();
@@ -1376,7 +1464,17 @@ export default function App() {
               >
                 📄 Export PDF
               </button>
+              <button
+                type="button"
+                onClick={handleShareScenario}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50"
+              >
+                🔗 Share
+              </button>
             </div>
+            {shareNotice && (
+              <div className="text-xs font-medium text-emerald-600 md:self-end">{shareNotice}</div>
+            )}
             <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">
               <div
                 className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}
