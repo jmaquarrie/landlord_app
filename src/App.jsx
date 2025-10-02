@@ -459,6 +459,12 @@ export default function App() {
     purchaseCosts: false,
     rentalCashflow: false,
   });
+  const [activeSeries, setActiveSeries] = useState({
+    indexFund: true,
+    propertyGross: true,
+    propertyNet: true,
+    propertyNetAfterTax: true,
+  });
   const pageRef = useRef(null);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
@@ -653,6 +659,13 @@ export default function App() {
     setCollapsedSections((prev) => ({
       ...prev,
       [section]: !prev[section],
+    }));
+  };
+
+  const toggleSeries = (key) => {
+    setActiveSeries((prev) => ({
+      ...prev,
+      [key]: !(prev[key] !== false),
     }));
   };
 
@@ -1095,7 +1108,15 @@ export default function App() {
                       width={90}
                     />
                     <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
-                    <Legend />
+                    <Legend
+                      content={(props) => (
+                        <ChartLegend
+                          {...props}
+                          activeSeries={activeSeries}
+                          onToggle={toggleSeries}
+                        />
+                      )}
+                    />
                     <Area
                       type="monotone"
                       dataKey="indexFund"
@@ -1103,6 +1124,7 @@ export default function App() {
                       stroke="#f97316"
                       fill="rgba(249,115,22,0.2)"
                       strokeWidth={2}
+                      hide={!activeSeries.indexFund}
                     />
                     <Area
                       type="monotone"
@@ -1111,6 +1133,7 @@ export default function App() {
                       stroke="#2563eb"
                       fill="rgba(37,99,235,0.2)"
                       strokeWidth={2}
+                      hide={!activeSeries.propertyGross}
                     />
                     <Area
                       type="monotone"
@@ -1119,6 +1142,7 @@ export default function App() {
                       stroke="#16a34a"
                       fill="rgba(22,163,74,0.25)"
                       strokeWidth={2}
+                      hide={!activeSeries.propertyNet}
                     />
                     <Area
                       type="monotone"
@@ -1127,6 +1151,7 @@ export default function App() {
                       stroke="#9333ea"
                       fill="rgba(147,51,234,0.2)"
                       strokeWidth={2}
+                      hide={!activeSeries.propertyNetAfterTax}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -1355,6 +1380,37 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ChartLegend({ payload = [], activeSeries, onToggle }) {
+  if (!Array.isArray(payload) || payload.length === 0) {
+    return null;
+  }
+  return (
+    <div className="flex flex-wrap gap-3 text-[11px] font-medium text-slate-600">
+      {payload.map((entry) => {
+        const key = entry.dataKey ?? entry.value;
+        const isActive = activeSeries?.[key] !== false;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onToggle?.(key)}
+            className={`flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 transition ${
+              isActive ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'
+            }`}
+            aria-pressed={isActive}
+          >
+            <span
+              className="h-2.5 w-2.5 rounded-full"
+              style={{ backgroundColor: entry.color, opacity: isActive ? 1 : 0.3 }}
+            />
+            <span className="whitespace-nowrap">{entry.value}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
