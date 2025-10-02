@@ -441,6 +441,12 @@ export default function App() {
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
+  const [collapsedSections, setCollapsedSections] = useState({
+    buyerProfile: false,
+    householdIncome: false,
+    purchaseCosts: false,
+    rentalCashflow: false,
+  });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -509,6 +515,13 @@ export default function App() {
       buyerType: value,
       firstTimeBuyer: value === 'company' ? false : prev.firstTimeBuyer,
     }));
+
+  const toggleSection = (section) => {
+    setCollapsedSections((prev) => ({
+      ...prev,
+      [section]: !prev[section],
+    }));
+  };
 
   const pctInput = (k, label, step = 0.005) => (
     <div className="flex flex-col gap-1">
@@ -682,8 +695,11 @@ export default function App() {
             <div className="rounded-2xl bg-white p-3 shadow-sm">
               <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
 
-              <div className="mb-3 rounded-xl border border-slate-200 p-3">
-                <div className="mb-2 text-xs font-semibold text-slate-700">Buyer profile</div>
+              <CollapsibleSection
+                title="Buyer profile"
+                collapsed={collapsedSections.buyerProfile}
+                onToggle={() => toggleSection('buyerProfile')}
+              >
                 <div className="flex items-center gap-3 text-xs">
                   <label className="inline-flex items-center gap-2">
                     <input
@@ -701,7 +717,7 @@ export default function App() {
                       checked={inputs.buyerType === 'company'}
                       onChange={() => onBuyerType('company')}
                     />
-                    <span>Ltd company</span>
+                  <span>Ltd company</span>
                   </label>
                 </div>
                 {inputs.buyerType === 'individual' && (
@@ -732,10 +748,13 @@ export default function App() {
                     Company purchases are treated here at higher rates (+5% surcharge on the total price).
                   </div>
                 )}
-              </div>
+              </CollapsibleSection>
 
-              <div className="mb-3 rounded-xl border border-slate-200 p-3">
-                <div className="mb-2 text-xs font-semibold text-slate-700">Household income</div>
+              <CollapsibleSection
+                title="Household income"
+                collapsed={collapsedSections.householdIncome}
+                onToggle={() => toggleSection('householdIncome')}
+              >
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {moneyInput('incomePerson1', 'Owner A income (£)', 1000)}
                   {moneyInput('incomePerson2', 'Owner B income (£)', 1000)}
@@ -743,80 +762,95 @@ export default function App() {
                 <p className="mt-1 text-[11px] text-slate-500">
                   Property profits are split 50/50 between two owners to approximate yearly income tax on rental earnings.
                 </p>
-              </div>
+              </CollapsibleSection>
 
-              <div className="grid grid-cols-2 gap-2">
-                {moneyInput('purchasePrice', 'Purchase price (£)')}
-                {pctInput('depositPct', 'Deposit %')}
-                {pctInput('closingCostsPct', 'Other closing costs %')}
-                {moneyInput('renovationCost', 'Renovation (upfront) £', 500)}
-                {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
-                {smallInput('mortgageYears', 'Mortgage term (years)')}
+              <CollapsibleSection
+                title="Purchase costs"
+                collapsed={collapsedSections.purchaseCosts}
+                onToggle={() => toggleSection('purchaseCosts')}
+              >
+                <div className="grid grid-cols-2 gap-2">
+                  {moneyInput('purchasePrice', 'Purchase price (£)')}
+                  {pctInput('depositPct', 'Deposit %')}
+                  {pctInput('closingCostsPct', 'Other closing costs %')}
+                  {moneyInput('renovationCost', 'Renovation (upfront) £', 500)}
+                  {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
+                  {smallInput('mortgageYears', 'Mortgage term (years)')}
 
-                <div className="col-span-2">
-                  <div className="mb-1 text-xs font-semibold text-slate-700">Loan type</div>
-                  <div className="flex gap-4 text-xs">
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="radio"
-                        name="loanType"
-                        checked={inputs.loanType === 'repayment'}
-                        onChange={() => setInputs((s) => ({ ...s, loanType: 'repayment' }))}
-                      />
-                      <span>Capital repayment</span>
-                    </label>
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="radio"
-                        name="loanType"
-                        checked={inputs.loanType === 'interest_only'}
-                        onChange={() => setInputs((s) => ({ ...s, loanType: 'interest_only' }))}
-                      />
-                      <span>Interest‑only</span>
-                    </label>
-                  </div>
-                  <div className="mt-1 text-[11px] text-slate-500">Interest‑only keeps the loan balance unchanged until exit; debt service = interest only.</div>
-                </div>
-
-                {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
-                {pctInput('vacancyPct', 'Vacancy %')}
-                {pctInput('mgmtPct', 'Management %')}
-                {pctInput('repairsPct', 'Repairs/CapEx %')}
-                {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
-                {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
-                {pctInput('annualAppreciation', 'Appreciation %')}
-                {pctInput('rentGrowth', 'Rent growth %')}
-                {pctInput('indexFundGrowth', 'Index fund growth %')}
-                {smallInput('exitYear', 'Exit year', 1)}
-                {pctInput('sellingCostsPct', 'Selling costs %')}
-                {pctInput('discountRate', 'Discount rate %', 0.001)}
-                <div className="col-span-2 rounded-xl border border-slate-200 p-3">
-                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(inputs.reinvestIncome)}
-                      onChange={(e) =>
-                        setInputs((prev) => ({
-                          ...prev,
-                          reinvestIncome: e.target.checked,
-                        }))
-                      }
-                    />
-                    <span>Reinvest after-tax cash flow into index fund</span>
-                  </label>
-                  {inputs.reinvestIncome && (
-                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 sm:items-center">
-                      {pctInput('reinvestPct', 'Reinvest % of after-tax cash flow')}
-                      <p className="text-[11px] text-slate-500">
-                        Only positive after-tax cash flows are reinvested and compound alongside the index fund baseline.
-                      </p>
+                  <div className="col-span-2">
+                    <div className="mb-1 text-xs font-semibold text-slate-700">Loan type</div>
+                    <div className="flex gap-4 text-xs">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="loanType"
+                          checked={inputs.loanType === 'repayment'}
+                          onChange={() => setInputs((s) => ({ ...s, loanType: 'repayment' }))}
+                        />
+                        <span>Capital repayment</span>
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="loanType"
+                          checked={inputs.loanType === 'interest_only'}
+                          onChange={() => setInputs((s) => ({ ...s, loanType: 'interest_only' }))}
+                        />
+                        <span>Interest‑only</span>
+                      </label>
                     </div>
-                  )}
+                    <div className="mt-1 text-[11px] text-slate-500">Interest‑only keeps the loan balance unchanged until exit; debt service = interest only.</div>
+                  </div>
                 </div>
-              </div>
-                <p className="mt-2 text-[11px] text-slate-500">
-                  SDLT model is simplified for England &amp; NI (residential bands + 5% higher-rate surcharge). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
-                </p>
+              </CollapsibleSection>
+
+              <CollapsibleSection
+                title="Rental cashflow"
+                collapsed={collapsedSections.rentalCashflow}
+                onToggle={() => toggleSection('rentalCashflow')}
+              >
+                <div className="grid grid-cols-2 gap-2">
+                  {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
+                  {pctInput('vacancyPct', 'Vacancy %')}
+                  {pctInput('mgmtPct', 'Management %')}
+                  {pctInput('repairsPct', 'Repairs/CapEx %')}
+                  {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
+                  {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
+                  {pctInput('annualAppreciation', 'Appreciation %')}
+                  {pctInput('rentGrowth', 'Rent growth %')}
+                  {pctInput('indexFundGrowth', 'Index fund growth %')}
+                  {smallInput('exitYear', 'Exit year', 1)}
+                  {pctInput('sellingCostsPct', 'Selling costs %')}
+                  {pctInput('discountRate', 'Discount rate %', 0.001)}
+                  <div className="col-span-2 rounded-xl border border-slate-200 p-3">
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(inputs.reinvestIncome)}
+                        onChange={(e) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            reinvestIncome: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Reinvest after-tax cash flow into index fund</span>
+                    </label>
+                    {inputs.reinvestIncome && (
+                      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 sm:items-center">
+                        {pctInput('reinvestPct', 'Reinvest % of after-tax cash flow')}
+                        <p className="text-[11px] text-slate-500">
+                          Only positive after-tax cash flows are reinvested and compound alongside the index fund baseline.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CollapsibleSection>
+
+              <p className="mt-2 text-[11px] text-slate-500">
+                SDLT model is simplified for England &amp; NI (residential bands + 5% higher-rate surcharge). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
+              </p>
             </div>
           </section>
 
@@ -1152,6 +1186,25 @@ function Line({ label, value, bold = false }) {
     <div className="flex items-center justify-between text-xs">
       <span className="text-slate-600">{label}</span>
       <span className={bold ? 'font-semibold text-slate-800' : 'text-slate-800'}>{value}</span>
+    </div>
+  );
+}
+
+function CollapsibleSection({ title, collapsed, onToggle, children }) {
+  return (
+    <div className="relative mb-3 rounded-xl border border-slate-200 p-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        className="absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-[10px] font-semibold text-slate-600 transition hover:bg-slate-100"
+      >
+        {collapsed ? '+' : '−'}
+      </button>
+      <div className="pl-6">
+        <div className="text-xs font-semibold text-slate-700">{title}</div>
+        {!collapsed ? <div className="mt-2">{children}</div> : null}
+      </div>
     </div>
   );
 }
