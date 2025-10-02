@@ -225,13 +225,32 @@ function prepareFormValuesForExport(root) {
     });
   };
 
+  const setProp = (node, prop, value) => {
+    const previous = node[prop];
+    node[prop] = value;
+    cleanups.push(() => {
+      node[prop] = previous;
+    });
+  };
+
   const inputs = root.querySelectorAll('input');
   inputs.forEach((node) => {
     const type = (node.getAttribute('type') || '').toLowerCase();
     if (type === 'checkbox' || type === 'radio') {
       setAttr(node, 'checked', node.checked ? 'checked' : null);
     } else {
-      setAttr(node, 'value', node.value ?? '');
+      const value = node.value ?? '';
+      setAttr(node, 'value', value);
+      setProp(node, 'value', value);
+
+      if (type === 'number') {
+        setAttr(node, 'data-export-original-type', type);
+        try {
+          node.setAttribute('type', 'text');
+        } catch (error) {
+          console.warn('Unable to switch input type for export', error);
+        }
+      }
     }
   });
 
