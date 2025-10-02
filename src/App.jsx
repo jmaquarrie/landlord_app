@@ -1043,6 +1043,18 @@ export default function App() {
     };
   }, [equity.cashflowYear1AfterTax, inputs]);
 
+  const buildScenarioSnapshot = () => {
+    const sanitizedInputs = JSON.parse(
+      JSON.stringify({
+        ...inputs,
+        propertyAddress: (inputs.propertyAddress ?? '').trim(),
+        propertyUrl: (inputs.propertyUrl ?? '').trim(),
+      })
+    );
+    const previewSnapshot = capturedPreview ? JSON.parse(JSON.stringify(capturedPreview)) : null;
+    return { data: sanitizedInputs, preview: previewSnapshot };
+  };
+
   const handleSaveScenario = () => {
     if (typeof window === 'undefined') return;
     const addressLabel = (inputs.propertyAddress ?? '').trim();
@@ -1052,20 +1064,13 @@ export default function App() {
     if (nameInput === null) return;
     const trimmed = nameInput.trim();
     const label = trimmed !== '' ? trimmed : defaultLabel;
-    const snapshot = JSON.parse(
-      JSON.stringify({
-        ...inputs,
-        propertyAddress: (inputs.propertyAddress ?? '').trim(),
-        propertyUrl: (inputs.propertyUrl ?? '').trim(),
-      })
-    );
-    const previewSnapshot = capturedPreview ? JSON.parse(JSON.stringify(capturedPreview)) : null;
+    const snapshot = buildScenarioSnapshot();
     const scenario = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: label,
       savedAt: new Date().toISOString(),
-      data: snapshot,
-      preview: previewSnapshot,
+      data: snapshot.data,
+      preview: snapshot.preview,
     };
     setSavedScenarios((prev) => [scenario, ...prev]);
     setSelectedScenarioId(scenario.id);
@@ -1282,6 +1287,25 @@ export default function App() {
     if (trimmed === '') return;
     setSavedScenarios((prev) =>
       prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item))
+    );
+  };
+
+  const handleUpdateScenario = (id) => {
+    const scenario = savedScenarios.find((item) => item.id === id);
+    if (!scenario) return;
+    const snapshot = buildScenarioSnapshot();
+    const updatedAt = new Date().toISOString();
+    setSavedScenarios((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              data: snapshot.data,
+              preview: snapshot.preview,
+              savedAt: updatedAt,
+            }
+          : item
+      )
     );
   };
 
@@ -1850,6 +1874,13 @@ export default function App() {
                               ) : null}
                             </div>
                             <div className="no-print flex items-center gap-2 text-[11px]">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateScenario(scenario.id)}
+                                className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                              >
+                                Update
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => handleRenameScenario(scenario.id)}
