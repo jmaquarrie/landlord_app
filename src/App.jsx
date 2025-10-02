@@ -513,8 +513,14 @@ function calculateEquity(rawInputs) {
   const reinvestShare = inputs.reinvestIncome
     ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
     : 0;
+  const shouldReinvest = Boolean(inputs.reinvestIncome) && reinvestShare > 0;
 
   const chart = [];
+  const annualGrossRents = [];
+  const annualOperatingExpenses = [];
+  const annualNoiValues = [];
+  const annualCashflowsPreTax = [];
+  const annualCashflowsAfterTax = [];
   const initialNetEquity =
     inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
   chart.push({
@@ -554,9 +560,15 @@ function calculateEquity(rawInputs) {
     const afterTaxCash = cash - propertyTax;
     cumulativeCashAfterTax += afterTaxCash;
     const investableCash = Math.max(0, afterTaxCash);
-    const reinvestContribution = reinvestShare > 0 ? investableCash * reinvestShare : 0;
+    const reinvestContribution = shouldReinvest ? investableCash * reinvestShare : 0;
     cumulativeReinvested += reinvestContribution;
-    reinvestFundValue = reinvestFundValue * (1 + indexGrowth) + reinvestContribution;
+    reinvestFundValue = shouldReinvest ? reinvestFundValue * (1 + indexGrowth) + reinvestContribution : 0;
+
+    annualGrossRents.push(gross);
+    annualOperatingExpenses.push(varOpex + fixed);
+    annualNoiValues.push(noi);
+    annualCashflowsPreTax.push(cash);
+    annualCashflowsAfterTax.push(afterTaxCash);
 
     const monthsPaid = Math.min(y * 12, inputs.mortgageYears * 12);
     const remainingLoanYear =
@@ -567,8 +579,12 @@ function calculateEquity(rawInputs) {
     const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     const saleCostsEstimate = vt * inputs.sellingCostsPct;
     const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
-    const cumulativeCashPreTaxNet = cumulativeCashPreTax - cumulativeReinvested;
-    const cumulativeCashAfterTaxNet = cumulativeCashAfterTax - cumulativeReinvested;
+    const cumulativeCashPreTaxNet = shouldReinvest
+      ? cumulativeCashPreTax - cumulativeReinvested
+      : cumulativeCashPreTax;
+    const cumulativeCashAfterTaxNet = shouldReinvest
+      ? cumulativeCashAfterTax - cumulativeReinvested
+      : cumulativeCashAfterTax;
     const propertyGrossValue = vt + cumulativeCashPreTaxNet + reinvestFundValue;
     const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
     const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
@@ -660,6 +676,12 @@ function calculateEquity(rawInputs) {
     wealthDeltaAfterTax,
     wealthDeltaAfterTaxPct,
     exitYear: inputs.exitYear,
+    annualGrossRents,
+    annualOperatingExpenses,
+    annualNoiValues,
+    annualCashflowsPreTax,
+    annualCashflowsAfterTax,
+    annualDebtService,
   };
 }
 
@@ -687,6 +709,7 @@ export default function App() {
     propertyNet: true,
     propertyNetAfterTax: true,
   });
+  const [performanceYear, setPerformanceYear] = useState(1);
   const [shareNotice, setShareNotice] = useState('');
   const pageRef = useRef(null);
   const iframeRef = useRef(null);
@@ -834,6 +857,25 @@ export default function App() {
     [savedScenarios]
   );
 
+  const exitYearCount = Math.max(1, Math.floor(Number(equity.exitYear) || 1));
+
+  useEffect(() => {
+    if (performanceYear > exitYearCount) {
+      setPerformanceYear(exitYearCount);
+    }
+  }, [exitYearCount, performanceYear]);
+
+  const performanceYearOptions = Array.from({ length: exitYearCount }, (_, index) => index + 1);
+  const performanceYearClamped = Math.min(Math.max(1, performanceYear), exitYearCount);
+  const performanceYearIndex = performanceYearClamped - 1;
+  const selectedGrossRent = equity.annualGrossRents[performanceYearIndex] ?? 0;
+  const selectedOperatingExpenses = equity.annualOperatingExpenses[performanceYearIndex] ?? 0;
+  const selectedNoi = equity.annualNoiValues[performanceYearIndex] ?? 0;
+  const selectedDebtService = equity.annualDebtService[performanceYearIndex] ?? 0;
+  const selectedCashPreTax = equity.annualCashflowsPreTax[performanceYearIndex] ?? 0;
+  const selectedCashAfterTax = equity.annualCashflowsAfterTax[performanceYearIndex] ?? 0;
+  const selectedRentalTax = equity.propertyTaxes[performanceYearIndex] ?? 0;
+
   const isCompanyBuyer = inputs.buyerType === 'company';
   const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
   const rentalTaxCumulativeLabel = isCompanyBuyer
@@ -843,10 +885,6 @@ export default function App() {
     ? 'Property net after corporation tax'
     : 'Property net after rental tax';
   const afterTaxComparisonPrefix = isCompanyBuyer ? 'After corporation tax' : 'After income tax';
-  const propertyNetAfterTaxDescription = isCompanyBuyer
-    ? 'property net wealth after corporation tax'
-    : 'property net wealth after rental tax';
-
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
   const hasPropertyUrl = normalizedPropertyUrl !== '';
@@ -1449,7 +1487,10 @@ export default function App() {
         <div className="sticky top-0 z-30 -mx-4 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-slate-50/80 print:relative print:mx-0 print:border-0 print:bg-white">
           <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Property Forecaster</h1>
+              <div className="flex flex-col leading-tight">
+                <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Property Forecaster</h1>
+                <span className="text-[11px] text-slate-500">Created by J Quarrie</span>
+              </div>
               <button
                 type="button"
                 onClick={handlePrint}
@@ -1548,18 +1589,6 @@ export default function App() {
                   <div>Last snapshot: {friendlyDateTime(capturedPreview.capturedAt)}</div>
                 ) : null}
                 {captureError ? <div className="text-rose-600">{captureError}</div> : null}
-                <div>
-                  Tip: when taking a snapshot your browser may ask to capture this tab — choose “Allow” so the saved image
-                  matches what you see.
-                </div>
-                {capturedPreview?.originalUrl ? (
-                  <div>
-                    Source:{' '}
-                    <a href={capturedPreview.originalUrl} className="underline-offset-2 hover:underline" target="_blank" rel="noreferrer">
-                      {capturedPreview.originalUrl}
-                    </a>
-                  </div>
-                ) : null}
               </div>
             </div>
           </section>
@@ -1611,10 +1640,6 @@ export default function App() {
                       />
                       <span>First-time buyer relief</span>
                     </label>
-                    <div className="col-span-2 text-[11px] text-slate-500">
-                      If you already own 2+ residential properties, higher SDLT rates (+5%) apply. First-time buyer relief
-                      covers £0–£300k fully and the next £200k at 5% (only if the price is ≤£500k).
-                    </div>
                   </div>
                 )}
                 {inputs.buyerType === 'company' && (
@@ -1726,9 +1751,6 @@ export default function App() {
                 </div>
               </CollapsibleSection>
 
-              <p className="mt-2 text-[11px] text-slate-500">
-                SDLT model is simplified for England &amp; NI (residential bands + 5% higher-rate surcharge). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
-              </p>
             </div>
           </section>
 
@@ -1743,15 +1765,35 @@ export default function App() {
                 <Line label="Total cash in" value={currency(equity.cashIn)} bold />
               </SummaryCard>
 
-              <SummaryCard title="Year 1 performance">
-                <Line label="Gross rent (vacancy adj.)" value={currency(equity.grossRentYear1)} />
-                <Line label="Operating expenses" value={currency(equity.opexYear1)} />
-                <Line label="NOI" value={currency(equity.noiYear1)} />
-                <Line label="Debt service" value={currency(equity.debtServiceYear1)} />
-                <Line label="Cash flow (pre‑tax)" value={currency(equity.cashflowYear1)} />
-                <Line label={`${rentalTaxLabel} (Yr 1)`} value={currency(equity.propertyTaxes[0] ?? 0)} />
+              <SummaryCard
+                title={
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-slate-700">
+                      Year {performanceYearClamped} performance
+                    </span>
+                    <select
+                      value={performanceYearClamped}
+                      onChange={(event) => setPerformanceYear(Number(event.target.value) || 1)}
+                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                    >
+                      {performanceYearOptions.map((year) => (
+                        <option key={year} value={year}>{`Year ${year}`}</option>
+                      ))}
+                    </select>
+                  </div>
+                }
+              >
+                <Line label="Gross rent (vacancy adj.)" value={currency(selectedGrossRent)} />
+                <Line label="Operating expenses" value={currency(selectedOperatingExpenses)} />
+                <Line label="NOI" value={currency(selectedNoi)} />
+                <Line label="Debt service" value={currency(selectedDebtService)} />
+                <Line label="Cash flow (pre‑tax)" value={currency(selectedCashPreTax)} />
+                <Line
+                  label={`${rentalTaxLabel} (Year ${performanceYearClamped})`}
+                  value={currency(selectedRentalTax)}
+                />
                 <hr className="my-2" />
-                <Line label="Cash flow (after tax)" value={currency(equity.cashflowYear1AfterTax)} bold />
+                <Line label="Cash flow (after tax)" value={currency(selectedCashAfterTax)} bold />
               </SummaryCard>
 
               <SummaryCard title="Key ratios">
@@ -1776,21 +1818,13 @@ export default function App() {
               </SummaryCard>
 
               <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`}>
-                <Line label={`Discount @ ${formatPercent(inputs.discountRate)}`} value="" />
+                <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
                 <Line label="NPV" value={currency(equity.npv)} bold />
-                <p className="mt-2 text-xs text-slate-500">
-                  Net present value discounts each year of cash flow (including sale proceeds) over {inputs.exitYear} years back
-                  to today at your hurdle rate. Positive values indicate the property outperforms your discount rate target.
-                </p>
               </SummaryCard>
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
               <h3 className="mb-2 text-sm font-semibold">Wealth trajectory vs Index Fund</h3>
-              <p className="mb-2 text-[11px] text-slate-500">
-                Comparison of the index fund alternative against property value, property gross wealth, property net wealth, and
-                {` ${propertyNetAfterTaxDescription}, all at ${formatPercent(inputs.indexFundGrowth)} index growth.`}
-              </p>
               <div className="h-72 w-full">
                 <ResponsiveContainer>
                   <AreaChart data={equity.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
@@ -1895,12 +1929,11 @@ export default function App() {
               <ul className="list-disc pl-5 text-xs leading-5 text-slate-700">
                 <li>
                   Rental profit tax is approximated using the 2024/25 UK personal allowance and bands for individuals, or a flat
-                  19% corporation tax when purchasing via a limited company. Mortgage interest relief nuances (e.g., Section 24
-                  caps) are not modelled.
+                  19% corporation tax when purchasing via a limited company.
                 </li>
                 <li>
                   SDLT is approximate (England &amp; NI bands + 5% higher-rate surcharge when individuals will own 2+ properties or
-                  for company purchases). Confirm for your scenario.
+                  for company purchases). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
                 </li>
                 <li>
                   Index fund comparison assumes a single upfront contribution of <em>Total cash in</em> at {formatPercent(inputs.indexFundGrowth)} compounded annually.
@@ -2138,26 +2171,10 @@ export default function App() {
                   </div>
                 )}
               </div>
-              {capturedPreview?.originalUrl || livePreview?.originalUrl ? (
-                <p className="mt-2 text-[11px] text-slate-500">
-                  Original listing:{' '}
-                  <a
-                    href={capturedPreview?.originalUrl ?? livePreview?.originalUrl}
-                    className="underline-offset-2 hover:underline"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {capturedPreview?.originalUrl ?? livePreview?.originalUrl}
-                  </a>
-                </p>
-              ) : null}
             </div>
           </section>
         ) : null}
 
-        <footer className="mt-4 text-center text-[11px] text-slate-500">
-          Built for quick, sensible go/no‑go decisions — refine in a full spreadsheet before offering.
-        </footer>
       </main>
     </div>
 
@@ -2256,9 +2273,16 @@ function ChartLegend({ payload = [], activeSeries, onToggle }) {
 }
 
 function SummaryCard({ title, children }) {
+  const titleNode =
+    typeof title === 'string' ? (
+      <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
+    ) : (
+      title
+    );
+
   return (
     <div className="rounded-2xl bg-white p-3 shadow-sm">
-      <h3 className="mb-2 text-sm font-semibold">{title}</h3>
+      <div className="mb-2">{titleNode}</div>
       <div className="space-y-0.5">{children}</div>
     </div>
   );
