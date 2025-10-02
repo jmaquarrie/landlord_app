@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -12,6 +12,7 @@ import {
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
+const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
@@ -142,6 +143,16 @@ function deltaBadge(delta) {
   return 'bg-slate-500';
 }
 
+const friendlyDateTime = (iso) => {
+  if (!iso) return '';
+  try {
+    const date = new Date(iso);
+    return date.toLocaleString();
+  } catch (error) {
+    return iso;
+  }
+};
+
 export default function App() {
   const [inputs, setInputs] = useState({
     purchasePrice: 250000,
@@ -169,6 +180,35 @@ export default function App() {
     incomePerson1: 50000,
     incomePerson2: 30000,
   });
+  const [savedScenarios, setSavedScenarios] = useState([]);
+  const [showLoadPanel, setShowLoadPanel] = useState(false);
+  const [selectedScenarioId, setSelectedScenarioId] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = window.localStorage.getItem(SCENARIO_STORAGE_KEY);
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        setSavedScenarios(parsed);
+        if (parsed.length > 0) {
+          setSelectedScenarioId(parsed[0].id ?? '');
+        }
+      }
+    } catch (error) {
+      console.warn('Unable to read saved scenarios:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(SCENARIO_STORAGE_KEY, JSON.stringify(savedScenarios));
+    } catch (error) {
+      console.warn('Unable to persist saved scenarios:', error);
+    }
+  }, [savedScenarios]);
 
   const equity = useMemo(() => {
     const stampDuty = calcStampDuty(
@@ -439,6 +479,30 @@ export default function App() {
 
   const rentDown = equity.cashflowYear1 - inputs.monthlyRent * 12 * 0.1;
   const rentUp = equity.cashflowYear1 + inputs.monthlyRent * 12 * 0.1;
+
+  const handleSaveScenario = () => {
+    if (typeof window === 'undefined') return;
+    const defaultLabel = `Scenario ${new Date().toLocaleString()}`;
+    const nameInput = window.prompt('Name this scenario', defaultLabel);
+    if (nameInput === null) return;
+    const label = nameInput.trim() === '' ? defaultLabel : nameInput.trim();
+    const snapshot = JSON.parse(JSON.stringify(inputs));
+    const scenario = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: label,
+      savedAt: new Date().toISOString(),
+      data: snapshot,
+    };
+    setSavedScenarios((prev) => [scenario, ...prev]);
+    setSelectedScenarioId(scenario.id);
+  };
+
+  const handleLoadScenario = () => {
+    const scenario = savedScenarios.find((item) => item.id === selectedScenarioId);
+    if (!scenario) return;
+    setInputs((prev) => ({ ...prev, ...scenario.data }));
+    setShowLoadPanel(false);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -743,6 +807,70 @@ export default function App() {
                   Index fund comparison assumes a single upfront contribution of <em>Total cash in</em> at {formatPercent(inputs.indexFundGrowth)} compounded annually.
                 </li>
               </ul>
+            </div>
+
+            <div className="rounded-2xl bg-white p-4 shadow-sm">
+              <h3 className="mb-3 text-base font-semibold">Scenario history</h3>
+              <p className="text-sm text-slate-600">
+                Save your current inputs and reload any previous scenario to compare different deals quickly. Scenarios are stored locally in
+                your browser.
+              </p>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSaveScenario}
+                  className="rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                >
+                  Save current scenario
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLoadPanel((prev) => !prev)}
+                  className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700"
+                >
+                  {showLoadPanel ? 'Close saved scenarios' : 'Load saved scenario'}
+                </button>
+              </div>
+
+              {showLoadPanel && (
+                <div className="mt-4 space-y-3">
+                  {savedScenarios.length === 0 ? (
+                    <p className="text-sm text-slate-600">No scenarios saved yet. Save a scenario to build your history.</p>
+                  ) : (
+                    <>
+                      <label className="flex flex-col gap-1 text-sm text-slate-700">
+                        <span>Choose a saved scenario</span>
+                        <select
+                          value={selectedScenarioId}
+                          onChange={(event) => setSelectedScenarioId(event.target.value)}
+                          className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                        >
+                          {savedScenarios.map((scenario) => (
+                            <option key={scenario.id} value={scenario.id}>
+                              {scenario.name} — saved {friendlyDateTime(scenario.savedAt)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleLoadScenario}
+                        className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+                      >
+                        Load selected scenario
+                      </button>
+                      <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
+                        {savedScenarios.map((scenario) => (
+                          <div key={`${scenario.id}-meta`} className="flex flex-col gap-1 px-3 py-2 text-xs text-slate-600">
+                            <span className="font-semibold text-slate-700">{scenario.name}</span>
+                            <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </section>
         </div>
