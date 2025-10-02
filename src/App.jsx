@@ -12,6 +12,9 @@ import {
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
+const PERSONAL_ALLOWANCE = 12570;
+const BASIC_RATE_BAND = 37700;
+const ADDITIONAL_RATE_THRESHOLD = 125140;
 
 const roundTo = (value, decimals = 2) => {
   if (!Number.isFinite(value)) return 0;
@@ -20,6 +23,40 @@ const roundTo = (value, decimals = 2) => {
 };
 
 const formatPercent = (value) => `${roundTo(value * 100, 2).toFixed(2)}%`;
+
+function personalAllowance(income) {
+  if (income <= 0) return 0;
+  if (income <= 100000) return PERSONAL_ALLOWANCE;
+  const reduction = (income - 100000) / 2;
+  return Math.max(0, PERSONAL_ALLOWANCE - reduction);
+}
+
+function calcIncomeTax(income) {
+  if (!Number.isFinite(income) || income <= 0) return 0;
+
+  const allowance = personalAllowance(income);
+  const taxable = Math.max(0, income - allowance);
+
+  let remaining = taxable;
+  let tax = 0;
+
+  const basic = Math.min(remaining, BASIC_RATE_BAND);
+  tax += basic * 0.2;
+  remaining -= basic;
+
+  if (remaining > 0) {
+    const higherBandCap = Math.max(0, ADDITIONAL_RATE_THRESHOLD - allowance - BASIC_RATE_BAND);
+    const higher = Math.min(remaining, higherBandCap);
+    tax += higher * 0.4;
+    remaining -= higher;
+  }
+
+  if (remaining > 0) {
+    tax += remaining * 0.45;
+  }
+
+  return roundTo(tax, 2);
+}
 
 function monthlyMortgagePayment({ principal, annualRate, years }) {
   const r = annualRate / 12;
@@ -58,7 +95,8 @@ function calcStampDuty(price, buyerType, propertiesOwned, firstTimeBuyer) {
     { upTo: Infinity, rate: 0.12 },
   ];
 
-  const isAdditional = buyerType === 'company' || propertiesOwned >= 1;
+  const isAdditional =
+    buyerType === 'company' || (buyerType === 'individual' && Number.isFinite(propertiesOwned) && propertiesOwned >= 2);
   const surcharge = isAdditional ? 0.05 : 0.0;
 
   let remaining = price;
@@ -128,6 +166,8 @@ export default function App() {
     propertiesOwned: 0,
     indexFundGrowth: DEFAULT_INDEX_GROWTH,
     firstTimeBuyer: false,
+    incomePerson1: 50000,
+    incomePerson2: 30000,
   });
 
   const equity = useMemo(() => {
@@ -148,18 +188,57 @@ export default function App() {
         ? (loan * inputs.interestRate) / 12
         : monthlyMortgagePayment({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears });
 
+    const baseIncome1 = inputs.incomePerson1 ?? 0;
+    const baseIncome2 = inputs.incomePerson2 ?? 0;
+
+    const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
+    const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
+    const monthlyRate = inputs.interestRate / 12;
+    let balance = loan;
+    const totalMonths = inputs.exitYear * 12;
+
+    for (let month = 1; month <= totalMonths; month++) {
+      const yearIndex = Math.ceil(month / 12) - 1;
+      if (yearIndex >= annualDebtService.length) break;
+
+      if (inputs.loanType !== 'interest_only' && (month > inputs.mortgageYears * 12 || balance <= 0)) {
+        break;
+      }
+
+      const interestPayment = balance * monthlyRate;
+      let payment =
+        inputs.loanType === 'interest_only'
+          ? balance * monthlyRate
+          : mortgageMonthly;
+
+      if (!Number.isFinite(payment)) payment = 0;
+
+      let principalPaid = inputs.loanType === 'interest_only' ? 0 : payment - interestPayment;
+
+      if (inputs.loanType !== 'interest_only') {
+        if (principalPaid > balance) {
+          principalPaid = balance;
+          payment = interestPayment + principalPaid;
+        }
+        balance = Math.max(0, balance - principalPaid);
+      }
+
+      annualInterest[yearIndex] += interestPayment;
+      annualDebtService[yearIndex] += payment;
+    }
+
     const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
     const variableOpex = inputs.monthlyRent * 12 * (inputs.mgmtPct + inputs.repairsPct);
     const fixedOpex = inputs.insurancePerYear + inputs.otherOpexPerYear;
     const opexYear1 = variableOpex + fixedOpex;
-    const debtServiceYear1 = mortgageMonthly * 12;
     const noiYear1 = grossRentYear1 - (variableOpex + fixedOpex);
+    const debtServiceYear1 = annualDebtService[0] ?? mortgageMonthly * 12;
     const cashflowYear1 = noiYear1 - debtServiceYear1;
 
     const cap = noiYear1 / inputs.purchasePrice;
     const cashIn = deposit + closing + inputs.renovationCost;
     const coc = cashflowYear1 / cashIn;
-    const dscr = noiYear1 / debtServiceYear1;
+    const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
 
     const months = Math.min(inputs.exitYear * 12, inputs.mortgageYears * 12);
     const remaining =
@@ -177,21 +256,39 @@ export default function App() {
     let rent = inputs.monthlyRent * 12;
     let cumulativeCash = 0;
     let exitCumCash = 0;
+    let exitCumCashAfterTax = 0;
     let exitNetSaleProceeds = 0;
     let indexVal = cashIn;
+    let cumulativeTax = 0;
 
     const chart = [];
-    chart.push({ year: 0, value: inputs.purchasePrice, valuePlusRent: inputs.purchasePrice + 0, indexFund: indexVal });
+    chart.push({
+      year: 0,
+      value: inputs.purchasePrice,
+      valuePlusRent: inputs.purchasePrice,
+      propertyAfterTax: inputs.purchasePrice,
+      indexFund: indexVal,
+    });
 
-    const ds = debtServiceYear1;
+    const propertyTaxes = [];
 
     for (let y = 1; y <= inputs.exitYear; y++) {
       const gross = rent * (1 - inputs.vacancyPct);
       const varOpex = rent * (inputs.mgmtPct + inputs.repairsPct);
       const fixed = inputs.insurancePerYear + inputs.otherOpexPerYear;
       const noi = gross - (varOpex + fixed);
-      const cash = noi - ds;
+      const debtService = annualDebtService[y - 1] ?? 0;
+      const cash = noi - debtService;
       cumulativeCash += cash;
+
+      const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
+      const taxableProfit = noi - interestPaid;
+      const share = taxableProfit / 2;
+      const taxOwnerA = calcIncomeTax(baseIncome1 + share) - calcIncomeTax(baseIncome1);
+      const taxOwnerB = calcIncomeTax(baseIncome2 + share) - calcIncomeTax(baseIncome2);
+      const propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
+      propertyTaxes.push(propertyTax);
+      cumulativeTax += propertyTax;
 
       if (y === inputs.exitYear) {
         const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
@@ -203,6 +300,7 @@ export default function App() {
         const netSaleProceeds = fv - sell - rem;
         cf.push(cash + netSaleProceeds);
         exitCumCash = cumulativeCash;
+        exitCumCashAfterTax = cumulativeCash - cumulativeTax;
         exitNetSaleProceeds = netSaleProceeds;
       } else {
         cf.push(cash);
@@ -210,7 +308,13 @@ export default function App() {
 
       const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       indexVal = indexVal * (1 + inputs.indexFundGrowth);
-      chart.push({ year: y, value: vt, valuePlusRent: vt + cumulativeCash, indexFund: indexVal });
+      chart.push({
+        year: y,
+        value: vt,
+        valuePlusRent: vt + cumulativeCash,
+        propertyAfterTax: vt + cumulativeCash - cumulativeTax,
+        indexFund: indexVal,
+      });
 
       rent *= 1 + inputs.rentGrowth;
     }
@@ -222,6 +326,12 @@ export default function App() {
     const propertyGrossWealthAtExit = futureValue + exitCumCash;
     const wealthDelta = propertyNetWealthAtExit - indexVal;
     const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
+    const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
+    const propertyNetWealthAfterTax = propertyNetWealthAtExit - totalPropertyTax;
+    const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
+    const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
+    const propertyTaxYear1 = propertyTaxes[0] ?? 0;
+    const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
 
     return {
       deposit,
@@ -237,6 +347,7 @@ export default function App() {
       debtServiceYear1,
       noiYear1,
       cashflowYear1,
+      cashflowYear1AfterTax,
       cap,
       coc,
       dscr,
@@ -252,11 +363,17 @@ export default function App() {
       yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
       indexValEnd: indexVal,
       exitCumCash,
+      exitCumCashAfterTax,
       exitNetSaleProceeds,
       propertyNetWealthAtExit,
       propertyGrossWealthAtExit,
       wealthDelta,
       wealthDeltaPct,
+      totalPropertyTax,
+      propertyTaxes,
+      propertyNetWealthAfterTax,
+      wealthDeltaAfterTax,
+      wealthDeltaAfterTaxPct,
     };
   }, [inputs]);
 
@@ -335,6 +452,9 @@ export default function App() {
             <div className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}>
               Δ vs index: {currency(equity.wealthDelta)} ({formatPercent(equity.wealthDeltaPct)})
             </div>
+            <div className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDeltaAfterTax)}`}>
+              Δ after tax: {currency(equity.wealthDeltaAfterTax)} ({formatPercent(equity.wealthDeltaAfterTaxPct)})
+            </div>
           </div>
         </header>
 
@@ -383,7 +503,7 @@ export default function App() {
                       <span>First-time buyer relief</span>
                     </label>
                     <div className="col-span-2 text-xs text-slate-500">
-                      If you already own 1+ residential properties, higher SDLT rates (+5%) apply. First-time buyer relief
+                      If you already own 2+ residential properties, higher SDLT rates (+5%) apply. First-time buyer relief
                       covers £0–£300k fully and the next £200k at 5% (only if the price is ≤£500k).
                     </div>
                   </div>
@@ -393,6 +513,17 @@ export default function App() {
                     Company purchases are treated here at higher rates (+5% surcharge on the total price).
                   </div>
                 )}
+              </div>
+
+              <div className="mb-3 rounded-xl border border-slate-200 p-3">
+                <div className="mb-2 text-sm font-medium text-slate-700">Household income</div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {moneyInput('incomePerson1', 'Owner A income (£)', 1000)}
+                  {moneyInput('incomePerson2', 'Owner B income (£)', 1000)}
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  Property profits are split 50/50 between two owners to approximate yearly income tax on rental earnings.
+                </p>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -463,15 +594,20 @@ export default function App() {
                 <Line label="Operating expenses" value={currency(equity.opexYear1)} />
                 <Line label="NOI" value={currency(equity.noiYear1)} />
                 <Line label="Debt service" value={currency(equity.debtServiceYear1)} />
+                <Line label="Cash flow (pre‑tax)" value={currency(equity.cashflowYear1)} />
+                <Line label="Income tax on rent (Yr 1)" value={currency(equity.propertyTaxes[0] ?? 0)} />
                 <hr className="my-2" />
-                <Line label="Cash flow (pre‑tax)" value={currency(equity.cashflowYear1)} bold />
+                <Line label="Cash flow (after tax)" value={currency(equity.cashflowYear1AfterTax)} bold />
               </SummaryCard>
 
               <SummaryCard title="Key ratios">
                 <Line label="Cap rate" value={formatPercent(equity.cap)} />
                 <Line label="Yield on cost" value={formatPercent(equity.yoc)} />
                 <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} />
-                <Line label="DSCR" value={equity.dscr.toFixed(2)} />
+                <Line
+                  label="DSCR"
+                  value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
+                />
                 <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} />
               </SummaryCard>
             </div>
@@ -495,8 +631,9 @@ export default function App() {
             <div className="rounded-2xl bg-white p-4 shadow-sm">
               <h3 className="mb-2 text-base font-semibold">Wealth trajectory vs Index Fund</h3>
               <p className="mb-3 text-xs text-slate-500">
-                Property (value and value + cumulative net rent) vs. investing the same upfront cash (<strong>Total cash in</strong>)
-                into an index fund compounding at <strong>{formatPercent(inputs.indexFundGrowth)}</strong> per year.
+                Property (value, value + cumulative net rent, and after rental income tax) vs. investing the same upfront cash
+                (<strong>Total cash in</strong>) into an index fund compounding at <strong>{formatPercent(inputs.indexFundGrowth)}</strong>
+                per year.
               </p>
               <div className="h-80 w-full">
                 <ResponsiveContainer>
@@ -524,6 +661,14 @@ export default function App() {
                     />
                     <Area
                       type="monotone"
+                      dataKey="propertyAfterTax"
+                      name="Property + rent (after tax)"
+                      stroke="#9333ea"
+                      fill="rgba(147,51,234,0.2)"
+                      strokeWidth={2}
+                    />
+                    <Area
+                      type="monotone"
                       dataKey="indexFund"
                       name="Index fund"
                       stroke="#f97316"
@@ -540,6 +685,8 @@ export default function App() {
                 <Line label="Index fund value" value={currency(equity.indexValEnd)} />
                 <Line label="Property gross (value + rent)" value={currency(equity.propertyGrossWealthAtExit)} />
                 <Line label="Property net (proceeds + cashflows)" value={currency(equity.propertyNetWealthAtExit)} />
+                <Line label="Property net after rental tax" value={currency(equity.propertyNetWealthAfterTax)} />
+                <Line label="Rental income tax (cumulative)" value={currency(equity.totalPropertyTax)} />
                 <hr className="my-2" />
                 <div className="text-sm">
                   {equity.propertyNetWealthAtExit > equity.indexValEnd ? (
@@ -549,6 +696,13 @@ export default function App() {
                   ) : (
                     <span className="rounded bg-slate-100 px-2 py-1 text-slate-700">Roughly equal</span>
                   )}
+                </div>
+                <div className="mt-2 text-xs text-slate-600">
+                  {equity.propertyNetWealthAfterTax > equity.indexValEnd
+                    ? 'After rental tax, property (net) still leads the index.'
+                    : equity.propertyNetWealthAfterTax < equity.indexValEnd
+                    ? 'After rental tax, the index fund pulls ahead.'
+                    : 'After rental tax, both paths are broadly similar.'}
                 </div>
               </SummaryCard>
 
@@ -577,8 +731,14 @@ export default function App() {
             <div className="rounded-2xl bg-white p-4 shadow-sm">
               <h3 className="mb-2 text-base font-semibold">Notes</h3>
               <ul className="list-disc pl-5 text-sm leading-6 text-slate-700">
-                <li>Model is pre‑tax and simplified. Mortgage interest/tax rules (e.g., Section 24) are not included.</li>
-                <li>SDLT is approximate (England &amp; NI bands + 5% higher-rate surcharge when applicable). Confirm for your scenario.</li>
+                <li>
+                  Rental income tax is approximated using the 2024/25 UK personal allowance and bands, splitting profits evenly
+                  between two owners. Mortgage interest relief nuances (e.g., Section 24 caps) are not modelled.
+                </li>
+                <li>
+                  SDLT is approximate (England &amp; NI bands + 5% higher-rate surcharge when individuals will own 2+ properties or
+                  for company purchases). Confirm for your scenario.
+                </li>
                 <li>
                   Index fund comparison assumes a single upfront contribution of <em>Total cash in</em> at {formatPercent(inputs.indexFundGrowth)} compounded annually.
                 </li>
@@ -632,8 +792,20 @@ function Line({ label, value, bold = false }) {
     const sdltAdd = calcStampDuty(300000, 'company', 0, false);
     console.assert(approx(sdltAdd, 19750, 1), `SDLT add mismatch: ${sdltAdd}`);
 
+    const sdltIndividualOne = calcStampDuty(300000, 'individual', 1, false);
+    console.assert(approx(sdltIndividualOne, 4750, 1), `SDLT single extra mismatch: ${sdltIndividualOne}`);
+
+    const sdltIndividualTwo = calcStampDuty(300000, 'individual', 2, false);
+    console.assert(approx(sdltIndividualTwo, 19750, 1), `SDLT multiple mismatch: ${sdltIndividualTwo}`);
+
     const sdltFtb = calcStampDuty(500000, 'individual', 0, true);
     console.assert(approx(sdltFtb, 10000, 1), `SDLT FTB mismatch: ${sdltFtb}`);
+
+    const tax40k = calcIncomeTax(40000);
+    console.assert(approx(tax40k, 5486, 1), `Income tax 40k mismatch: ${tax40k}`);
+
+    const tax130k = calcIncomeTax(130000);
+    console.assert(approx(tax130k, 44703, 2), `Income tax 130k mismatch: ${tax130k}`);
 
     const idx10 = 50000 * Math.pow(1 + DEFAULT_INDEX_GROWTH, 10);
     console.assert(approx(idx10, 98357.5679, 0.5), `Index cmp mismatch: ${idx10}`);
