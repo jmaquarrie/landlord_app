@@ -892,6 +892,21 @@ export default function App() {
   const hasCapturedSnapshot = Boolean(capturedPreview);
   const showListingPreview = isLivePreviewActive || hasCapturedSnapshot;
 
+  const cashflowTableRows = useMemo(
+    () =>
+      Array.from({ length: exitYearCount }, (_, index) => ({
+        year: index + 1,
+        grossRent: equity.annualGrossRents[index] ?? 0,
+        operatingExpenses: equity.annualOperatingExpenses[index] ?? 0,
+        noi: equity.annualNoiValues[index] ?? 0,
+        debtService: equity.annualDebtService[index] ?? 0,
+        propertyTax: equity.propertyTaxes[index] ?? 0,
+        cashPreTax: equity.annualCashflowsPreTax[index] ?? 0,
+        cashAfterTax: equity.annualCashflowsAfterTax[index] ?? 0,
+      })),
+    [equity, exitYearCount]
+  );
+
   const handlePrint = () => {
     if (typeof window === 'undefined') return;
     setShowLoadPanel(false);
@@ -2070,6 +2085,16 @@ export default function App() {
           </section>
         </div>
 
+        <section className="mt-6">
+          <div className="rounded-2xl bg-white p-3 shadow-sm">
+            <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <h3 className="text-sm font-semibold text-slate-700">Annual cash flow detail</h3>
+              <span className="text-[11px] text-slate-500">Per-year performance through exit.</span>
+            </div>
+            <CashflowTable rows={cashflowTableRows} rentalTaxLabel={rentalTaxLabel} />
+          </div>
+        </section>
+
         {showListingPreview ? (
           <section className="mt-6">
             <div className="rounded-2xl bg-white p-3 shadow-sm" data-capture-placeholder data-hide-on-export>
@@ -2237,6 +2262,45 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function CashflowTable({ rows = [], rentalTaxLabel }) {
+  if (!rows || rows.length === 0) {
+    return <p className="text-xs text-slate-600">Cash flow data becomes available once a hold period is defined.</p>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-slate-200 text-xs">
+        <thead className="bg-slate-50 text-slate-600">
+          <tr>
+            <th className="px-3 py-2 text-left font-semibold">Year</th>
+            <th className="px-3 py-2 text-right font-semibold">Gross rent</th>
+            <th className="px-3 py-2 text-right font-semibold">Operating expenses</th>
+            <th className="px-3 py-2 text-right font-semibold">NOI</th>
+            <th className="px-3 py-2 text-right font-semibold">Debt service</th>
+            <th className="px-3 py-2 text-right font-semibold">{rentalTaxLabel}</th>
+            <th className="px-3 py-2 text-right font-semibold">Cash flow (pre-tax)</th>
+            <th className="px-3 py-2 text-right font-semibold">Cash flow (after tax)</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200">
+          {rows.map((row) => (
+            <tr key={`cashflow-${row.year}`} className="odd:bg-white even:bg-slate-50">
+              <td className="px-3 py-2 font-semibold text-slate-700">Y{row.year}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.grossRent)}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.operatingExpenses)}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.noi)}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.debtService)}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.propertyTax)}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.cashPreTax)}</td>
+              <td className="px-3 py-2 text-right font-semibold text-slate-800">{currency(row.cashAfterTax)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
