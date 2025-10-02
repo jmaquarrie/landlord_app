@@ -771,16 +771,13 @@ export default function App() {
         },
       });
       const imageData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const imageAspect = canvas.width / canvas.height;
-      let renderWidth = pageWidth;
-      let renderHeight = renderWidth / imageAspect;
-      if (renderHeight > pageHeight) {
-        renderHeight = pageHeight;
-        renderWidth = renderHeight * imageAspect;
-      }
+      const coverScale = Math.max(pageWidth / canvas.width, pageHeight / canvas.height);
+      const renderWidth = canvas.width * coverScale;
+      const renderHeight = canvas.height * coverScale;
       const offsetX = (pageWidth - renderWidth) / 2;
       const offsetY = (pageHeight - renderHeight) / 2;
       pdf.addImage(imageData, 'PNG', offsetX, offsetY, renderWidth, renderHeight);
@@ -790,7 +787,7 @@ export default function App() {
         try {
           const captureData = await getImageDataForPdf(captureSource);
           if (captureData?.dataUrl) {
-            pdf.addPage('a4', 'landscape');
+            pdf.addPage();
             const capturePageWidth = pdf.internal.pageSize.getWidth();
             const capturePageHeight = pdf.internal.pageSize.getHeight();
             const captureWidth = captureData.width && captureData.width > 0 ? captureData.width : capturePageWidth;
