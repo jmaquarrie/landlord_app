@@ -11,7 +11,15 @@ import {
 } from 'recharts';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
-const INDEX_GROWTH = 0.07;
+const DEFAULT_INDEX_GROWTH = 0.07;
+
+const roundTo = (value, decimals = 2) => {
+  if (!Number.isFinite(value)) return 0;
+  const factor = Math.pow(10, decimals);
+  return Math.round((value + Number.EPSILON) * factor) / factor;
+};
+
+const formatPercent = (value) => `${roundTo(value * 100, 2).toFixed(2)}%`;
 
 function monthlyMortgagePayment({ principal, annualRate, years }) {
   const r = annualRate / 12;
@@ -31,27 +39,47 @@ function npv(rate, cashflows) {
   return cashflows.reduce((acc, cf, t) => acc + cf / Math.pow(1 + rate, t), 0);
 }
 
-function calcStampDuty(price, buyerType, propertiesOwned) {
+function calcStampDuty(price, buyerType, propertiesOwned, firstTimeBuyer) {
+  if (!price || price <= 0) return 0;
+
+  const eligibleFirstTimeBuyer =
+    firstTimeBuyer && buyerType === 'individual' && propertiesOwned === 0 && price <= 500000;
+
+  if (eligibleFirstTimeBuyer) {
+    const portionAbove300k = Math.max(0, price - 300000);
+    return roundTo(portionAbove300k * 0.05, 2);
+  }
+
   const bands = [
-    { upTo: 250000, rate: 0.0 },
+    { upTo: 125000, rate: 0.0 },
+    { upTo: 250000, rate: 0.02 },
     { upTo: 925000, rate: 0.05 },
     { upTo: 1500000, rate: 0.1 },
     { upTo: Infinity, rate: 0.12 },
   ];
+
   const isAdditional = buyerType === 'company' || propertiesOwned >= 1;
-  const surcharge = isAdditional ? 0.03 : 0.0;
+  const surcharge = isAdditional ? 0.05 : 0.0;
+
   let remaining = price;
   let last = 0;
   let tax = 0;
+
   for (const band of bands) {
+    if (remaining <= 0) break;
     const taxable = Math.max(0, Math.min(remaining, band.upTo - last));
     if (taxable > 0) {
-      tax += taxable * (band.rate + surcharge);
+      tax += taxable * band.rate;
       remaining -= taxable;
       last = band.upTo;
     }
   }
-  return tax;
+
+  if (surcharge > 0) {
+    tax += price * surcharge;
+  }
+
+  return roundTo(tax, 2);
 }
 
 function scoreDeal({ coc, cap, dscr, npv10, cashflowYear1 }) {
@@ -68,6 +96,12 @@ function badgeColor(score) {
   if (score >= 75) return 'bg-green-600';
   if (score >= 55) return 'bg-amber-500';
   return 'bg-rose-600';
+}
+
+function deltaBadge(delta) {
+  if (delta > 0) return 'bg-emerald-600';
+  if (delta < 0) return 'bg-rose-600';
+  return 'bg-slate-500';
 }
 
 export default function App() {
@@ -92,10 +126,17 @@ export default function App() {
     discountRate: 0.07,
     buyerType: 'individual',
     propertiesOwned: 0,
+    indexFundGrowth: DEFAULT_INDEX_GROWTH,
+    firstTimeBuyer: false,
   });
 
   const equity = useMemo(() => {
-    const stampDuty = calcStampDuty(inputs.purchasePrice, inputs.buyerType, inputs.propertiesOwned);
+    const stampDuty = calcStampDuty(
+      inputs.purchasePrice,
+      inputs.buyerType,
+      inputs.propertiesOwned,
+      inputs.firstTimeBuyer
+    );
 
     const deposit = inputs.purchasePrice * inputs.depositPct;
     const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
@@ -168,7 +209,7 @@ export default function App() {
       }
 
       const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
-      indexVal = indexVal * (1 + INDEX_GROWTH);
+      indexVal = indexVal * (1 + inputs.indexFundGrowth);
       chart.push({ year: y, value: vt, valuePlusRent: vt + cumulativeCash, indexFund: indexVal });
 
       rent *= 1 + inputs.rentGrowth;
@@ -179,6 +220,8 @@ export default function App() {
 
     const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
     const propertyGrossWealthAtExit = futureValue + exitCumCash;
+    const wealthDelta = propertyNetWealthAtExit - indexVal;
+    const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
 
     return {
       deposit,
@@ -212,19 +255,38 @@ export default function App() {
       exitNetSaleProceeds,
       propertyNetWealthAtExit,
       propertyGrossWealthAtExit,
+      wealthDelta,
+      wealthDeltaPct,
     };
   }, [inputs]);
 
-  const onNum = (k, v) => setInputs((s) => ({ ...s, [k]: v }));
-  const onBuyerType = (v) => setInputs((s) => ({ ...s, buyerType: v }));
+  const onNum = (key, value, decimals = 2) => {
+    setInputs((prev) => {
+      const rounded = roundTo(value, decimals);
+      const next = { ...prev, [key]: rounded };
+      if (key === 'propertiesOwned' && rounded > 0) {
+        next.firstTimeBuyer = false;
+      }
+      if (key === 'buyerType' && value === 'company') {
+        next.firstTimeBuyer = false;
+      }
+      return next;
+    });
+  };
+  const onBuyerType = (value) =>
+    setInputs((prev) => ({
+      ...prev,
+      buyerType: value,
+      firstTimeBuyer: value === 'company' ? false : prev.firstTimeBuyer,
+    }));
 
   const pctInput = (k, label, step = 0.005) => (
     <div className="flex flex-col gap-1">
       <label className="text-sm text-slate-600">{label}</label>
       <input
         type="number"
-        value={(inputs[k] ?? 0) * 100}
-        onChange={(e) => onNum(k, Number(e.target.value) / 100)}
+        value={Number.isFinite(inputs[k]) ? roundTo((inputs[k] ?? 0) * 100, 2) : ''}
+        onChange={(e) => onNum(k, Number(e.target.value) / 100, 4)}
         step={step * 100}
         className="w-full rounded-xl border border-slate-300 px-3 py-2"
       />
@@ -237,21 +299,21 @@ export default function App() {
       <label className="text-sm text-slate-600">{label}</label>
       <input
         type="number"
-        value={Number(inputs[k] ?? 0)}
-        onChange={(e) => onNum(k, Number(e.target.value))}
+        value={Number.isFinite(inputs[k]) ? roundTo(inputs[k], 2) : ''}
+        onChange={(e) => onNum(k, Number(e.target.value), 2)}
         step={step}
         className="w-full rounded-xl border border-slate-300 px-3 py-2"
       />
     </div>
   );
 
-  const smallInput = (k, label, step = 1) => (
+  const smallInput = (k, label, step = 1, decimals = 0) => (
     <div className="flex flex-col gap-1">
       <label className="text-sm text-slate-600">{label}</label>
       <input
         type="number"
-        value={Number(inputs[k] ?? 0)}
-        onChange={(e) => onNum(k, Number(e.target.value))}
+        value={Number.isFinite(inputs[k]) ? roundTo(inputs[k], decimals) : ''}
+        onChange={(e) => onNum(k, Number(e.target.value), decimals)}
         step={step}
         className="w-full rounded-xl border border-slate-300 px-3 py-2"
       />
@@ -264,10 +326,15 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto max-w-6xl px-4 py-8">
-        <header className="mb-6 flex items-center justify-between">
+        <header className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h1 className="text-2xl font-bold tracking-tight">Property Investment QuickCheck</h1>
-          <div className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}>
-            Score: {Math.round(equity.score)} / 100
+          <div className="flex flex-col items-start gap-2 text-sm md:flex-row md:items-center">
+            <div className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}>
+              Score: {Math.round(equity.score)} / 100
+            </div>
+            <div className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}>
+              Δ vs index: {currency(equity.wealthDelta)} ({formatPercent(equity.wealthDeltaPct)})
+            </div>
           </div>
         </header>
 
@@ -300,15 +367,30 @@ export default function App() {
                 </div>
                 {inputs.buyerType === 'individual' && (
                   <div className="mt-3 grid grid-cols-2 gap-3">
-                    {smallInput('propertiesOwned', 'Existing properties', 1)}
+                    {smallInput('propertiesOwned', 'Existing properties', 1, 0)}
+                    <label className="col-span-2 inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={inputs.firstTimeBuyer}
+                        onChange={(e) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            firstTimeBuyer: e.target.checked && prev.propertiesOwned === 0,
+                          }))
+                        }
+                        disabled={inputs.propertiesOwned > 0}
+                      />
+                      <span>First-time buyer relief</span>
+                    </label>
                     <div className="col-span-2 text-xs text-slate-500">
-                      If you already own 1+ residential properties, additional‑dwelling SDLT (+3%) applies.
+                      If you already own 1+ residential properties, higher SDLT rates (+5%) apply. First-time buyer relief
+                      covers £0–£300k fully and the next £200k at 5% (only if the price is ≤£500k).
                     </div>
                   </div>
                 )}
                 {inputs.buyerType === 'company' && (
                   <div className="mt-2 text-xs text-slate-500">
-                    Company purchases are treated here at additional‑dwelling rates (+3%).
+                    Company purchases are treated here at higher rates (+5% surcharge on the total price).
                   </div>
                 )}
               </div>
@@ -354,13 +436,14 @@ export default function App() {
                 {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
                 {pctInput('annualAppreciation', 'Appreciation %')}
                 {pctInput('rentGrowth', 'Rent growth %')}
+                {pctInput('indexFundGrowth', 'Index fund growth %')}
                 {smallInput('exitYear', 'Exit year', 1)}
                 {pctInput('sellingCostsPct', 'Selling costs %')}
                 {pctInput('discountRate', 'Discount rate %', 0.001)}
               </div>
-              <p className="mt-3 text-xs text-slate-500">
-                SDLT model is simplified for England &amp; NI (residential bands + 3% additional rate). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
-              </p>
+                <p className="mt-3 text-xs text-slate-500">
+                  SDLT model is simplified for England &amp; NI (residential bands + 5% higher-rate surcharge). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
+                </p>
             </div>
           </section>
 
@@ -385,9 +468,9 @@ export default function App() {
               </SummaryCard>
 
               <SummaryCard title="Key ratios">
-                <Line label="Cap rate" value={(equity.cap * 100).toFixed(2) + '%'} />
-                <Line label="Yield on cost" value={(equity.yoc * 100).toFixed(2) + '%'} />
-                <Line label="Cash‑on‑cash" value={(equity.coc * 100).toFixed(2) + '%'} />
+                <Line label="Cap rate" value={formatPercent(equity.cap)} />
+                <Line label="Yield on cost" value={formatPercent(equity.yoc)} />
+                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} />
                 <Line label="DSCR" value={equity.dscr.toFixed(2)} />
                 <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} />
               </SummaryCard>
@@ -403,7 +486,7 @@ export default function App() {
               </SummaryCard>
 
               <SummaryCard title="NPV (10‑yr cashflows)">
-                <Line label={`Discount @ ${(inputs.discountRate * 100).toFixed(1)}%`} value="" />
+                <Line label={`Discount @ ${formatPercent(inputs.discountRate)}`} value="" />
                 <Line label="NPV" value={currency(equity.npv10)} bold />
                 <p className="mt-2 text-xs text-slate-500">Positive NPV means the deal beats your hurdle rate.</p>
               </SummaryCard>
@@ -412,7 +495,8 @@ export default function App() {
             <div className="rounded-2xl bg-white p-4 shadow-sm">
               <h3 className="mb-2 text-base font-semibold">Wealth trajectory vs Index Fund</h3>
               <p className="mb-3 text-xs text-slate-500">
-                Property (value and value + cumulative net rent) vs. investing the same upfront cash (<strong>Total cash in</strong>) into an index fund compounding at <strong>{(INDEX_GROWTH * 100).toFixed(0)}%</strong> per year.
+                Property (value and value + cumulative net rent) vs. investing the same upfront cash (<strong>Total cash in</strong>)
+                into an index fund compounding at <strong>{formatPercent(inputs.indexFundGrowth)}</strong> per year.
               </p>
               <div className="h-80 w-full">
                 <ResponsiveContainer>
@@ -422,9 +506,30 @@ export default function App() {
                     <YAxis tickFormatter={(v) => currency(v)} width={80} />
                     <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                     <Legend />
-                    <Area type="monotone" dataKey="value" name="Property value" fillOpacity={0.2} strokeWidth={2} />
-                    <Area type="monotone" dataKey="valuePlusRent" name="Property + rent" fillOpacity={0.25} strokeWidth={2} />
-                    <Area type="monotone" dataKey="indexFund" name="Index fund" fillOpacity={0.2} strokeWidth={2} />
+                    <Area
+                      type="monotone"
+                      dataKey="value"
+                      name="Property value"
+                      stroke="#2563eb"
+                      fill="rgba(37,99,235,0.2)"
+                      strokeWidth={2}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="valuePlusRent"
+                      name="Property + rent"
+                      stroke="#16a34a"
+                      fill="rgba(22,163,74,0.25)"
+                      strokeWidth={2}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="indexFund"
+                      name="Index fund"
+                      stroke="#f97316"
+                      fill="rgba(249,115,22,0.2)"
+                      strokeWidth={2}
+                    />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -473,9 +578,9 @@ export default function App() {
               <h3 className="mb-2 text-base font-semibold">Notes</h3>
               <ul className="list-disc pl-5 text-sm leading-6 text-slate-700">
                 <li>Model is pre‑tax and simplified. Mortgage interest/tax rules (e.g., Section 24) are not included.</li>
-                <li>SDLT is approximate (England &amp; NI bands + 3% surcharge when applicable). Confirm for your scenario.</li>
+                <li>SDLT is approximate (England &amp; NI bands + 5% higher-rate surcharge when applicable). Confirm for your scenario.</li>
                 <li>
-                  Index fund comparison assumes a single upfront contribution of <em>Total cash in</em> at {(INDEX_GROWTH * 100).toFixed(0)}% compounded annually.
+                  Index fund comparison assumes a single upfront contribution of <em>Total cash in</em> at {formatPercent(inputs.indexFundGrowth)} compounded annually.
                 </li>
               </ul>
             </div>
@@ -521,13 +626,16 @@ function Line({ label, value, bold = false }) {
     const io = (100000 * 0.06) / 12;
     console.assert(approx(io, 500, 1e-6), `IO mismatch: ${io}`);
 
-    const sdltBase = calcStampDuty(300000, 'individual', 0);
-    console.assert(approx(sdltBase, 2500, 1), `SDLT base mismatch: ${sdltBase}`);
+    const sdltBase = calcStampDuty(300000, 'individual', 0, false);
+    console.assert(approx(sdltBase, 4750, 1), `SDLT base mismatch: ${sdltBase}`);
 
-    const sdltAdd = calcStampDuty(300000, 'company', 0);
-    console.assert(approx(sdltAdd, 11500, 1), `SDLT add mismatch: ${sdltAdd}`);
+    const sdltAdd = calcStampDuty(300000, 'company', 0, false);
+    console.assert(approx(sdltAdd, 19750, 1), `SDLT add mismatch: ${sdltAdd}`);
 
-    const idx10 = 50000 * Math.pow(1 + INDEX_GROWTH, 10);
+    const sdltFtb = calcStampDuty(500000, 'individual', 0, true);
+    console.assert(approx(sdltFtb, 10000, 1), `SDLT FTB mismatch: ${sdltFtb}`);
+
+    const idx10 = 50000 * Math.pow(1 + DEFAULT_INDEX_GROWTH, 10);
     console.assert(approx(idx10, 98357.5679, 0.5), `Index cmp mismatch: ${idx10}`);
   } catch (e) {
     console.warn('QuickCheck dev tests threw:', e);
