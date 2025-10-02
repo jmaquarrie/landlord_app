@@ -679,10 +679,13 @@ export default function App() {
 
   const handleSaveScenario = () => {
     if (typeof window === 'undefined') return;
-    const defaultLabel = `Scenario ${new Date().toLocaleString()}`;
+    const addressLabel = (inputs.propertyAddress ?? '').trim();
+    const fallbackLabel = `Scenario ${new Date().toLocaleString()}`;
+    const defaultLabel = addressLabel !== '' ? addressLabel : fallbackLabel;
     const nameInput = window.prompt('Name this scenario', defaultLabel);
     if (nameInput === null) return;
-    const label = nameInput.trim() === '' ? defaultLabel : nameInput.trim();
+    const trimmed = nameInput.trim();
+    const label = trimmed !== '' ? trimmed : defaultLabel;
     const snapshot = JSON.parse(
       JSON.stringify({
         ...inputs,
@@ -1096,7 +1099,7 @@ export default function App() {
               </SummaryCard>
             </div>
 
-            <div className="p-3">
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
               <h3 className="mb-2 text-sm font-semibold">Notes</h3>
               <ul className="list-disc pl-5 text-xs leading-5 text-slate-700">
                 <li>
