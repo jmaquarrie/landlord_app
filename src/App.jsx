@@ -1084,8 +1084,16 @@ export default function App() {
                 <ResponsiveContainer>
                   <AreaChart data={equity.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} />
-                    <YAxis tickFormatter={(v) => currency(v)} width={80} />
+                    <XAxis
+                      dataKey="year"
+                      tickFormatter={(t) => `Y${t}`}
+                      tick={{ fontSize: 10, fill: '#475569' }}
+                    />
+                    <YAxis
+                      tickFormatter={(v) => currency(v)}
+                      tick={{ fontSize: 10, fill: '#475569' }}
+                      width={90}
+                    />
                     <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                     <Legend />
                     <Area
