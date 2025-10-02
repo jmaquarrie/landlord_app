@@ -25,6 +25,15 @@ const roundTo = (value, decimals = 2) => {
 
 const formatPercent = (value) => `${roundTo(value * 100, 2).toFixed(2)}%`;
 
+const SCORE_TOOLTIPS = {
+  overall:
+    'Overall score combines cash-on-cash, cap rate, DSCR, NPV, and first-year cash flow. Higher is better (0-100).',
+  delta:
+    'Wealth delta compares property net proceeds plus cumulative cash flow to the index fund alternative at exit.',
+  deltaAfterTax:
+    'After-tax wealth delta compares property net proceeds plus after-tax cash flow to the index fund alternative at exit.',
+};
+
 function personalAllowance(income) {
   if (income <= 0) return 0;
   if (income <= 100000) return PERSONAL_ALLOWANCE;
@@ -439,40 +448,39 @@ export default function App() {
 
   const pctInput = (k, label, step = 0.005) => (
     <div className="flex flex-col gap-1">
-      <label className="text-sm text-slate-600">{label}</label>
+      <label className="text-xs font-medium text-slate-600">{label}</label>
       <input
         type="number"
         value={Number.isFinite(inputs[k]) ? roundTo((inputs[k] ?? 0) * 100, 2) : ''}
         onChange={(e) => onNum(k, Number(e.target.value) / 100, 4)}
         step={step * 100}
-        className="w-full rounded-xl border border-slate-300 px-3 py-2"
+        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
       />
-      <div className="text-xs text-slate-500">%</div>
     </div>
   );
 
   const moneyInput = (k, label, step = 1000) => (
     <div className="flex flex-col gap-1">
-      <label className="text-sm text-slate-600">{label}</label>
+      <label className="text-xs font-medium text-slate-600">{label}</label>
       <input
         type="number"
         value={Number.isFinite(inputs[k]) ? roundTo(inputs[k], 2) : ''}
         onChange={(e) => onNum(k, Number(e.target.value), 2)}
         step={step}
-        className="w-full rounded-xl border border-slate-300 px-3 py-2"
+        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
       />
     </div>
   );
 
   const smallInput = (k, label, step = 1, decimals = 0) => (
     <div className="flex flex-col gap-1">
-      <label className="text-sm text-slate-600">{label}</label>
+      <label className="text-xs font-medium text-slate-600">{label}</label>
       <input
         type="number"
         value={Number.isFinite(inputs[k]) ? roundTo(inputs[k], decimals) : ''}
         onChange={(e) => onNum(k, Number(e.target.value), decimals)}
         step={step}
-        className="w-full rounded-xl border border-slate-300 px-3 py-2"
+        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
       />
     </div>
   );
@@ -506,30 +514,39 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-6xl px-4 py-8">
-        <header className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <h1 className="text-2xl font-bold tracking-tight">Property Investment QuickCheck</h1>
-          <div className="flex flex-col items-start gap-2 text-sm md:flex-row md:items-center">
-            <div className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}>
+      <div className="mx-auto max-w-6xl px-4 py-6">
+        <header className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Property Forecaster</h1>
+          <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">
+            <div
+              className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}
+              title={SCORE_TOOLTIPS.overall}
+            >
               Score: {Math.round(equity.score)} / 100
             </div>
-            <div className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}>
+            <div
+              className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}
+              title={SCORE_TOOLTIPS.delta}
+            >
               Δ vs index: {currency(equity.wealthDelta)} ({formatPercent(equity.wealthDeltaPct)})
             </div>
-            <div className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDeltaAfterTax)}`}>
+            <div
+              className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDeltaAfterTax)}`}
+              title={SCORE_TOOLTIPS.deltaAfterTax}
+            >
               Δ after tax: {currency(equity.wealthDeltaAfterTax)} ({formatPercent(equity.wealthDeltaAfterTaxPct)})
             </div>
           </div>
         </header>
 
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <section className="md:col-span-1">
-            <div className="rounded-2xl bg-white p-4 shadow-sm">
-              <h2 className="mb-3 text-lg font-semibold">Deal Inputs</h2>
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
 
               <div className="mb-3 rounded-xl border border-slate-200 p-3">
-                <div className="mb-2 text-sm font-medium text-slate-700">Buyer profile</div>
-                <div className="flex items-center gap-3 text-sm">
+                <div className="mb-2 text-xs font-semibold text-slate-700">Buyer profile</div>
+                <div className="flex items-center gap-3 text-xs">
                   <label className="inline-flex items-center gap-2">
                     <input
                       type="radio"
@@ -550,9 +567,9 @@ export default function App() {
                   </label>
                 </div>
                 {inputs.buyerType === 'individual' && (
-                  <div className="mt-3 grid grid-cols-2 gap-3">
+                  <div className="mt-3 grid grid-cols-2 gap-2">
                     {smallInput('propertiesOwned', 'Existing properties', 1, 0)}
-                    <label className="col-span-2 inline-flex items-center gap-2 text-sm text-slate-700">
+                    <label className="col-span-2 inline-flex items-center gap-2 text-xs text-slate-700">
                       <input
                         type="checkbox"
                         checked={inputs.firstTimeBuyer}
@@ -566,31 +583,31 @@ export default function App() {
                       />
                       <span>First-time buyer relief</span>
                     </label>
-                    <div className="col-span-2 text-xs text-slate-500">
+                    <div className="col-span-2 text-[11px] text-slate-500">
                       If you already own 2+ residential properties, higher SDLT rates (+5%) apply. First-time buyer relief
                       covers £0–£300k fully and the next £200k at 5% (only if the price is ≤£500k).
                     </div>
                   </div>
                 )}
                 {inputs.buyerType === 'company' && (
-                  <div className="mt-2 text-xs text-slate-500">
+                  <div className="mt-2 text-[11px] text-slate-500">
                     Company purchases are treated here at higher rates (+5% surcharge on the total price).
                   </div>
                 )}
               </div>
 
               <div className="mb-3 rounded-xl border border-slate-200 p-3">
-                <div className="mb-2 text-sm font-medium text-slate-700">Household income</div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="mb-2 text-xs font-semibold text-slate-700">Household income</div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {moneyInput('incomePerson1', 'Owner A income (£)', 1000)}
                   {moneyInput('incomePerson2', 'Owner B income (£)', 1000)}
                 </div>
-                <p className="mt-2 text-xs text-slate-500">
+                <p className="mt-1 text-[11px] text-slate-500">
                   Property profits are split 50/50 between two owners to approximate yearly income tax on rental earnings.
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 {moneyInput('purchasePrice', 'Purchase price (£)')}
                 {pctInput('depositPct', 'Deposit %')}
                 {pctInput('closingCostsPct', 'Other closing costs %')}
@@ -599,8 +616,8 @@ export default function App() {
                 {smallInput('mortgageYears', 'Mortgage term (years)')}
 
                 <div className="col-span-2">
-                  <div className="mb-1 text-sm font-medium text-slate-700">Loan type</div>
-                  <div className="flex gap-4 text-sm">
+                  <div className="mb-1 text-xs font-semibold text-slate-700">Loan type</div>
+                  <div className="flex gap-4 text-xs">
                     <label className="inline-flex items-center gap-2">
                       <input
                         type="radio"
@@ -620,7 +637,7 @@ export default function App() {
                       <span>Interest‑only</span>
                     </label>
                   </div>
-                  <div className="mt-1 text-xs text-slate-500">Interest‑only keeps the loan balance unchanged until exit; debt service = interest only.</div>
+                  <div className="mt-1 text-[11px] text-slate-500">Interest‑only keeps the loan balance unchanged until exit; debt service = interest only.</div>
                 </div>
 
                 {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
@@ -636,14 +653,14 @@ export default function App() {
                 {pctInput('sellingCostsPct', 'Selling costs %')}
                 {pctInput('discountRate', 'Discount rate %', 0.001)}
               </div>
-                <p className="mt-3 text-xs text-slate-500">
+                <p className="mt-2 text-[11px] text-slate-500">
                   SDLT model is simplified for England &amp; NI (residential bands + 5% higher-rate surcharge). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
                 </p>
             </div>
           </section>
 
-          <section className="space-y-4 md:col-span-2">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <section className="space-y-3 md:col-span-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
               <SummaryCard title="Cash needed">
                 <Line label="Deposit" value={currency(equity.deposit)} />
                 <Line label="Stamp Duty (est.)" value={currency(equity.stampDuty)} />
@@ -676,7 +693,7 @@ export default function App() {
               </SummaryCard>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <SummaryCard title={`At exit (Year ${inputs.exitYear})`}>
                 <Line label="Future value" value={currency(equity.futureValue)} />
                 <Line label="Remaining loan" value={currency(equity.remaining)} />
@@ -692,14 +709,14 @@ export default function App() {
               </SummaryCard>
             </div>
 
-            <div className="rounded-2xl bg-white p-4 shadow-sm">
-              <h3 className="mb-2 text-base font-semibold">Wealth trajectory vs Index Fund</h3>
-              <p className="mb-3 text-xs text-slate-500">
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <h3 className="mb-2 text-sm font-semibold">Wealth trajectory vs Index Fund</h3>
+              <p className="mb-2 text-[11px] text-slate-500">
                 Property (value, value + cumulative net rent, and after rental income tax) vs. investing the same upfront cash
                 (<strong>Total cash in</strong>) into an index fund compounding at <strong>{formatPercent(inputs.indexFundGrowth)}</strong>
                 per year.
               </p>
-              <div className="h-80 w-full">
+              <div className="h-72 w-full">
                 <ResponsiveContainer>
                   <AreaChart data={equity.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -744,7 +761,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <SummaryCard title={`Exit comparison (Year ${inputs.exitYear})`}>
                 <Line label="Index fund value" value={currency(equity.indexValEnd)} />
                 <Line label="Property gross (value + rent)" value={currency(equity.propertyGrossWealthAtExit)} />
@@ -792,9 +809,9 @@ export default function App() {
               </SummaryCard>
             </div>
 
-            <div className="rounded-2xl bg-white p-4 shadow-sm">
-              <h3 className="mb-2 text-base font-semibold">Notes</h3>
-              <ul className="list-disc pl-5 text-sm leading-6 text-slate-700">
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <h3 className="mb-2 text-sm font-semibold">Notes</h3>
+              <ul className="list-disc pl-5 text-xs leading-5 text-slate-700">
                 <li>
                   Rental income tax is approximated using the 2024/25 UK personal allowance and bands, splitting profits evenly
                   between two owners. Mortgage interest relief nuances (e.g., Section 24 caps) are not modelled.
@@ -809,41 +826,41 @@ export default function App() {
               </ul>
             </div>
 
-            <div className="rounded-2xl bg-white p-4 shadow-sm">
-              <h3 className="mb-3 text-base font-semibold">Scenario history</h3>
-              <p className="text-sm text-slate-600">
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <h3 className="mb-2 text-sm font-semibold">Scenario history</h3>
+              <p className="text-xs text-slate-600">
                 Save your current inputs and reload any previous scenario to compare different deals quickly. Scenarios are stored locally in
                 your browser.
               </p>
-              <div className="mt-4 flex flex-wrap items-center gap-3">
+              <div className="mt-3 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
                   onClick={handleSaveScenario}
-                  className="rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                  className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700"
                 >
                   Save current scenario
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowLoadPanel((prev) => !prev)}
-                  className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700"
+                  className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700"
                 >
                   {showLoadPanel ? 'Close saved scenarios' : 'Load saved scenario'}
                 </button>
               </div>
 
               {showLoadPanel && (
-                <div className="mt-4 space-y-3">
+                <div className="mt-3 space-y-3">
                   {savedScenarios.length === 0 ? (
-                    <p className="text-sm text-slate-600">No scenarios saved yet. Save a scenario to build your history.</p>
+                    <p className="text-xs text-slate-600">No scenarios saved yet. Save a scenario to build your history.</p>
                   ) : (
                     <>
-                      <label className="flex flex-col gap-1 text-sm text-slate-700">
+                      <label className="flex flex-col gap-1 text-xs text-slate-700">
                         <span>Choose a saved scenario</span>
                         <select
                           value={selectedScenarioId}
                           onChange={(event) => setSelectedScenarioId(event.target.value)}
-                          className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                          className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
                         >
                           {savedScenarios.map((scenario) => (
                             <option key={scenario.id} value={scenario.id}>
@@ -855,13 +872,13 @@ export default function App() {
                       <button
                         type="button"
                         onClick={handleLoadScenario}
-                        className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+                        className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
                       >
                         Load selected scenario
                       </button>
                       <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
                         {savedScenarios.map((scenario) => (
-                          <div key={`${scenario.id}-meta`} className="flex flex-col gap-1 px-3 py-2 text-xs text-slate-600">
+                          <div key={`${scenario.id}-meta`} className="flex flex-col gap-1 px-3 py-2 text-[11px] text-slate-600">
                             <span className="font-semibold text-slate-700">{scenario.name}</span>
                             <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
                           </div>
@@ -875,7 +892,7 @@ export default function App() {
           </section>
         </div>
 
-        <footer className="mt-6 text-center text-xs text-slate-500">
+        <footer className="mt-4 text-center text-[11px] text-slate-500">
           Built for quick, sensible go/no‑go decisions — refine in a full spreadsheet before offering.
         </footer>
       </div>
@@ -885,18 +902,18 @@ export default function App() {
 
 function SummaryCard({ title, children }) {
   return (
-    <div className="rounded-2xl bg-white p-4 shadow-sm">
-      <h3 className="mb-2 text-base font-semibold">{title}</h3>
-      <div className="space-y-1">{children}</div>
+    <div className="rounded-2xl bg-white p-3 shadow-sm">
+      <h3 className="mb-2 text-sm font-semibold">{title}</h3>
+      <div className="space-y-0.5">{children}</div>
     </div>
   );
 }
 
 function Line({ label, value, bold = false }) {
   return (
-    <div className="flex items-center justify-between text-sm">
+    <div className="flex items-center justify-between text-xs">
       <span className="text-slate-600">{label}</span>
-      <span className={bold ? 'font-semibold' : 'text-slate-800'}>{value}</span>
+      <span className={bold ? 'font-semibold text-slate-800' : 'text-slate-800'}>{value}</span>
     </div>
   );
 }
