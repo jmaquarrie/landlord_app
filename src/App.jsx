@@ -202,108 +202,71 @@ const friendlyDateTime = (iso) => {
   }
 };
 
-function prepareFormValuesForExport(root) {
-  if (!root || typeof root.querySelectorAll !== 'function') {
-    return () => {};
+function csvEscape(value) {
+  if (value === null || value === undefined) {
+    return '';
   }
+  const stringValue = String(value);
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+}
 
-  const cleanups = [];
+function getControlDisplayValue(node) {
+  const tag = node.tagName.toLowerCase();
+  if (tag === 'select') {
+    const options = Array.from(node.selectedOptions || []);
+    return options.length > 0 ? options.map((opt) => opt.textContent ?? opt.value ?? '').join(', ') : node.value ?? '';
+  }
+  if (tag === 'textarea') {
+    return node.value ?? node.textContent ?? '';
+  }
+  const type = (node.getAttribute('type') || '').toLowerCase();
+  if (type === 'checkbox' || type === 'radio') {
+    return node.checked ? 'Yes' : 'No';
+  }
+  return node.value ?? '';
+}
 
-  const setAttr = (node, attr, value) => {
-    const previous = node.getAttribute(attr);
-    if (value === null || value === undefined) {
-      node.removeAttribute(attr);
-    } else {
-      node.setAttribute(attr, value);
+function transformCloneForExport(root) {
+  if (!root) return;
+  const doc = root.ownerDocument;
+  const controls = root.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea, select');
+  controls.forEach((control) => {
+    const replacement = doc.createElement('div');
+    replacement.className = control.className;
+    const inlineStyle = control.getAttribute('style');
+    if (inlineStyle) {
+      replacement.setAttribute('style', inlineStyle);
     }
-    cleanups.push(() => {
-      if (previous === null || previous === undefined) {
-        node.removeAttribute(attr);
-      } else {
-        node.setAttribute(attr, previous);
-      }
-    });
-  };
-
-  const setProp = (node, prop, value) => {
-    const previous = node[prop];
-    node[prop] = value;
-    cleanups.push(() => {
-      node[prop] = previous;
-    });
-  };
-
-  const inputs = root.querySelectorAll('input');
-  inputs.forEach((node) => {
-    const type = (node.getAttribute('type') || '').toLowerCase();
-    if (type === 'checkbox' || type === 'radio') {
-      setAttr(node, 'checked', node.checked ? 'checked' : null);
-      setProp(node, 'defaultChecked', node.checked);
-    } else {
-      const value = node.value ?? '';
-      setAttr(node, 'value', value);
-      setProp(node, 'value', value);
-      setProp(node, 'defaultValue', value);
-
-      if (type === 'number') {
-        setAttr(node, 'data-export-original-type', type);
-        try {
-          node.setAttribute('type', 'text');
-        } catch (error) {
-          console.warn('Unable to switch input type for export', error);
-        }
-        cleanups.push(() => {
-          const originalType = node.getAttribute('data-export-original-type');
-          if (originalType) {
-            try {
-              node.setAttribute('type', originalType);
-            } catch (error) {
-              console.warn('Unable to restore input type after export', error);
-            }
-          } else {
-            node.removeAttribute('type');
-          }
-          node.removeAttribute('data-export-original-type');
-        });
+    replacement.textContent = getControlDisplayValue(control) || '\u00a0';
+    replacement.style.display = 'flex';
+    replacement.style.alignItems = 'center';
+    replacement.style.whiteSpace = 'pre-wrap';
+    replacement.style.backgroundColor = '#ffffff';
+    replacement.style.color = '#0f172a';
+    const minHeight = Math.max(control.clientHeight, 24);
+    replacement.style.minHeight = `${minHeight}px`;
+    const computed = doc.defaultView ? doc.defaultView.getComputedStyle(control) : null;
+    if (computed) {
+      replacement.style.justifyContent = 'flex-start';
+      replacement.style.fontSize = computed.fontSize;
+      replacement.style.fontFamily = computed.fontFamily;
+      replacement.style.fontWeight = computed.fontWeight;
+      replacement.style.paddingTop = computed.paddingTop;
+      replacement.style.paddingRight = computed.paddingRight;
+      replacement.style.paddingBottom = computed.paddingBottom;
+      replacement.style.paddingLeft = computed.paddingLeft;
+      replacement.style.borderRadius = computed.borderRadius;
+      replacement.style.border = computed.border;
+      replacement.style.boxSizing = computed.boxSizing;
+      if (control.clientWidth > 0) {
+        replacement.style.width = `${control.clientWidth}px`;
       }
     }
+    control.parentNode?.replaceChild(replacement, control);
   });
-
-  const textareas = root.querySelectorAll('textarea');
-  textareas.forEach((node) => {
-    const value = node.value ?? '';
-    setAttr(node, 'value', value);
-    setProp(node, 'value', value);
-    const previousTextContent = node.textContent;
-    node.textContent = value;
-    cleanups.push(() => {
-      node.textContent = previousTextContent;
-    });
-    setProp(node, 'defaultValue', value);
-  });
-
-  const selects = root.querySelectorAll('select');
-  selects.forEach((select) => {
-    const value = select.value;
-    setAttr(select, 'value', value);
-    setProp(select, 'value', value);
-    const options = select.options || [];
-    for (let i = 0; i < options.length; i += 1) {
-      const option = options[i];
-      setAttr(option, 'selected', option.selected ? 'selected' : null);
-    }
-  });
-
-  return () => {
-    for (let i = cleanups.length - 1; i >= 0; i -= 1) {
-      const fn = cleanups[i];
-      try {
-        fn();
-      } catch (error) {
-        console.warn('Failed to restore element attribute after export', error);
-      }
-    }
-  };
 }
 
 function calculateEquity(rawInputs) {
@@ -700,7 +663,6 @@ export default function App() {
     setShowTableModal(false);
     const element = pageRef.current;
     element.classList.add('exporting-pdf');
-    const restoreFormValues = prepareFormValuesForExport(element);
     try {
       const canvas = await html2canvas(element, {
         scale: 2,
@@ -708,6 +670,10 @@ export default function App() {
         windowWidth: element.scrollWidth,
         windowHeight: element.scrollHeight,
         backgroundColor: '#ffffff',
+        onclone: (clonedDocument) => {
+          const cloneRoot = clonedDocument.querySelector('[data-export-root]');
+          transformCloneForExport(cloneRoot);
+        },
       });
       const imageData = canvas.toDataURL('image/png');
       const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
@@ -732,9 +698,57 @@ export default function App() {
         window.alert('Unable to export PDF. Please try again.');
       }
     } finally {
-      restoreFormValues();
       element.classList.remove('exporting-pdf');
     }
+  };
+
+  const handleExportTableCsv = () => {
+    if (scenarioTableData.length === 0) {
+      if (typeof window !== 'undefined') {
+        window.alert('No saved scenarios to export yet.');
+      }
+      return;
+    }
+
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      return;
+    }
+
+    const header = [
+      'Scenario',
+      'Saved at',
+      'Total cash in',
+      'Cash flow (after tax)',
+      'Mortgage payment (monthly)',
+      'Yield on cost',
+      'Property net after rental tax',
+      'Exit year',
+    ];
+
+    const rows = scenarioTableData.map(({ scenario, metrics }) => [
+      scenario.name ?? '',
+      friendlyDateTime(scenario.savedAt),
+      currency(metrics.cashIn),
+      currency(metrics.cashflowYear1AfterTax),
+      currency(metrics.mortgage),
+      formatPercent(metrics.yoc),
+      currency(metrics.propertyNetWealthAfterTax),
+      metrics.exitYear,
+    ]);
+
+    const csvContent = [header, ...rows]
+      .map((row) => row.map((value) => csvEscape(value)).join(','))
+      .join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'property-scenarios.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const onNum = (key, value, decimals = 2) => {
@@ -901,7 +915,7 @@ export default function App() {
   };
 
   return (
-    <div ref={pageRef} className="min-h-screen bg-slate-50 text-slate-900">
+    <div ref={pageRef} data-export-root className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto max-w-6xl px-4">
         <div className="sticky top-0 z-30 -mx-4 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-slate-50/80 print:relative print:mx-0 print:border-0 print:bg-white">
           <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1322,12 +1336,10 @@ export default function App() {
                     ? 'Syncing scenarios with the remote service…'
                     : syncError
                     ? `Remote sync issue: ${syncError}`
-                    : 'Remote sync active (set via VITE_SCENARIO_API_URL).'}
+                    : 'Remote sync active.'}
                 </p>
               ) : (
-                <p className="text-xs text-slate-500">
-                  Scenarios are stored locally in your browser. Set VITE_SCENARIO_API_URL to sync with a backend service.
-                </p>
+                <p className="text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
               )}
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <button
@@ -1458,12 +1470,11 @@ export default function App() {
                     <tr>
                       <th className="px-4 py-2 text-left font-semibold">Scenario</th>
                       <th className="px-4 py-2 text-left font-semibold">Saved</th>
-                      <th className="px-4 py-2 text-right font-semibold">Cap rate</th>
+                      <th className="px-4 py-2 text-right font-semibold">Total cash in</th>
+                      <th className="px-4 py-2 text-right font-semibold">Cash flow (after tax)</th>
+                      <th className="px-4 py-2 text-right font-semibold">Mortgage pmt (mo)</th>
                       <th className="px-4 py-2 text-right font-semibold">Yield on cost</th>
-                      <th className="px-4 py-2 text-right font-semibold">Cash-on-cash</th>
-                      <th className="px-4 py-2 text-right font-semibold">DSCR</th>
-                      <th className="px-4 py-2 text-right font-semibold">NPV (exit horizon)</th>
-                      <th className="px-4 py-2 text-right font-semibold">Year 1 cash flow</th>
+                      <th className="px-4 py-2 text-right font-semibold">Property net after rental tax</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
@@ -1471,17 +1482,27 @@ export default function App() {
                       <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
                         <td className="px-4 py-2 font-semibold text-slate-800">{scenario.name}</td>
                         <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.cap)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashIn)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashflowYear1AfterTax)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.mortgage)}</td>
                         <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.yoc)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.coc)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{metrics.dscr > 0 ? metrics.dscr.toFixed(2) : '—'}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.npv)} ({metrics.exitYear}y)</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashflowYear1)}</td>
+                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.propertyNetWealthAfterTax)} ({metrics.exitYear}y)</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               )}
+            </div>
+            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-500">
+              <span>CSV export includes every saved scenario.</span>
+              <button
+                type="button"
+                onClick={handleExportTableCsv}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={scenarioTableData.length === 0}
+              >
+                Export CSV
+              </button>
             </div>
           </div>
         </div>
