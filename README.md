@@ -78,3 +78,15 @@ app.listen(port, () => console.log(`Scenario API listening on ${port}`));
 ```
 
 Deploy the server (for example on Render, Railway, or Vercel serverless functions) and expose its base URL via `VITE_SCENARIO_API_URL`. With that in place, your saved scenarios stay in sync across devices and networks.
+
+## AI investment assistant
+
+The in-app chatbot can call Google&#39;s Gemini API directly. Provide your API key at build time so the assistant can respond to questions about the current scenario:
+
+```bash
+export VITE_GOOGLE_API_KEY="your-google-api-key"
+# Optional: override the default model (gemini-1.5-flash-latest)
+export VITE_GOOGLE_MODEL="gemini-1.5-flash"
+```
+
+With these variables in place the `Ask assistant` panel will stream questions to `https://generativelanguage.googleapis.com`. If you prefer to proxy requests through your own service, you can continue to supply `VITE_CHAT_API_URL`; the app will fall back to the proxy whenever a Google API key is not available.

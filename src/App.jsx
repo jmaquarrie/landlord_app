@@ -15,7 +15,7 @@ import jsPDF from 'jspdf';
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
-const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL } = import.meta.env ?? {};
+const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL, VITE_GOOGLE_API_KEY, VITE_GOOGLE_MODEL } = import.meta.env ?? {};
 const SCENARIO_API_URL =
   typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
     ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
@@ -24,6 +24,15 @@ const CHAT_API_URL =
   typeof VITE_CHAT_API_URL === 'string' && VITE_CHAT_API_URL.trim() !== ''
     ? VITE_CHAT_API_URL.replace(/\/$/, '')
     : '';
+const GOOGLE_API_KEY =
+  typeof VITE_GOOGLE_API_KEY === 'string' && VITE_GOOGLE_API_KEY.trim() !== ''
+    ? VITE_GOOGLE_API_KEY.trim()
+    : '';
+const GOOGLE_MODEL =
+  typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
+    ? VITE_GOOGLE_MODEL.trim()
+    : 'gemini-1.5-flash-latest';
+const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
@@ -1190,7 +1199,127 @@ export default function App() {
     }
   };
 
-  const chatEnabled = Boolean(CHAT_API_URL);
+  const chatEnabled = Boolean(GOOGLE_API_KEY || CHAT_API_URL);
+
+  const buildChatScenarioSummary = () => {
+    const share1 = roundTo(inputs.ownershipShare1 * 100, 2).toFixed(2);
+    const share2 = roundTo(inputs.ownershipShare2 * 100, 2).toFixed(2);
+    const lines = [
+      `Property address: ${inputs.propertyAddress || 'Not provided'}`,
+      `Property URL: ${inputs.propertyUrl || 'Not provided'}`,
+      `Buyer type: ${inputs.buyerType} (properties owned: ${inputs.propertiesOwned})`,
+      `Purchase price: ${currency(inputs.purchasePrice)}; deposit: ${formatPercent(inputs.depositPct)}; closing costs: ${formatPercent(inputs.closingCostsPct)}; renovation: ${currency(inputs.renovationCost)}`,
+      `Loan: ${inputs.loanType} over ${inputs.mortgageYears} years at ${formatPercent(inputs.interestRate)}`,
+      `Rent: ${currency(inputs.monthlyRent)} /mo; vacancy: ${formatPercent(inputs.vacancyPct)}; management: ${formatPercent(inputs.mgmtPct)}; repairs: ${formatPercent(inputs.repairsPct)}`,
+      `Insurance: ${currency(inputs.insurancePerYear)}; other OpEx: ${currency(inputs.otherOpexPerYear)}`,
+      `Growth assumptions: appreciation ${formatPercent(inputs.annualAppreciation)}, rent growth ${formatPercent(inputs.rentGrowth)}, index fund ${formatPercent(inputs.indexFundGrowth)}`,
+      `Exit year: ${inputs.exitYear}; selling costs: ${formatPercent(inputs.sellingCostsPct)}; discount rate: ${formatPercent(inputs.discountRate)}`,
+      `Household incomes: ${currency(inputs.incomePerson1)} (${share1}%) and ${currency(inputs.incomePerson2)} (${share2}%)`,
+      `Reinvest after-tax cash flow: ${inputs.reinvestIncome ? `${formatPercent(inputs.reinvestPct)} of after-tax cash` : 'No reinvestment'}`,
+      `Total cash in: ${currency(equity.cashIn)}; Year 1 cash flow pre-tax: ${currency(equity.cashflowYear1)}; Year 1 cash flow after tax: ${currency(equity.cashflowYear1AfterTax)}`,
+      `Cap rate: ${formatPercent(equity.cap)}; Cash-on-cash: ${formatPercent(equity.coc)}; DSCR: ${equity.dscr.toFixed(2)}`,
+      `NPV (${inputs.exitYear}-year cash flows): ${currency(equity.npv)}`,
+      `Index fund value at exit: ${currency(equity.indexValEnd)}`,
+      `Property net wealth (pre-tax): ${currency(equity.propertyNetWealthAtExit)}; after-tax: ${currency(equity.propertyNetWealthAfterTax)}`,
+      `Wealth delta vs index: ${currency(equity.wealthDelta)} (${formatPercent(equity.wealthDeltaPct)}); after tax: ${currency(equity.wealthDeltaAfterTax)} (${formatPercent(equity.wealthDeltaAfterTaxPct)})`,
+    ];
+    return lines.join('\n');
+  };
+
+  const callCustomChat = async (question) => {
+    const response = await fetch(`${CHAT_API_URL}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        inputs,
+        metrics: {
+          cashIn: equity.cashIn,
+          cashflowYear1: equity.cashflowYear1,
+          cashflowYear1AfterTax: equity.cashflowYear1AfterTax,
+          cap: equity.cap,
+          coc: equity.coc,
+          dscr: equity.dscr,
+          npv: equity.npv,
+          wealthDelta: equity.wealthDelta,
+          wealthDeltaAfterTax: equity.wealthDeltaAfterTax,
+          propertyGrossWealthAtExit: equity.propertyGrossWealthAtExit,
+          propertyNetWealthAtExit: equity.propertyNetWealthAtExit,
+          propertyNetWealthAfterTax: equity.propertyNetWealthAfterTax,
+          exitYear: equity.exitYear,
+          indexFundGrowth: inputs.indexFundGrowth,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Chat request failed (${response.status})`);
+    }
+
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    return (
+      (payload && typeof payload.answer === 'string' && payload.answer) ||
+      (payload && typeof payload.message === 'string' && payload.message) ||
+      (payload && typeof payload === 'string' ? payload : '')
+    );
+  };
+
+  const callGoogleChat = async (question) => {
+    const scenarioSummary = buildChatScenarioSummary();
+    const prompt = [
+      'You are an AI assistant helping evaluate UK property investments.',
+      'Use the provided scenario data to answer the user\'s question with clear reasoning and cite any calculations you perform.',
+      'Scenario data:',
+      scenarioSummary,
+      '',
+      `Question: ${question}`,
+    ].join('\n');
+
+    const response = await fetch(
+      `${GOOGLE_API_BASE}/models/${encodeURIComponent(GOOGLE_MODEL)}:generateContent?key=${encodeURIComponent(GOOGLE_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: prompt }],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.3,
+            topP: 0.8,
+            topK: 40,
+            maxOutputTokens: 1024,
+          },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Google AI request failed (${response.status})`);
+    }
+
+    const payload = await response.json();
+    const candidate = payload?.candidates?.find((item) => item?.content?.parts?.length);
+    if (!candidate) {
+      throw new Error('The AI service returned an empty response.');
+    }
+
+    const text = candidate.content.parts
+      .map((part) => (typeof part?.text === 'string' ? part.text.trim() : ''))
+      .filter(Boolean)
+      .join('\n\n');
+
+    return text;
+  };
 
   const handleSendChat = async (event) => {
     event.preventDefault();
@@ -1211,51 +1340,20 @@ export default function App() {
     setChatError('');
 
     try {
-      const response = await fetch(`${CHAT_API_URL}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question,
-          inputs,
-          metrics: {
-            cashIn: equity.cashIn,
-            cashflowYear1: equity.cashflowYear1,
-            cashflowYear1AfterTax: equity.cashflowYear1AfterTax,
-            cap: equity.cap,
-            coc: equity.coc,
-            dscr: equity.dscr,
-            npv: equity.npv,
-            wealthDelta: equity.wealthDelta,
-            wealthDeltaAfterTax: equity.wealthDeltaAfterTax,
-            propertyGrossWealthAtExit: equity.propertyGrossWealthAtExit,
-            propertyNetWealthAtExit: equity.propertyNetWealthAtExit,
-            propertyNetWealthAfterTax: equity.propertyNetWealthAfterTax,
-            exitYear: equity.exitYear,
-            indexFundGrowth: inputs.indexFundGrowth,
-          },
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Chat request failed (${response.status})`);
+      let answer = '';
+      if (GOOGLE_API_KEY) {
+        answer = await callGoogleChat(question);
+      } else if (CHAT_API_URL) {
+        answer = await callCustomChat(question);
+      } else {
+        throw new Error('Chat service is not currently configured.');
       }
 
-      let payload;
-      try {
-        payload = await response.json();
-      } catch (error) {
-        payload = null;
-      }
-
-      const answer =
-        (payload && typeof payload.answer === 'string' && payload.answer) ||
-        (payload && typeof payload.message === 'string' && payload.message) ||
-        (payload && typeof payload === 'string' ? payload : '');
-
+      const content = answer && answer.trim().length > 0 ? answer.trim() : 'The chat service returned an empty response.';
       const assistantMessage = {
         id: `assistant-${timestamp}`,
         role: 'assistant',
-        content: answer || 'The chat service returned an empty response.',
+        content,
         createdAt: Date.now(),
       };
       setChatMessages((prev) => [...prev, assistantMessage]);
@@ -2426,7 +2524,11 @@ export default function App() {
                 </p>
               ) : null}
               {!chatEnabled ? (
-                <p className="text-xs text-slate-500">Connect the assistant to an AI endpoint to enable automated responses.</p>
+                <p className="text-xs text-slate-500">
+                  Provide a Google Gemini API key (set{' '}
+                  <code className="font-mono text-[11px]">VITE_GOOGLE_API_KEY</code>) or configure{' '}
+                  <code className="font-mono text-[11px]">VITE_CHAT_API_URL</code> to enable the assistant.
+                </p>
               ) : null}
               <form onSubmit={handleSendChat} className="mt-2 space-y-2">
                 <label className="flex flex-col gap-1 text-xs text-slate-700">
