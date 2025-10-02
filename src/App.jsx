@@ -293,6 +293,15 @@ function transformCloneForExport(root) {
     }
     control.parentNode?.replaceChild(replacement, control);
   });
+
+  const captureFrames = root.querySelectorAll('[data-capture-frame]');
+  captureFrames.forEach((frame) => {
+    const placeholder = doc.createElement('div');
+    placeholder.className = 'flex h-full w-full items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-4 text-center text-xs text-slate-600';
+    placeholder.textContent =
+      'Captured webpage preview is available when printing from the browser. External pages cannot be embedded in PDF exports.';
+    frame.parentNode?.replaceChild(placeholder, frame);
+  });
 }
 
 function calculateEquity(rawInputs) {
@@ -548,6 +557,7 @@ export default function App() {
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
+  const [capturedUrl, setCapturedUrl] = useState('');
   const [collapsedSections, setCollapsedSections] = useState({
     buyerProfile: false,
     householdIncome: false,
@@ -678,6 +688,9 @@ export default function App() {
       })),
     [savedScenarios]
   );
+
+  const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
+  const hasPropertyUrl = trimmedPropertyUrl !== '';
 
   const handlePrint = () => {
     if (typeof window === 'undefined') return;
@@ -934,7 +947,17 @@ export default function App() {
     if (!scenario) return;
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setShowLoadPanel(false);
+    const nextUrl = (scenario.data?.propertyUrl ?? '').trim();
+    setCapturedUrl(nextUrl);
   };
+
+  const handleCaptureUrl = () => {
+    const url = (inputs.propertyUrl ?? '').trim();
+    if (!url) return;
+    setCapturedUrl(url);
+  };
+
+  const handleClearCapture = () => setCapturedUrl('');
 
   const handleRenameScenario = (id) => {
     if (typeof window === 'undefined') return;
@@ -1021,9 +1044,9 @@ export default function App() {
                 className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
                 placeholder="https://"
               />
-              {inputs.propertyUrl ? (
+              {hasPropertyUrl ? (
                 <a
-                  href={inputs.propertyUrl}
+                  href={trimmedPropertyUrl}
                   target="_blank"
                   rel="noreferrer"
                   className="no-print inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
@@ -1031,6 +1054,14 @@ export default function App() {
                   Open
                 </a>
               ) : null}
+              <button
+                type="button"
+                onClick={handleCaptureUrl}
+                className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
+                disabled={!hasPropertyUrl}
+              >
+                Capture
+              </button>
             </div>
           </div>
         </section>
@@ -1498,6 +1529,32 @@ export default function App() {
             </div>
           </section>
         </div>
+
+        {capturedUrl ? (
+          <section className="mt-6">
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-800">Captured listing preview</h3>
+                <button
+                  type="button"
+                  onClick={handleClearCapture}
+                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                >
+                  Clear capture
+                </button>
+              </div>
+              <div className="aspect-[16/9] w-full overflow-hidden rounded-xl border border-slate-200 bg-white">
+                <iframe
+                  src={capturedUrl}
+                  title="Captured property listing"
+                  className="h-full w-full"
+                  data-capture-frame="true"
+                  loading="lazy"
+                />
+              </div>
+            </div>
+          </section>
+        ) : null}
 
         <footer className="mt-4 text-center text-[11px] text-slate-500">
           Built for quick, sensible go/no‑go decisions — refine in a full spreadsheet before offering.
