@@ -15,7 +15,7 @@ import jsPDF from 'jspdf';
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
-const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL, VITE_GOOGLE_API_KEY, VITE_GOOGLE_MODEL } = import.meta.env ?? {};
+const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL, VITE_GOOGLE_MODEL } = import.meta.env ?? {};
 const SCENARIO_API_URL =
   typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
     ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
@@ -24,10 +24,7 @@ const CHAT_API_URL =
   typeof VITE_CHAT_API_URL === 'string' && VITE_CHAT_API_URL.trim() !== ''
     ? VITE_CHAT_API_URL.replace(/\/$/, '')
     : '';
-const GOOGLE_API_KEY =
-  typeof VITE_GOOGLE_API_KEY === 'string' && VITE_GOOGLE_API_KEY.trim() !== ''
-    ? VITE_GOOGLE_API_KEY.trim()
-    : '';
+const GOOGLE_API_KEY = 'AIzaSyB9K7pla_JX_vy-d5zGXikxD9sJ1pglH94';
 const GOOGLE_MODEL =
   typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
     ? VITE_GOOGLE_MODEL.trim()
@@ -2340,20 +2337,73 @@ export default function App() {
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h3 className="mb-2 text-sm font-semibold">Notes</h3>
-              <ul className="list-disc pl-5 text-xs leading-5 text-slate-700">
-                <li>
-                  Rental profit tax is approximated using the 2024/25 UK personal allowance and bands for individuals, or a flat
-                  19% corporation tax when purchasing via a limited company.
-                </li>
-                <li>
-                  SDLT is approximate (England &amp; NI bands + 5% higher-rate surcharge when individuals will own 2+ properties or
-                  for company purchases). Confirm rates with HMRC/conveyancer; reliefs and devolved nations are not included.
-                </li>
-                <li>
-                  Index fund comparison assumes a single upfront contribution of <em>Total cash in</em> at {formatPercent(inputs.indexFundGrowth)} compounded annually.
-                </li>
-              </ul>
+              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="text-sm font-semibold text-slate-800">AI investment assistant</h3>
+                <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                  {chatStatus === 'loading' ? <span>Thinking…</span> : null}
+                  {chatMessages.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={handleClearChat}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100"
+                    >
+                      Clear chat
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {chatMessages.length === 0 ? (
+                <p className="mb-3 text-xs text-slate-600">
+                  Ask follow-up questions about this forecast and receive AI-generated responses grounded in the current inputs.
+                </p>
+              ) : (
+                <div className="mb-3 max-h-64 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+                  {chatMessages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={
+                        message.role === 'user'
+                          ? 'ml-auto max-w-[85%] rounded-lg bg-indigo-100 px-2 py-1 text-indigo-800'
+                          : 'mr-auto max-w-[85%] rounded-lg bg-white px-2 py-1 text-slate-700 shadow-sm'
+                      }
+                    >
+                      {message.content}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {chatError ? (
+                <p className="mb-2 text-xs text-rose-600" role="alert">
+                  {chatError}
+                </p>
+              ) : null}
+              {!chatEnabled ? (
+                <p className="text-xs text-slate-500">
+                  Provide a Google Gemini API key (set <code className="font-mono text-[11px]">VITE_GOOGLE_API_KEY</code>) or configure{' '}
+                  <code className="font-mono text-[11px]">VITE_CHAT_API_URL</code> to enable the assistant.
+                </p>
+              ) : null}
+              <form onSubmit={handleSendChat} className="mt-2 space-y-2">
+                <label className="flex flex-col gap-1 text-xs text-slate-700">
+                  <span>Your question</span>
+                  <textarea
+                    value={chatInput}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    className="min-h-[60px] w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
+                    placeholder="What should I watch out for in this investment?"
+                    disabled={chatStatus === 'loading'}
+                  />
+                </label>
+                <div className="flex items-center justify-end">
+                  <button
+                    type="submit"
+                    className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
+                    disabled={chatStatus === 'loading' || !chatEnabled}
+                  >
+                    {chatStatus === 'loading' ? 'Sending…' : 'Ask assistant'}
+                  </button>
+                </div>
+              </form>
             </div>
 
             <div className="p-3">
@@ -2481,76 +2531,6 @@ export default function App() {
                   )}
                 </div>
               )}
-            </div>
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <h3 className="text-sm font-semibold text-slate-800">AI investment assistant</h3>
-                <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                  {chatStatus === 'loading' ? <span>Thinking…</span> : null}
-                  {chatMessages.length > 0 ? (
-                    <button
-                      type="button"
-                      onClick={handleClearChat}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100"
-                    >
-                      Clear chat
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              {chatMessages.length === 0 ? (
-                <p className="mb-3 text-xs text-slate-600">
-                  Ask follow-up questions about this forecast and receive AI-generated responses grounded in the current inputs.
-                </p>
-              ) : (
-                <div className="mb-3 max-h-64 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
-                  {chatMessages.map((message) => (
-                    <div
-                      key={message.id}
-                      className={
-                        message.role === 'user'
-                          ? 'ml-auto max-w-[85%] rounded-lg bg-indigo-100 px-2 py-1 text-indigo-800'
-                          : 'mr-auto max-w-[85%] rounded-lg bg-white px-2 py-1 text-slate-700 shadow-sm'
-                      }
-                    >
-                      {message.content}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {chatError ? (
-                <p className="mb-2 text-xs text-rose-600" role="alert">
-                  {chatError}
-                </p>
-              ) : null}
-              {!chatEnabled ? (
-                <p className="text-xs text-slate-500">
-                  Provide a Google Gemini API key (set{' '}
-                  <code className="font-mono text-[11px]">VITE_GOOGLE_API_KEY</code>) or configure{' '}
-                  <code className="font-mono text-[11px]">VITE_CHAT_API_URL</code> to enable the assistant.
-                </p>
-              ) : null}
-              <form onSubmit={handleSendChat} className="mt-2 space-y-2">
-                <label className="flex flex-col gap-1 text-xs text-slate-700">
-                  <span>Your question</span>
-                  <textarea
-                    value={chatInput}
-                    onChange={(event) => setChatInput(event.target.value)}
-                    className="min-h-[60px] w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
-                    placeholder="What should I watch out for in this investment?"
-                    disabled={chatStatus === 'loading'}
-                  />
-                </label>
-                <div className="flex items-center justify-end">
-                  <button
-                    type="submit"
-                    className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
-                    disabled={chatStatus === 'loading' || !chatEnabled}
-                  >
-                    {chatStatus === 'loading' ? 'Sending…' : 'Ask assistant'}
-                  </button>
-                </div>
-              </form>
             </div>
           </section>
         </div>
