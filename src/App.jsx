@@ -701,6 +701,7 @@ export default function App() {
     householdIncome: false,
     purchaseCosts: false,
     rentalCashflow: false,
+    cashflowDetail: false,
   });
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
@@ -892,10 +893,13 @@ export default function App() {
   const hasCapturedSnapshot = Boolean(capturedPreview);
   const showListingPreview = isLivePreviewActive || hasCapturedSnapshot;
 
-  const cashflowTableRows = useMemo(
-    () =>
-      Array.from({ length: exitYearCount }, (_, index) => ({
-        year: index + 1,
+  const cashflowTableRows = useMemo(() => {
+    const chartByYear = new Map((equity.chart ?? []).map((point) => [point.year, point]));
+    return Array.from({ length: exitYearCount }, (_, index) => {
+      const year = index + 1;
+      const chartPoint = chartByYear.get(year);
+      return {
+        year,
         grossRent: equity.annualGrossRents[index] ?? 0,
         operatingExpenses: equity.annualOperatingExpenses[index] ?? 0,
         noi: equity.annualNoiValues[index] ?? 0,
@@ -903,9 +907,10 @@ export default function App() {
         propertyTax: equity.propertyTaxes[index] ?? 0,
         cashPreTax: equity.annualCashflowsPreTax[index] ?? 0,
         cashAfterTax: equity.annualCashflowsAfterTax[index] ?? 0,
-      })),
-    [equity, exitYearCount]
-  );
+        indexFundValue: chartPoint?.indexFund ?? 0,
+      };
+    });
+  }, [equity, exitYearCount]);
 
   const handlePrint = () => {
     if (typeof window === 'undefined') return;
@@ -1783,18 +1788,19 @@ export default function App() {
               <SummaryCard
                 title={
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-slate-700">
-                      Year {performanceYearClamped} performance
-                    </span>
-                    <select
-                      value={performanceYearClamped}
-                      onChange={(event) => setPerformanceYear(Number(event.target.value) || 1)}
-                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                    >
-                      {performanceYearOptions.map((year) => (
-                        <option key={year} value={year}>{`Year ${year}`}</option>
-                      ))}
-                    </select>
+                    <span className="text-sm font-semibold text-slate-700">Performance</span>
+                    <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                      <span>Year</span>
+                      <select
+                        value={performanceYearClamped}
+                        onChange={(event) => setPerformanceYear(Number(event.target.value) || 1)}
+                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                      >
+                        {performanceYearOptions.map((year) => (
+                          <option key={year} value={year}>{`Year ${year}`}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 }
               >
@@ -2086,13 +2092,15 @@ export default function App() {
         </div>
 
         <section className="mt-6">
-          <div className="rounded-2xl bg-white p-3 shadow-sm">
-            <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-              <h3 className="text-sm font-semibold text-slate-700">Annual cash flow detail</h3>
-              <span className="text-[11px] text-slate-500">Per-year performance through exit.</span>
-            </div>
+          <CollapsibleSection
+            title="Annual cash flow detail"
+            collapsed={collapsedSections.cashflowDetail}
+            onToggle={() => toggleSection('cashflowDetail')}
+            className="rounded-2xl bg-white p-3 shadow-sm"
+          >
+            <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
             <CashflowTable rows={cashflowTableRows} rentalTaxLabel={rentalTaxLabel} />
-          </div>
+          </CollapsibleSection>
         </section>
 
         {showListingPreview ? (
@@ -2284,6 +2292,7 @@ function CashflowTable({ rows = [], rentalTaxLabel }) {
             <th className="px-3 py-2 text-right font-semibold">{rentalTaxLabel}</th>
             <th className="px-3 py-2 text-right font-semibold">Cash flow (pre-tax)</th>
             <th className="px-3 py-2 text-right font-semibold">Cash flow (after tax)</th>
+            <th className="px-3 py-2 text-right font-semibold">Index fund value</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-200">
@@ -2297,6 +2306,7 @@ function CashflowTable({ rows = [], rentalTaxLabel }) {
               <td className="px-3 py-2 text-right text-slate-700">{currency(row.propertyTax)}</td>
               <td className="px-3 py-2 text-right text-slate-700">{currency(row.cashPreTax)}</td>
               <td className="px-3 py-2 text-right font-semibold text-slate-800">{currency(row.cashAfterTax)}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.indexFundValue)}</td>
             </tr>
           ))}
         </tbody>
@@ -2376,9 +2386,16 @@ function SensitivityRow({ label, value }) {
   );
 }
 
-function CollapsibleSection({ title, collapsed, onToggle, children }) {
+function CollapsibleSection({ title, collapsed, onToggle, children, className }) {
+  const containerClassName = [
+    'relative mb-3',
+    className ?? 'rounded-xl border border-slate-200 p-3',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <div className="relative mb-3 rounded-xl border border-slate-200 p-3">
+    <div className={containerClassName}>
       <button
         type="button"
         onClick={onToggle}
