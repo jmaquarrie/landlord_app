@@ -790,17 +790,20 @@ export default function App() {
         },
       });
       const imageData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
-      const margin = 20;
-      const availableWidth = pageWidth - margin * 2;
-      const availableHeight = pageHeight - margin * 2;
-      const scale = Math.min(availableWidth / canvas.width, availableHeight / canvas.height, 1);
+      const marginX = 12;
+      const marginTop = 12;
+      const availableWidth = pageWidth - marginX * 2;
+      const availableHeight = pageHeight - marginTop * 2;
+      const widthScale = availableWidth / canvas.width;
+      const heightScale = availableHeight / canvas.height;
+      const scale = Math.min(widthScale, heightScale, 1);
       const renderWidth = canvas.width * scale;
       const renderHeight = canvas.height * scale;
       const offsetX = (pageWidth - renderWidth) / 2;
-      const offsetY = (pageHeight - renderHeight) / 2;
+      const offsetY = marginTop;
       pdf.addImage(imageData, 'PNG', offsetX, offsetY, renderWidth, renderHeight);
 
       const captureSource = capturedPreview?.imageUrl || '';
