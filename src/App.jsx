@@ -1006,7 +1006,7 @@ export default function App() {
               </SummaryCard>
             </div>
 
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
+            <div className="p-3">
               <h3 className="mb-2 text-sm font-semibold">Notes</h3>
               <ul className="list-disc pl-5 text-xs leading-5 text-slate-700">
                 <li>
@@ -1023,7 +1023,7 @@ export default function App() {
               </ul>
             </div>
 
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
+            <div className="p-3">
               <h3 className="mb-2 text-sm font-semibold">Scenario history</h3>
               <p className="text-xs text-slate-600">
                 Save your current inputs and reload any previous scenario to compare different deals quickly. Scenarios are stored locally in
