@@ -957,6 +957,111 @@ export default function App() {
       </div>
     </div>
   );
+
+  const indexGrowthRate = Number(inputs.indexFundGrowth) || 0;
+  const indexMultiplier = 1 + indexGrowthRate;
+  const indexMultiplierDisplay = indexMultiplier.toFixed(4);
+  const indexFactorDisplay = Math.pow(indexMultiplier, exitYears).toFixed(4);
+  const hasHoldPeriod = exitYears > 0;
+  const indexFundTooltip = hasHoldPeriod ? (
+    <div>
+      <div>Initial cash in compounded annually at {formatPercent(indexGrowthRate)}.</div>
+      <div>Growth multiplier: ({indexMultiplierDisplay})^{exitYears} = {indexFactorDisplay}.</div>
+      <div>
+        {currency(equity.cashIn)} × {indexFactorDisplay} = {currency(equity.indexValEnd)}
+      </div>
+    </div>
+  ) : (
+    <div>
+      <div>Hold period is 0 years.</div>
+      <div>Index fund stays at the upfront cash: {currency(equity.indexValEnd)}.</div>
+    </div>
+  );
+
+  const reinvestFundValue = Number.isFinite(equity.reinvestFundValue) ? equity.reinvestFundValue : 0;
+  const exitCumCash = Number.isFinite(equity.exitCumCash) ? equity.exitCumCash : 0;
+  const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
+  const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
+  const reinvestActive = Boolean(inputs.reinvestIncome) && reinvestRate > 0 && reinvestFundValue > 0;
+  const reinvestRateLabel = formatPercent(reinvestRate);
+
+  const exitCumCashPreTaxNet = exitCumCash - reinvestFundValue;
+  const exitCumCashAfterTaxNet = exitCumCashAfterTax - reinvestFundValue;
+
+  const propertyGrossTooltip = (
+    <div className="space-y-1">
+      <div>Property value @ exit: {currency(equity.futureValue)}.</div>
+      <div>Cumulative cash flow (pre-tax net of reinvest): {currency(exitCumCashPreTaxNet)}.</div>
+      {reinvestActive ? (
+        <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
+      ) : null}
+      <div>
+        Total property gross = {currency(equity.futureValue)} + {currency(exitCumCashPreTaxNet)}
+        {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyGrossWealthAtExit)}
+      </div>
+    </div>
+  );
+
+  const netSaleTooltip = (
+    <div>
+      <div>Future value − selling costs − remaining loan.</div>
+      <div>
+        {currency(equity.futureValue)} − {currency(equity.sellingCosts)} − {currency(equity.remaining)} ={' '}
+        {currency(equity.exitNetSaleProceeds)}
+      </div>
+    </div>
+  );
+
+  const propertyNetTooltip = (
+    <div className="space-y-1">
+      {netSaleTooltip}
+      <div>Cumulative cash flow (pre-tax net of reinvest): {currency(exitCumCashPreTaxNet)}.</div>
+      {reinvestActive ? (
+        <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
+      ) : null}
+      <div>
+        Property net = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashPreTaxNet)}
+        {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAtExit)}
+      </div>
+    </div>
+  );
+
+  const propertyNetAfterTaxTooltip = (
+    <div className="space-y-1">
+      {netSaleTooltip}
+      <div>
+        Cumulative cash flow after {isCompanyBuyer ? 'corporation' : 'income'} tax (net of reinvest):{' '}
+        {currency(exitCumCashAfterTaxNet)}.
+      </div>
+      {reinvestActive ? (
+        <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
+      ) : null}
+      <div>
+        {propertyNetAfterTaxLabel} = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)}
+        {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAfterTax)}
+      </div>
+    </div>
+  );
+
+  const propertyTaxes = Array.isArray(equity.propertyTaxes) ? equity.propertyTaxes : [];
+  const rentalTaxTooltip = (
+    <div className="space-y-1">
+      <div>
+        Total {isCompanyBuyer ? 'corporation' : 'income'} tax across {propertyTaxes.length} year{propertyTaxes.length === 1 ? '' :
+        's'}.
+      </div>
+      {propertyTaxes.length > 0 ? (
+        <div className="max-h-32 space-y-0.5 overflow-y-auto pr-1">
+          {propertyTaxes.map((value, index) => (
+            <div key={`tax-${index}`}>
+              Year {index + 1}: {currency(value)}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="font-semibold">Total: {currency(equity.totalPropertyTax)}</div>
+    </div>
+  );
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
   const hasPropertyUrl = normalizedPropertyUrl !== '';
@@ -2093,11 +2198,31 @@ export default function App() {
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <SummaryCard title={`Exit comparison (Year ${inputs.exitYear})`}>
-                <Line label="Index fund value" value={currency(equity.indexValEnd)} />
-                <Line label="Property gross" value={currency(equity.propertyGrossWealthAtExit)} />
-                <Line label="Property net" value={currency(equity.propertyNetWealthAtExit)} />
-                <Line label={propertyNetAfterTaxLabel} value={currency(equity.propertyNetWealthAfterTax)} />
-                <Line label={rentalTaxCumulativeLabel} value={currency(equity.totalPropertyTax)} />
+                <Line
+                  label="Index fund value"
+                  value={currency(equity.indexValEnd)}
+                  tooltip={indexFundTooltip}
+                />
+                <Line
+                  label="Property gross"
+                  value={currency(equity.propertyGrossWealthAtExit)}
+                  tooltip={propertyGrossTooltip}
+                />
+                <Line
+                  label="Property net"
+                  value={currency(equity.propertyNetWealthAtExit)}
+                  tooltip={propertyNetTooltip}
+                />
+                <Line
+                  label={propertyNetAfterTaxLabel}
+                  value={currency(equity.propertyNetWealthAfterTax)}
+                  tooltip={propertyNetAfterTaxTooltip}
+                />
+                <Line
+                  label={rentalTaxCumulativeLabel}
+                  value={currency(equity.totalPropertyTax)}
+                  tooltip={rentalTaxTooltip}
+                />
                 <div className="mt-2 text-xs text-slate-600">
                   {equity.propertyNetWealthAfterTax > equity.indexValEnd
                     ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
