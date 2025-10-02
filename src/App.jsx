@@ -292,16 +292,20 @@ function calculateEquity(rawInputs) {
     : 0;
 
   const chart = [];
+  const initialNetEquity =
+    inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
   chart.push({
     year: 0,
-    value: inputs.purchasePrice,
-    valuePlusRent: inputs.purchasePrice,
-    propertyAfterTax: inputs.purchasePrice,
     indexFund: indexVal,
+    propertyGross: inputs.purchasePrice,
+    propertyNet: initialNetEquity,
+    propertyNetAfterTax: initialNetEquity,
+    rentalTaxCumulative: 0,
   });
 
   const propertyTaxes = [];
   const indexGrowth = Number.isFinite(inputs.indexFundGrowth) ? inputs.indexFundGrowth : DEFAULT_INDEX_GROWTH;
+  let cumulativeTax = 0;
 
   for (let y = 1; y <= inputs.exitYear; y++) {
     const gross = rent * (1 - inputs.vacancyPct);
@@ -319,12 +323,28 @@ function calculateEquity(rawInputs) {
     const taxOwnerB = calcIncomeTax(baseIncome2 + share) - calcIncomeTax(baseIncome2);
     const propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
     propertyTaxes.push(propertyTax);
+    cumulativeTax += propertyTax;
     const afterTaxCash = cash - propertyTax;
     cumulativeCashAfterTax += afterTaxCash;
     const investableCash = Math.max(0, afterTaxCash);
     const reinvestContribution = reinvestShare > 0 ? investableCash * reinvestShare : 0;
     cumulativeReinvested += reinvestContribution;
     reinvestFundValue = reinvestFundValue * (1 + indexGrowth) + reinvestContribution;
+
+    const monthsPaid = Math.min(y * 12, inputs.mortgageYears * 12);
+    const remainingLoanYear =
+      inputs.loanType === 'interest_only'
+        ? loan
+        : Math.max(0, remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid }));
+
+    const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
+    const saleCostsEstimate = vt * inputs.sellingCostsPct;
+    const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
+    const cumulativeCashPreTaxNet = cumulativeCashPreTax - cumulativeReinvested;
+    const cumulativeCashAfterTaxNet = cumulativeCashAfterTax - cumulativeReinvested;
+    const propertyGrossValue = vt + cumulativeCashPreTaxNet + reinvestFundValue;
+    const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
+    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
 
     if (y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
@@ -335,8 +355,6 @@ function calculateEquity(rawInputs) {
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
       cf.push(cash + netSaleProceeds);
-      const cumulativeCashPreTaxNet = cumulativeCashPreTax - cumulativeReinvested;
-      const cumulativeCashAfterTaxNet = cumulativeCashAfterTax - cumulativeReinvested;
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
       exitNetSaleProceeds = netSaleProceeds;
@@ -344,16 +362,14 @@ function calculateEquity(rawInputs) {
       cf.push(cash);
     }
 
-    const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     indexVal = indexVal * (1 + indexGrowth);
-    const cumulativeCashPreTaxNet = cumulativeCashPreTax - cumulativeReinvested;
-    const cumulativeCashAfterTaxNet = cumulativeCashAfterTax - cumulativeReinvested;
     chart.push({
       year: y,
-      value: vt,
-      valuePlusRent: vt + cumulativeCashPreTaxNet + reinvestFundValue,
-      propertyAfterTax: vt + cumulativeCashAfterTaxNet + reinvestFundValue,
       indexFund: indexVal,
+      propertyGross: propertyGrossValue,
+      propertyNet: propertyNetValue,
+      propertyNetAfterTax: propertyNetAfterTaxValue,
+      rentalTaxCumulative: cumulativeTax,
     });
 
     rent *= 1 + inputs.rentGrowth;
@@ -857,9 +873,9 @@ export default function App() {
             <div className="rounded-2xl bg-white p-3 shadow-sm">
               <h3 className="mb-2 text-sm font-semibold">Wealth trajectory vs Index Fund</h3>
               <p className="mb-2 text-[11px] text-slate-500">
-                Property (value, value + cumulative net rent, and after rental income tax) vs. investing the same upfront cash
-                (<strong>Total cash in</strong>) into an index fund compounding at <strong>{formatPercent(inputs.indexFundGrowth)}</strong>
-                per year.
+                Comparison of the index fund alternative against property value plus cumulative rent (gross), net proceeds after
+                debt payoff, after-tax net proceeds, and the running total of rental income tax, all at {formatPercent(inputs.indexFundGrowth)}
+                index growth.
               </p>
               <div className="h-72 w-full">
                 <ResponsiveContainer>
@@ -871,34 +887,42 @@ export default function App() {
                     <Legend />
                     <Area
                       type="monotone"
-                      dataKey="value"
-                      name="Property value"
+                      dataKey="indexFund"
+                      name="Index fund"
+                      stroke="#f97316"
+                      fill="rgba(249,115,22,0.2)"
+                      strokeWidth={2}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="propertyGross"
+                      name="Property gross (value + rent)"
                       stroke="#2563eb"
                       fill="rgba(37,99,235,0.2)"
                       strokeWidth={2}
                     />
                     <Area
                       type="monotone"
-                      dataKey="valuePlusRent"
-                      name="Property + rent"
+                      dataKey="propertyNet"
+                      name="Property net (proceeds + cashflows)"
                       stroke="#16a34a"
                       fill="rgba(22,163,74,0.25)"
                       strokeWidth={2}
                     />
                     <Area
                       type="monotone"
-                      dataKey="propertyAfterTax"
-                      name="Property + rent (after tax)"
+                      dataKey="propertyNetAfterTax"
+                      name="Property net after rental tax"
                       stroke="#9333ea"
                       fill="rgba(147,51,234,0.2)"
                       strokeWidth={2}
                     />
                     <Area
                       type="monotone"
-                      dataKey="indexFund"
-                      name="Index fund"
-                      stroke="#f97316"
-                      fill="rgba(249,115,22,0.2)"
+                      dataKey="rentalTaxCumulative"
+                      name="Rental income tax (cumulative)"
+                      stroke="#ef4444"
+                      fill="rgba(239,68,68,0.2)"
                       strokeWidth={2}
                     />
                   </AreaChart>
