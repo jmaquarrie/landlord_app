@@ -15,10 +15,14 @@ import jsPDF from 'jspdf';
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
-const { VITE_SCENARIO_API_URL } = import.meta.env ?? {};
+const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL } = import.meta.env ?? {};
 const SCENARIO_API_URL =
   typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
     ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
+    : '';
+const CHAT_API_URL =
+  typeof VITE_CHAT_API_URL === 'string' && VITE_CHAT_API_URL.trim() !== ''
+    ? VITE_CHAT_API_URL.replace(/\/$/, '')
     : '';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
@@ -703,6 +707,10 @@ export default function App() {
     rentalCashflow: false,
     cashflowDetail: false,
   });
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatStatus, setChatStatus] = useState('idle');
+  const [chatError, setChatError] = useState('');
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
     propertyValue: true,
@@ -895,10 +903,14 @@ export default function App() {
 
   const cashflowTableRows = useMemo(() => {
     const chartByYear = new Map((equity.chart ?? []).map((point) => [point.year, point]));
-    return Array.from({ length: exitYearCount }, (_, index) => {
+    const rows = [];
+    let cumulativeAfterTax = 0;
+    for (let index = 0; index < exitYearCount; index += 1) {
       const year = index + 1;
       const chartPoint = chartByYear.get(year);
-      return {
+      const cashAfterTax = equity.annualCashflowsAfterTax[index] ?? 0;
+      cumulativeAfterTax += cashAfterTax;
+      rows.push({
         year,
         grossRent: equity.annualGrossRents[index] ?? 0,
         operatingExpenses: equity.annualOperatingExpenses[index] ?? 0,
@@ -906,10 +918,13 @@ export default function App() {
         debtService: equity.annualDebtService[index] ?? 0,
         propertyTax: equity.propertyTaxes[index] ?? 0,
         cashPreTax: equity.annualCashflowsPreTax[index] ?? 0,
-        cashAfterTax: equity.annualCashflowsAfterTax[index] ?? 0,
+        cashAfterTax,
+        cumulativeAfterTax,
+        propertyValue: chartPoint?.propertyValue ?? 0,
         indexFundValue: chartPoint?.indexFund ?? 0,
-      };
-    });
+      });
+    }
+    return rows;
   }, [equity, exitYearCount]);
 
   const handlePrint = () => {
@@ -1005,6 +1020,97 @@ export default function App() {
     } finally {
       element.classList.remove('exporting-pdf');
     }
+  };
+
+  const chatEnabled = Boolean(CHAT_API_URL);
+
+  const handleSendChat = async (event) => {
+    event.preventDefault();
+    const question = chatInput.trim();
+    if (!question) return;
+
+    const timestamp = Date.now();
+    const userMessage = { id: `user-${timestamp}`, role: 'user', content: question, createdAt: timestamp };
+    setChatMessages((prev) => [...prev, userMessage]);
+    setChatInput('');
+
+    if (!chatEnabled) {
+      setChatError('Chat service is not currently available.');
+      return;
+    }
+
+    setChatStatus('loading');
+    setChatError('');
+
+    try {
+      const response = await fetch(`${CHAT_API_URL}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          inputs,
+          metrics: {
+            cashIn: equity.cashIn,
+            cashflowYear1: equity.cashflowYear1,
+            cashflowYear1AfterTax: equity.cashflowYear1AfterTax,
+            cap: equity.cap,
+            coc: equity.coc,
+            dscr: equity.dscr,
+            npv: equity.npv,
+            wealthDelta: equity.wealthDelta,
+            wealthDeltaAfterTax: equity.wealthDeltaAfterTax,
+            propertyGrossWealthAtExit: equity.propertyGrossWealthAtExit,
+            propertyNetWealthAtExit: equity.propertyNetWealthAtExit,
+            propertyNetWealthAfterTax: equity.propertyNetWealthAfterTax,
+            exitYear: equity.exitYear,
+            indexFundGrowth: inputs.indexFundGrowth,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Chat request failed (${response.status})`);
+      }
+
+      let payload;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        payload = null;
+      }
+
+      const answer =
+        (payload && typeof payload.answer === 'string' && payload.answer) ||
+        (payload && typeof payload.message === 'string' && payload.message) ||
+        (payload && typeof payload === 'string' ? payload : '');
+
+      const assistantMessage = {
+        id: `assistant-${timestamp}`,
+        role: 'assistant',
+        content: answer || 'The chat service returned an empty response.',
+        createdAt: Date.now(),
+      };
+      setChatMessages((prev) => [...prev, assistantMessage]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to reach the chat service.';
+      setChatError(message);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `assistant-error-${Date.now()}`,
+          role: 'assistant',
+          content: 'Sorry, I was unable to fetch a response. Please try again shortly.',
+          createdAt: Date.now(),
+        },
+      ]);
+    } finally {
+      setChatStatus('idle');
+    }
+  };
+
+  const handleClearChat = () => {
+    setChatMessages([]);
+    setChatError('');
   };
 
   const handleExportTableCsv = () => {
@@ -1809,10 +1915,7 @@ export default function App() {
                 <Line label="NOI" value={currency(selectedNoi)} />
                 <Line label="Debt service" value={currency(selectedDebtService)} />
                 <Line label="Cash flow (pre‑tax)" value={currency(selectedCashPreTax)} />
-                <Line
-                  label={`${rentalTaxLabel} (Year ${performanceYearClamped})`}
-                  value={currency(selectedRentalTax)}
-                />
+                <Line label={rentalTaxLabel} value={currency(selectedRentalTax)} />
                 <hr className="my-2" />
                 <Line label="Cash flow (after tax)" value={currency(selectedCashAfterTax)} bold />
               </SummaryCard>
@@ -2088,6 +2191,72 @@ export default function App() {
                 </div>
               )}
             </div>
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="text-sm font-semibold text-slate-800">AI investment assistant</h3>
+                <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                  {chatStatus === 'loading' ? <span>Thinking…</span> : null}
+                  {chatMessages.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={handleClearChat}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100"
+                    >
+                      Clear chat
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {chatMessages.length === 0 ? (
+                <p className="mb-3 text-xs text-slate-600">
+                  Ask follow-up questions about this forecast and receive AI-generated responses grounded in the current inputs.
+                </p>
+              ) : (
+                <div className="mb-3 max-h-64 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+                  {chatMessages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={
+                        message.role === 'user'
+                          ? 'ml-auto max-w-[85%] rounded-lg bg-indigo-100 px-2 py-1 text-indigo-800'
+                          : 'mr-auto max-w-[85%] rounded-lg bg-white px-2 py-1 text-slate-700 shadow-sm'
+                      }
+                    >
+                      {message.content}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {chatError ? (
+                <p className="mb-2 text-xs text-rose-600" role="alert">
+                  {chatError}
+                </p>
+              ) : null}
+              {!chatEnabled ? (
+                <p className="text-xs text-slate-500">Connect the assistant to an AI endpoint to enable automated responses.</p>
+              ) : null}
+              <form onSubmit={handleSendChat} className="mt-2 space-y-2">
+                <label className="flex flex-col gap-1 text-xs text-slate-700">
+                  <span>Your question</span>
+                  <textarea
+                    value={chatInput}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    className="min-h-[60px] w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
+                    placeholder="What should I watch out for in this investment?"
+                    disabled={chatStatus === 'loading'}
+                  />
+                </label>
+                <div className="flex items-center justify-end">
+                  <button
+                    type="submit"
+                    className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
+                    disabled={chatStatus === 'loading' || !chatEnabled}
+                  >
+                    {chatStatus === 'loading' ? 'Sending…' : 'Ask assistant'}
+                  </button>
+                </div>
+              </form>
+            </div>
           </section>
         </div>
 
@@ -2285,6 +2454,8 @@ function CashflowTable({ rows = [], rentalTaxLabel }) {
         <thead className="bg-slate-50 text-slate-600">
           <tr>
             <th className="px-3 py-2 text-left font-semibold">Year</th>
+            <th className="px-3 py-2 text-right font-semibold">Property value</th>
+            <th className="px-3 py-2 text-right font-semibold">Index fund value</th>
             <th className="px-3 py-2 text-right font-semibold">Gross rent</th>
             <th className="px-3 py-2 text-right font-semibold">Operating expenses</th>
             <th className="px-3 py-2 text-right font-semibold">NOI</th>
@@ -2292,13 +2463,15 @@ function CashflowTable({ rows = [], rentalTaxLabel }) {
             <th className="px-3 py-2 text-right font-semibold">{rentalTaxLabel}</th>
             <th className="px-3 py-2 text-right font-semibold">Cash flow (pre-tax)</th>
             <th className="px-3 py-2 text-right font-semibold">Cash flow (after tax)</th>
-            <th className="px-3 py-2 text-right font-semibold">Index fund value</th>
+            <th className="px-3 py-2 text-right font-semibold">Cumulative cash flow (after tax)</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-200">
           {rows.map((row) => (
             <tr key={`cashflow-${row.year}`} className="odd:bg-white even:bg-slate-50">
               <td className="px-3 py-2 font-semibold text-slate-700">Y{row.year}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.propertyValue)}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.indexFundValue)}</td>
               <td className="px-3 py-2 text-right text-slate-700">{currency(row.grossRent)}</td>
               <td className="px-3 py-2 text-right text-slate-700">{currency(row.operatingExpenses)}</td>
               <td className="px-3 py-2 text-right text-slate-700">{currency(row.noi)}</td>
@@ -2306,7 +2479,7 @@ function CashflowTable({ rows = [], rentalTaxLabel }) {
               <td className="px-3 py-2 text-right text-slate-700">{currency(row.propertyTax)}</td>
               <td className="px-3 py-2 text-right text-slate-700">{currency(row.cashPreTax)}</td>
               <td className="px-3 py-2 text-right font-semibold text-slate-800">{currency(row.cashAfterTax)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.indexFundValue)}</td>
+              <td className="px-3 py-2 text-right text-slate-700">{currency(row.cumulativeAfterTax)}</td>
             </tr>
           ))}
         </tbody>
