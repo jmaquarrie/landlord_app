@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+.exporting-pdf {
+  background: white !important;
+  font-size: 12px;
+}
+
+.exporting-pdf .no-print {
+  display: none !important;
+}
+
+.exporting-pdf .sticky {
+  position: static !important;
+}
+
+.exporting-pdf input,
+.exporting-pdf select,
+.exporting-pdf textarea {
+  font-size: 11px !important;
+  line-height: 1.3 !important;
+  padding-top: 4px !important;
+  padding-bottom: 4px !important;
+  color: #0f172a !important;
+  -webkit-text-fill-color: #0f172a !important;
+  background-color: #ffffff !important;
+  border-color: #cbd5f5 !important;
+}
+
+.exporting-pdf input::placeholder,
+.exporting-pdf textarea::placeholder {
+  color: #94a3b8 !important;
+  -webkit-text-fill-color: #94a3b8 !important;
+}
+
+.exporting-pdf label,
+.exporting-pdf .text-sm {
+  font-size: 11px !important;
+}
+
+.exporting-pdf .text-xs {
+  font-size: 10px !important;
+}
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+
+  body {
+    background: white !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}
