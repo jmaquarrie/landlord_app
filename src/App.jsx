@@ -426,41 +426,7 @@ function transformCloneForExport(root) {
   });
 }
 
-async function getImageDataForPdf(src) {
-  if (!src) return null;
 
-  if (typeof Image === 'undefined' || typeof document === 'undefined') {
-    if (src.startsWith('data:image/jpeg') || src.startsWith('data:image/jpg')) {
-      return { dataUrl: src, format: 'JPEG', width: 0, height: 0 };
-    }
-    if (src.startsWith('data:image/png')) {
-      return { dataUrl: src, format: 'PNG', width: 0, height: 0 };
-    }
-    return null;
-  }
-
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      try {
-        const width = img.naturalWidth || img.width || 1;
-        const height = img.naturalHeight || img.height || 1;
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        const jpegData = canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1800 });
-        resolve({ dataUrl: jpegData, format: 'JPEG', width, height });
-      } catch (error) {
-        reject(error);
-      }
-    };
-    img.onerror = (error) => reject(error);
-    img.src = src;
-  });
-}
 
 function calculateEquity(rawInputs) {
   const inputs = { ...DEFAULT_INPUTS, ...rawInputs };
@@ -745,12 +711,11 @@ export default function App() {
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
-  const [capturedPreview, setCapturedPreview] = useState(null);
-  const [livePreview, setLivePreview] = useState(null);
-  const [livePreviewReady, setLivePreviewReady] = useState(false);
-  const [captureStatus, setCaptureStatus] = useState('idle');
-  const [captureError, setCaptureError] = useState('');
-  const [includePreviewOnLoad, setIncludePreviewOnLoad] = useState(true);
+  const [previewActive, setPreviewActive] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewStatus, setPreviewStatus] = useState('idle');
+  const [previewError, setPreviewError] = useState('');
+  const [previewKey, setPreviewKey] = useState(0);
   const [collapsedSections, setCollapsedSections] = useState({
     propertyInfo: false,
     buyerProfile: false,
@@ -782,6 +747,30 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
 
+  const clearPreview = () => {
+    setPreviewActive(false);
+    setPreviewStatus('idle');
+    setPreviewError('');
+    setPreviewUrl('');
+  };
+
+  const openPreviewForUrl = (value, { force = false } = {}) => {
+    const normalized = ensureAbsoluteUrl(value ?? '');
+    if (!normalized) {
+      clearPreview();
+      return false;
+    }
+    if (!force && previewActive && previewUrl === normalized) {
+      return true;
+    }
+    setPreviewActive(true);
+    setPreviewStatus('loading');
+    setPreviewError('');
+    setPreviewUrl(normalized);
+    setPreviewKey((key) => key + 1);
+    return true;
+  };
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
@@ -790,11 +779,14 @@ export default function App() {
     const payload = decodeSharePayload(encoded);
     if (payload && typeof payload === 'object' && payload.inputs) {
       setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
-      setCapturedPreview(null);
-      setLivePreview(null);
-      setLivePreviewReady(false);
-      setCaptureStatus('idle');
-      setCaptureError('');
+      const targetUrl = payload.inputs?.propertyUrl ?? '';
+      const shouldActivatePreview =
+        (payload.preview && payload.preview.active) || (typeof targetUrl === 'string' && targetUrl.trim() !== '');
+      if (shouldActivatePreview) {
+        openPreviewForUrl(targetUrl, { force: true });
+      } else {
+        clearPreview();
+      }
       setShareNotice('Loaded shared scenario');
     }
     url.searchParams.delete('scenario');
@@ -1155,10 +1147,10 @@ export default function App() {
   };
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
-  const hasPropertyUrl = normalizedPropertyUrl !== '';
-  const isLivePreviewActive = Boolean(livePreview?.iframeUrl);
-  const hasCapturedSnapshot = Boolean(capturedPreview);
-  const showListingPreview = isLivePreviewActive || hasCapturedSnapshot;
+  const hasPropertyUrl = trimmedPropertyUrl !== '';
+  const showListingPreview =
+    previewActive || previewStatus === 'loading' || Boolean(previewError) || hasPropertyUrl;
+  const previewLoading = previewStatus === 'loading';
 
   const cashflowTableRows = useMemo(() => {
     const chartByYear = new Map((equity.chart ?? []).map((point) => [point.year, point]));
@@ -1241,43 +1233,6 @@ export default function App() {
       const offsetY = marginTop;
       pdf.addImage(imageData, 'JPEG', offsetX, offsetY, renderWidth, renderHeight, undefined, 'FAST');
 
-      const captureSource = capturedPreview?.imageUrl || '';
-      if (captureSource) {
-        try {
-          const captureData = await getImageDataForPdf(captureSource);
-          if (captureData?.dataUrl) {
-            pdf.addPage();
-            const capturePageWidth = pdf.internal.pageSize.getWidth();
-            const capturePageHeight = pdf.internal.pageSize.getHeight();
-            const captureWidth = captureData.width && captureData.width > 0 ? captureData.width : capturePageWidth;
-            const captureHeight = captureData.height && captureData.height > 0 ? captureData.height : capturePageHeight;
-            let captureRenderWidth = capturePageWidth;
-            let captureRenderHeight = (captureRenderWidth * captureHeight) / captureWidth;
-            if (!Number.isFinite(captureRenderHeight) || captureRenderHeight <= 0) {
-              captureRenderHeight = capturePageHeight;
-              captureRenderWidth = capturePageWidth;
-            }
-            if (captureRenderHeight > capturePageHeight) {
-              captureRenderHeight = capturePageHeight;
-              captureRenderWidth = (captureRenderHeight * captureWidth) / captureHeight;
-            }
-            const captureOffsetX = (capturePageWidth - captureRenderWidth) / 2;
-            const captureOffsetY = (capturePageHeight - captureRenderHeight) / 2;
-            pdf.addImage(
-              captureData.dataUrl,
-              captureData.format || 'JPEG',
-              captureOffsetX,
-              captureOffsetY,
-              captureRenderWidth,
-              captureRenderHeight,
-              undefined,
-              'FAST'
-            );
-          }
-        } catch (error) {
-          console.warn('Unable to add listing capture to PDF:', error);
-        }
-      }
       const safeAddress = inputs.propertyAddress?.trim();
       const filename = safeAddress ? `${safeAddress.replace(/\s+/g, '-').toLowerCase()}.pdf` : 'property-forecast.pdf';
       pdf.save(filename);
@@ -1619,10 +1574,7 @@ export default function App() {
   const onText = (key, value) => {
     setInputs((prev) => ({ ...prev, [key]: value }));
     if (key === 'propertyUrl') {
-      setCaptureError('');
-      setCaptureStatus('idle');
-      setCapturedPreview(null);
-      setLivePreview(null);
+      clearPreview();
     }
   };
   const onBuyerType = (value) =>
@@ -1730,7 +1682,9 @@ export default function App() {
         propertyUrl: (inputs.propertyUrl ?? '').trim(),
       })
     );
-    const previewSnapshot = capturedPreview ? JSON.parse(JSON.stringify(capturedPreview)) : null;
+    const previewSnapshot = {
+      active: previewActive && Boolean(sanitizedInputs.propertyUrl),
+    };
     return { data: sanitizedInputs, preview: previewSnapshot };
   };
 
@@ -1738,7 +1692,7 @@ export default function App() {
     if (typeof window === 'undefined') return;
     try {
       const snapshot = buildScenarioSnapshot();
-      const payload = { inputs: snapshot.data };
+      const payload = { inputs: snapshot.data, preview: snapshot.preview };
       const encoded = encodeSharePayload(payload);
       if (!encoded) {
         throw new Error('Unable to encode scenario');
@@ -1785,209 +1739,18 @@ export default function App() {
     if (!scenario) return;
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setShowLoadPanel(false);
-    setCapturedPreview(includePreviewOnLoad ? scenario.preview ?? null : null);
-    setLivePreview(null);
-    setLivePreviewReady(false);
-    setCaptureStatus('idle');
-    setCaptureError('');
+    const scenarioUrl = scenario.data?.propertyUrl ?? '';
+    const shouldActivate =
+      (scenario.preview && scenario.preview.active) || (typeof scenarioUrl === 'string' && scenarioUrl.trim() !== '');
+    if (shouldActivate) {
+      openPreviewForUrl(scenarioUrl, { force: true });
+    } else {
+      clearPreview();
+    }
   };
 
-  const handleCaptureUrl = () => {
-    const rawUrl = (inputs.propertyUrl ?? '').trim();
-    if (!rawUrl) return;
-    const normalizedUrl = ensureAbsoluteUrl(rawUrl);
-    if (!normalizedUrl) return;
-    setCaptureStatus('loading');
-    setCaptureError('');
-    setCapturedPreview(null);
-    setLivePreview({
-      originalUrl: normalizedUrl,
-      iframeUrl: normalizedUrl,
-      capturedAt: new Date().toISOString(),
-    });
-    setLivePreviewReady(false);
-  };
-
-  const handleTakeSnapshot = async () => {
-    if (!livePreview) return;
-    const originalUrl = livePreview.originalUrl || ensureAbsoluteUrl(inputs.propertyUrl ?? '');
-    if (!originalUrl) return;
-
-    const iframeElement = iframeRef.current;
-    if (!iframeElement) {
-      setCaptureError('Preview not ready yet. Please wait for the page to finish loading.');
-      return;
-    }
-
-    if (!livePreviewReady) {
-      setCaptureError('Preview not ready yet. Please wait for the page to finish loading.');
-      return;
-    }
-
-    setCaptureStatus('saving');
-    setCaptureError('');
-
-    const stopStream = (stream) => {
-      if (!stream) return;
-      stream.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch (error) {
-          /* noop */
-        }
-      });
-    };
-
-    const captureWithDisplayMedia = async () => {
-      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
-        return null;
-      }
-
-      let stream;
-      try {
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            frameRate: 1,
-            displaySurface: 'browser',
-            logicalSurface: true,
-            preferCurrentTab: true,
-            surfaceSwitching: 'exclude',
-          },
-          audio: false,
-        });
-      } catch (error) {
-        return null;
-      }
-
-      const track = stream.getVideoTracks()[0];
-      if (!track) {
-        stopStream(stream);
-        return null;
-      }
-
-      const surface = track.getSettings ? track.getSettings().displaySurface : undefined;
-      if (surface && surface !== 'browser') {
-        stopStream(stream);
-        setCaptureError('Please choose “This Tab” when prompted so we can capture the preview area.');
-        return null;
-      }
-
-      const elementRect = iframeElement.getBoundingClientRect();
-
-      const computeCrop = (sourceWidth, sourceHeight) => {
-        const viewportWidth = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : elementRect.width;
-        const viewportHeight = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : elementRect.height;
-        const devicePixelRatio = typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
-        const scaleX = viewportWidth > 0 ? sourceWidth / viewportWidth : devicePixelRatio;
-        const scaleY = viewportHeight > 0 ? sourceHeight / viewportHeight : devicePixelRatio;
-        let sx = Math.round((elementRect.left < 0 ? 0 : elementRect.left) * scaleX);
-        let sy = Math.round((elementRect.top < 0 ? 0 : elementRect.top) * scaleY);
-        let sw = Math.round(elementRect.width * scaleX);
-        let sh = Math.round(elementRect.height * scaleY);
-        sw = Math.max(1, Math.min(sw, sourceWidth));
-        sh = Math.max(1, Math.min(sh, sourceHeight));
-        if (sx + sw > sourceWidth) {
-          sx = Math.max(0, sourceWidth - sw);
-        }
-        if (sy + sh > sourceHeight) {
-          sy = Math.max(0, sourceHeight - sh);
-        }
-        return { sx, sy, sw, sh };
-      };
-
-      if (typeof window !== 'undefined' && typeof window.CropTarget !== 'undefined' && typeof track.cropTo === 'function') {
-        try {
-          const cropTarget = await window.CropTarget.fromElement(iframeElement);
-          await track.cropTo(cropTarget);
-        } catch (error) {
-          console.warn('Element cropping not available:', error);
-        }
-      }
-
-      const extractFrame = async () => {
-        if (typeof window !== 'undefined' && typeof window.ImageCapture !== 'undefined') {
-          try {
-            const imageCapture = new window.ImageCapture(track);
-            const bitmap = await imageCapture.grabFrame();
-            const canvas = document.createElement('canvas');
-            const crop = computeCrop(bitmap.width, bitmap.height);
-            canvas.width = crop.sw;
-            canvas.height = crop.sh;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(bitmap, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
-            return canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1600 });
-          } catch (error) {
-            console.warn('ImageCapture grabFrame failed:', error);
-          }
-        }
-
-        const video = document.createElement('video');
-        video.srcObject = stream;
-        video.muted = true;
-        video.playsInline = true;
-        try {
-          await video.play();
-        } catch (error) {
-          /* ignore */
-        }
-
-        await new Promise((resolve) => {
-          const timeout = window.setTimeout(resolve, 750);
-          video.onloadeddata = () => {
-            window.clearTimeout(timeout);
-            resolve();
-          };
-        });
-
-        const settings = track.getSettings ? track.getSettings() : {};
-        const width = settings.width || iframeElement.clientWidth || 1280;
-        const height = settings.height || iframeElement.clientHeight || 720;
-        const canvas = document.createElement('canvas');
-        const crop = computeCrop(width, height);
-        canvas.width = crop.sw;
-        canvas.height = crop.sh;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
-        video.pause();
-        return canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1600 });
-      };
-
-      const dataUrl = await extractFrame();
-      stopStream(stream);
-      return dataUrl;
-    };
-
-    let imageDataUrl = null;
-    try {
-      imageDataUrl = await captureWithDisplayMedia();
-    } catch (error) {
-      console.warn('Display media capture failed:', error);
-    }
-
-    if (!imageDataUrl) {
-      setCaptureStatus('idle');
-      setCaptureError(
-        'Unable to capture the listing preview. Please allow screen capture for this tab or try a supported browser.'
-      );
-      return;
-    }
-
-    setCapturedPreview({
-      originalUrl,
-      imageUrl: imageDataUrl,
-      capturedAt: new Date().toISOString(),
-    });
-    setCaptureStatus('idle');
-    setLivePreview(null);
-    setLivePreviewReady(false);
-  };
-
-  const handleClearCapture = () => {
-    setCapturedPreview(null);
-    setLivePreview(null);
-    setLivePreviewReady(false);
-    setCaptureError('');
-    setCaptureStatus('idle');
+  const handleLoadPreview = () => {
+    openPreviewForUrl(inputs.propertyUrl, { force: true });
   };
 
   const handleRenameScenario = (id) => {
@@ -2129,30 +1892,23 @@ export default function App() {
                       ) : null}
                       <button
                         type="button"
-                        onClick={handleCaptureUrl}
+                        onClick={handleLoadPreview}
                         className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                        disabled={!hasPropertyUrl || captureStatus === 'loading' || captureStatus === 'saving'}
+                        disabled={!hasPropertyUrl || previewLoading}
                       >
-                        {captureStatus === 'loading'
-                          ? 'Loading…'
-                          : captureStatus === 'saving'
-                          ? 'Saving…'
-                          : 'Capture'}
+                        {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Load preview'}
                       </button>
                     </div>
                   </div>
                 </div>
                 <div className="mt-2 space-y-1 text-[11px] leading-snug text-slate-500">
-                  {isLivePreviewActive ? (
-                    <div>
-                      Live preview open below — interact with the frame, then choose “Take snapshot” to store what you need.
-                    </div>
-                  ) : null}
-                  {captureStatus === 'loading' && !isLivePreviewActive ? <div>Working on listing preview…</div> : null}
-                  {capturedPreview?.capturedAt ? (
-                    <div>Last snapshot: {friendlyDateTime(capturedPreview.capturedAt)}</div>
-                  ) : null}
-                  {captureError ? <div className="text-rose-600">{captureError}</div> : null}
+                  <div>
+                    {previewActive
+                      ? 'The live listing below will be stored with saved scenarios and share links.'
+                      : 'Choose “Load preview” to open the listing below; the frame is saved with scenarios and share links.'}
+                  </div>
+                  {previewLoading ? <div>Loading preview…</div> : null}
+                  {previewError ? <div className="text-rose-600">{previewError}</div> : null}
                 </div>
               </CollapsibleSection>
 
@@ -2654,14 +2410,6 @@ export default function App() {
                 </div>
                 {savedScenarios.length > 0 ? (
                   <>
-                    <label className="flex items-center gap-2 text-xs text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(includePreviewOnLoad)}
-                        onChange={(event) => setIncludePreviewOnLoad(event.target.checked)}
-                      />
-                      <span>Restore captured listing snapshot when loading</span>
-                    </label>
                     <button
                       type="button"
                       onClick={handleLoadScenario}
@@ -2730,40 +2478,32 @@ export default function App() {
             <div className="rounded-2xl bg-white p-3 shadow-sm" data-capture-placeholder data-hide-on-export>
               <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-800">
-                    {isLivePreviewActive ? 'Listing preview (live)' : 'Captured listing preview'}
-                  </h3>
-                  {isLivePreviewActive ? (
-                    <p className="text-[11px] text-slate-500">
-                      Viewing the live listing below. Use “Take snapshot” to store it with this scenario. When prompted, share
-                      this tab so the capture matches exactly what you see in the frame.
-                    </p>
-                  ) : capturedPreview?.capturedAt ? (
-                    <p className="text-[11px] text-slate-500">
-                      Snapshot from {friendlyDateTime(capturedPreview.capturedAt)}
-                    </p>
-                  ) : null}
-                  {captureError && !isLivePreviewActive ? (
-                    <p className="text-[11px] text-rose-600">{captureError}</p>
-                  ) : null}
+                  <h3 className="text-sm font-semibold text-slate-800">Listing preview</h3>
+                  <p className="text-[11px] text-slate-500">
+                    {previewActive
+                      ? 'Live view of the property URL. This frame is saved with scenarios and share links.'
+                      : hasPropertyUrl
+                      ? 'Load the preview to view the property page without leaving the dashboard.'
+                      : 'Enter a property URL to display the listing preview here.'}
+                  </p>
+                  {previewError ? <p className="text-[11px] text-rose-600">{previewError}</p> : null}
                 </div>
                 <div className="no-print flex flex-wrap items-center gap-2 text-[11px]">
-                  {isLivePreviewActive ? (
-                    <button
-                      type="button"
-                      onClick={handleTakeSnapshot}
-                      className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                      disabled={captureStatus === 'saving' || !livePreviewReady}
-                    >
-                      {captureStatus === 'saving' ? 'Saving…' : 'Take snapshot'}
-                    </button>
-                  ) : null}
                   <button
                     type="button"
-                    onClick={handleClearCapture}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100"
+                    onClick={handleLoadPreview}
+                    className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
+                    disabled={!hasPropertyUrl || previewLoading}
                   >
-                    Clear capture
+                    {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Load preview'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearPreview}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
+                    disabled={!previewActive && !previewError}
+                  >
+                    Hide preview
                   </button>
                 </div>
               </div>
@@ -2771,60 +2511,42 @@ export default function App() {
                 className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
                 style={{ height: '45rem' }}
               >
-                {isLivePreviewActive ? (
+                {previewActive ? (
                   <>
                     <iframe
+                      key={previewKey}
                       ref={iframeRef}
-                      src={livePreview.iframeUrl}
+                      src={previewUrl}
                       title="Property listing preview"
                       className="h-full w-full border-0"
                       allowFullScreen
-                      allow="display-capture"
                       onLoad={() => {
-                        setLivePreviewReady(true);
-                        setCaptureStatus('idle');
-                        setCaptureError('');
+                        setPreviewStatus('ready');
+                        setPreviewError('');
                       }}
                       onError={() => {
-                        setCaptureStatus('idle');
-                        setLivePreviewReady(false);
-                        setCaptureError('Unable to load the listing inside the preview frame.');
+                        setPreviewStatus('error');
+                        setPreviewError('Unable to load the listing inside the preview frame.');
+                        setPreviewActive(false);
                       }}
                     />
-                    {captureStatus === 'saving' ? (
+                    {previewLoading ? (
                       <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/80 px-4 text-center text-sm text-slate-600">
-                        Saving snapshot…
-                      </div>
-                    ) : captureStatus === 'loading' || !livePreviewReady ? (
-                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/80 px-4 text-center text-sm text-slate-600">
-                        Preparing preview…
+                        Loading preview…
                       </div>
                     ) : null}
                   </>
-                ) : captureStatus === 'loading' ? (
-                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
-                    Processing preview…
-                  </div>
-                ) : hasCapturedSnapshot && capturedPreview?.imageUrl ? (
-                  <img
-                    src={capturedPreview.imageUrl}
-                    alt="Captured property listing"
-                    className="h-full w-full object-contain bg-white"
-                    loading="lazy"
-                    crossOrigin="anonymous"
-                    onError={() => {
-                      setCaptureError('Preview image could not be loaded. Please try capturing again.');
-                      setCapturedPreview(null);
-                      setLivePreview(null);
-                    }}
-                  />
-                ) : captureError ? (
+                ) : previewError ? (
                   <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-rose-600">
-                    {captureError}
+                    {previewError}
+                  </div>
+                ) : hasPropertyUrl ? (
+                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
+                    Load the preview to view the listing here.
                   </div>
                 ) : (
                   <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
-                    No preview available yet. Enter a property URL and choose “Capture”.
+                    Add a property URL to show the listing preview.
                   </div>
                 )}
               </div>
