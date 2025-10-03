@@ -43,6 +43,110 @@ const GOOGLE_MODEL =
     ? VITE_GOOGLE_MODEL.trim()
     : GOOGLE_DEFAULT_MODEL;
 const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+const ABSOLUTE_URL_REGEX = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//;
+
+const ensureAbsoluteUrl = (value) => {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    const hasProtocol = ABSOLUTE_URL_REGEX.test(trimmed);
+    const url = new URL(hasProtocol ? trimmed : `https://${trimmed}`);
+    if (!/^https?:$/i.test(url.protocol)) {
+      return '';
+    }
+    return url.href;
+  } catch (error) {
+    console.warn('Unable to normalise URL for preview:', error);
+    return '';
+  }
+};
+
+const transformCloneForExport = (root) => {
+  if (!root) return;
+  root.querySelectorAll('.no-print').forEach((element) => {
+    element.remove();
+  });
+  const formElements = root.querySelectorAll('input, textarea, select');
+  formElements.forEach((element) => {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      element.setAttribute('value', element.value);
+      element.style.backgroundColor = '#ffffff';
+      element.style.color = '#0f172a';
+      element.style.caretColor = '#0f172a';
+    }
+    if (element instanceof HTMLTextAreaElement) {
+      element.textContent = element.value;
+    }
+    if (element instanceof HTMLSelectElement) {
+      Array.from(element.options).forEach((option) => {
+        if (option.selected) {
+          option.setAttribute('selected', 'selected');
+        } else {
+          option.removeAttribute('selected');
+        }
+      });
+    }
+  });
+};
+
+const canvasToJpeg = (canvas, { quality = 0.75, maxWidth, maxHeight } = {}) => {
+  if (!canvas) return '';
+  let outputCanvas = canvas;
+  if (typeof document !== 'undefined' && (maxWidth || maxHeight)) {
+    const widthLimit = typeof maxWidth === 'number' && maxWidth > 0 ? maxWidth : canvas.width;
+    const heightLimit = typeof maxHeight === 'number' && maxHeight > 0 ? maxHeight : canvas.height;
+    const scale = Math.min(widthLimit / canvas.width, heightLimit / canvas.height, 1);
+    if (scale < 1) {
+      const scaledCanvas = document.createElement('canvas');
+      scaledCanvas.width = Math.max(1, Math.floor(canvas.width * scale));
+      scaledCanvas.height = Math.max(1, Math.floor(canvas.height * scale));
+      const context = scaledCanvas.getContext('2d');
+      if (context) {
+        context.drawImage(canvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
+        outputCanvas = scaledCanvas;
+      }
+    }
+  }
+  try {
+    return outputCanvas.toDataURL('image/jpeg', quality);
+  } catch (error) {
+    console.warn('Unable to encode canvas as JPEG:', error);
+    return '';
+  }
+};
+
+const normaliseForCsv = (value) => {
+  if (value === null || value === undefined) return '';
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return '';
+    return String(value);
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      console.warn('Unable to serialise value for CSV:', error);
+      return '';
+    }
+  }
+  return String(value);
+};
+
+const csvEscape = (value) => {
+  const stringValue = normaliseForCsv(value);
+  if (stringValue === '') return '';
+  if (/[",\n\r]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+};
+
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
   { key: 'propertyGross', label: 'Property gross', format: currency },
