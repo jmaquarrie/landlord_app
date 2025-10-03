@@ -53,18 +53,7 @@ const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'cumulativeTax', label: 'Cumulative tax', format: currency },
 ];
 
-const DEFAULT_CASHFLOW_COLUMNS = [
-  'propertyValue',
-  'indexFundValue',
-  'grossRent',
-  'operatingExpenses',
-  'noi',
-  'debtService',
-  'propertyTax',
-  'cashPreTax',
-  'cashAfterTax',
-  'cumulativeAfterTax',
-];
+const DEFAULT_CASHFLOW_COLUMNS = ['propertyValue', 'indexFundValue', 'cumulativeAfterTax'];
 
 const DEFAULT_INPUTS = {
   propertyAddress: '',
@@ -763,6 +752,7 @@ export default function App() {
   const [captureError, setCaptureError] = useState('');
   const [includePreviewOnLoad, setIncludePreviewOnLoad] = useState(true);
   const [collapsedSections, setCollapsedSections] = useState({
+    propertyInfo: false,
     buyerProfile: false,
     householdIncome: false,
     purchaseCosts: false,
@@ -1487,6 +1477,51 @@ export default function App() {
     setChatError('');
   };
 
+  const handleExportCashflowCsv = () => {
+    if (!cashflowTableRows.length) {
+      if (typeof window !== 'undefined') {
+        window.alert('Cash flow data is not available yet.');
+      }
+      return;
+    }
+
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      return;
+    }
+
+    const header = ['Year', ...selectedCashflowColumns.map((column) => column.label)];
+    const dataRows = cashflowTableRows.map((row) => {
+      const values = [`Year ${row.year}`];
+      selectedCashflowColumns.forEach((column) => {
+        const rawValue = row[column.key];
+        let formattedValue = rawValue;
+        if (typeof column.format === 'function') {
+          formattedValue = column.format(rawValue);
+        } else if (Number.isFinite(rawValue)) {
+          formattedValue = roundTo(rawValue, 2);
+        } else if (formattedValue === null || formattedValue === undefined) {
+          formattedValue = '';
+        }
+        values.push(formattedValue);
+      });
+      return values;
+    });
+
+    const csvBody = [header, ...dataRows]
+      .map((row) => row.map((value) => csvEscape(value)).join(','))
+      .join('\n');
+    const csvContent = `\ufeff${csvBody}`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'property-cashflow.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
   const handleExportTableCsv = () => {
     if (savedScenarios.length === 0) {
       if (typeof window !== 'undefined') {
@@ -2051,63 +2086,66 @@ export default function App() {
         </div>
 
         <main className="py-6">
-          <section className="mb-4">
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h2 className="text-base font-semibold text-slate-800">Property info</h2>
-              </div>
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                {textInput('propertyAddress', 'Property address')}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs font-medium text-slate-600">Property URL</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="url"
-                      value={inputs.propertyUrl ?? ''}
-                      onChange={(event) => onText('propertyUrl', event.target.value)}
-                      className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
-                      placeholder="https://"
-                    />
-                    {hasPropertyUrl ? (
-                      <a
-                        href={normalizedPropertyUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="no-print inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-                      >
-                        Open
-                      </a>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={handleCaptureUrl}
-                      className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                      disabled={!hasPropertyUrl || captureStatus === 'loading' || captureStatus === 'saving'}
-                    >
-                      {captureStatus === 'loading' ? 'Loading…' : captureStatus === 'saving' ? 'Saving…' : 'Capture'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="mt-2 space-y-1 text-[11px] leading-snug text-slate-500">
-                {isLivePreviewActive ? (
-                  <div>
-                    Live preview open below — interact with the frame, then choose “Take snapshot” to store what you need.
-                  </div>
-                ) : null}
-                {captureStatus === 'loading' && !isLivePreviewActive ? <div>Working on listing preview…</div> : null}
-                {capturedPreview?.capturedAt ? (
-                  <div>Last snapshot: {friendlyDateTime(capturedPreview.capturedAt)}</div>
-                ) : null}
-                {captureError ? <div className="text-rose-600">{captureError}</div> : null}
-              </div>
-            </div>
-          </section>
-
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <section className="md:col-span-1">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <section className="md:col-span-1">
             <div className="rounded-2xl bg-white p-3 shadow-sm">
               <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
+
+              <CollapsibleSection
+                title="Property info"
+                collapsed={collapsedSections.propertyInfo}
+                onToggle={() => toggleSection('propertyInfo')}
+              >
+                <div className="grid gap-2 md:grid-cols-2">
+                  {textInput('propertyAddress', 'Property address')}
+                  <div className="flex flex-col gap-1 md:col-span-1">
+                    <label className="text-xs font-medium text-slate-600">Property URL</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="url"
+                        value={inputs.propertyUrl ?? ''}
+                        onChange={(event) => onText('propertyUrl', event.target.value)}
+                        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+                        placeholder="https://"
+                      />
+                      {hasPropertyUrl ? (
+                        <a
+                          href={normalizedPropertyUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="no-print inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                        >
+                          Open
+                        </a>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={handleCaptureUrl}
+                        className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
+                        disabled={!hasPropertyUrl || captureStatus === 'loading' || captureStatus === 'saving'}
+                      >
+                        {captureStatus === 'loading'
+                          ? 'Loading…'
+                          : captureStatus === 'saving'
+                          ? 'Saving…'
+                          : 'Capture'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-2 space-y-1 text-[11px] leading-snug text-slate-500">
+                  {isLivePreviewActive ? (
+                    <div>
+                      Live preview open below — interact with the frame, then choose “Take snapshot” to store what you need.
+                    </div>
+                  ) : null}
+                  {captureStatus === 'loading' && !isLivePreviewActive ? <div>Working on listing preview…</div> : null}
+                  {capturedPreview?.capturedAt ? (
+                    <div>Last snapshot: {friendlyDateTime(capturedPreview.capturedAt)}</div>
+                  ) : null}
+                  {captureError ? <div className="text-rose-600">{captureError}</div> : null}
+                </div>
+              </CollapsibleSection>
 
               <CollapsibleSection
                 title="Buyer profile"
@@ -2424,106 +2462,109 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <SummaryCard
-                title={`Exit comparison (Year ${inputs.exitYear})`}
-                tooltip={SECTION_DESCRIPTIONS.exitComparison}
-              >
-                <Line
-                  label="Index fund value"
-                  value={currency(equity.indexValEnd)}
-                  tooltip={indexFundTooltip}
-                />
-                <Line
-                  label="Property gross"
-                  value={currency(equity.propertyGrossWealthAtExit)}
-                  tooltip={propertyGrossTooltip}
-                />
-                <Line
-                  label="Property net"
-                  value={currency(equity.propertyNetWealthAtExit)}
-                  tooltip={propertyNetTooltip}
-                />
-                <Line
-                  label={propertyNetAfterTaxLabel}
-                  value={currency(equity.propertyNetWealthAfterTax)}
-                  tooltip={propertyNetAfterTaxTooltip}
-                />
-                <Line
-                  label={rentalTaxCumulativeLabel}
-                  value={currency(equity.totalPropertyTax)}
-                  tooltip={rentalTaxTooltip}
-                />
-                <div className="mt-2 text-xs text-slate-600">
-                  {equity.propertyNetWealthAfterTax > equity.indexValEnd
-                    ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
-                    : equity.propertyNetWealthAfterTax < equity.indexValEnd
-                    ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
-                    : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
-                </div>
-              </SummaryCard>
-
-              <SummaryCard
-                title={
-                  <div className="flex items-center justify-between gap-2">
-                    <SectionTitle
-                      label="Sensitivity"
-                      tooltip={SECTION_DESCRIPTIONS.sensitivity}
-                      className="text-sm font-semibold text-slate-700"
-                    />
-                    <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                      <button
-                        type="button"
-                        onClick={() => handleAdjustSensitivity(-0.01)}
-                        className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        aria-label="Decrease rent sensitivity"
-                        disabled={!canDecreaseSensitivity}
-                      >
-                        ▼
-                      </button>
-                      <span className="min-w-[3ch] text-right font-semibold text-slate-700">
-                        {sensitivityPercentLabel}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleAdjustSensitivity(0.01)}
-                        className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        aria-label="Increase rent sensitivity"
-                        disabled={!canIncreaseSensitivity}
-                      >
-                        ▲
-                      </button>
-                    </div>
+              <div className="space-y-3 md:order-2">
+                <SummaryCard
+                  title={`Exit comparison (Year ${inputs.exitYear})`}
+                  tooltip={SECTION_DESCRIPTIONS.exitComparison}
+                >
+                  <Line
+                    label="Index fund value"
+                    value={currency(equity.indexValEnd)}
+                    tooltip={indexFundTooltip}
+                  />
+                  <Line
+                    label="Property gross"
+                    value={currency(equity.propertyGrossWealthAtExit)}
+                    tooltip={propertyGrossTooltip}
+                  />
+                  <Line
+                    label="Property net"
+                    value={currency(equity.propertyNetWealthAtExit)}
+                    tooltip={propertyNetTooltip}
+                  />
+                  <Line
+                    label={propertyNetAfterTaxLabel}
+                    value={currency(equity.propertyNetWealthAfterTax)}
+                    tooltip={propertyNetAfterTaxTooltip}
+                  />
+                  <Line
+                    label={rentalTaxCumulativeLabel}
+                    value={currency(equity.totalPropertyTax)}
+                    tooltip={rentalTaxTooltip}
+                  />
+                  <div className="mt-2 text-xs text-slate-600">
+                    {equity.propertyNetWealthAfterTax > equity.indexValEnd
+                      ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
+                      : equity.propertyNetWealthAfterTax < equity.indexValEnd
+                      ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
+                      : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
                   </div>
-                }
-              >
-                <div className="space-y-0.5">
-                  <SensitivityRow label={`Rent −${sensitivityPercentLabel}`} value={sensitivityResults.down} />
-                  <SensitivityRow label="Base" value={sensitivityResults.base} />
-                  <SensitivityRow label={`Rent +${sensitivityPercentLabel}`} value={sensitivityResults.up} />
-                </div>
-              </SummaryCard>
+                </SummaryCard>
+
+                <CollapsibleSection
+                  title="Annual cash flow detail"
+                  collapsed={collapsedSections.cashflowDetail}
+                  onToggle={() => toggleSection('cashflowDetail')}
+                  className="rounded-2xl bg-white p-3 shadow-sm"
+                >
+                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
+                  <CashflowTable
+                    rows={cashflowTableRows}
+                    columns={selectedCashflowColumns}
+                    hiddenColumns={hiddenCashflowColumns}
+                    onRemoveColumn={handleRemoveCashflowColumn}
+                    onAddColumn={handleAddCashflowColumn}
+                    onExport={handleExportCashflowCsv}
+                  />
+                </CollapsibleSection>
+              </div>
+
+              <div className="md:order-1">
+                <SummaryCard
+                  title={
+                    <div className="flex items-center justify-between gap-2">
+                      <SectionTitle
+                        label="Sensitivity"
+                        tooltip={SECTION_DESCRIPTIONS.sensitivity}
+                        className="text-sm font-semibold text-slate-700"
+                      />
+                      <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                        <button
+                          type="button"
+                          onClick={() => handleAdjustSensitivity(-0.01)}
+                          className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label="Decrease rent sensitivity"
+                          disabled={!canDecreaseSensitivity}
+                        >
+                          ▼
+                        </button>
+                        <span className="min-w-[3ch] text-right font-semibold text-slate-700">
+                          {sensitivityPercentLabel}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleAdjustSensitivity(0.01)}
+                          className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label="Increase rent sensitivity"
+                          disabled={!canIncreaseSensitivity}
+                        >
+                          ▲
+                        </button>
+                      </div>
+                    </div>
+                  }
+                >
+                  <div className="space-y-0.5">
+                    <SensitivityRow label={`Rent −${sensitivityPercentLabel}`} value={sensitivityResults.down} />
+                    <SensitivityRow label="Base" value={sensitivityResults.base} />
+                    <SensitivityRow label={`Rent +${sensitivityPercentLabel}`} value={sensitivityResults.up} />
+                  </div>
+                </SummaryCard>
+              </div>
             </div>
 
           </section>
         </div>
-
-        <section className="mt-6">
-          <CollapsibleSection
-            title="Annual cash flow detail"
-            collapsed={collapsedSections.cashflowDetail}
-            onToggle={() => toggleSection('cashflowDetail')}
-            className="rounded-2xl bg-white p-3 shadow-sm"
-          >
-            <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-            <CashflowTable
-              rows={cashflowTableRows}
-              columns={selectedCashflowColumns}
-              hiddenColumns={hiddenCashflowColumns}
-              onRemoveColumn={handleRemoveCashflowColumn}
-              onAddColumn={handleAddCashflowColumn}
-            />
-          </CollapsibleSection>
-        </section>
 
         <section className="mt-6">
           <div className="p-3">
@@ -2862,6 +2903,7 @@ function CashflowTable({
   onRemoveColumn,
   onAddColumn,
   hiddenColumns = [],
+  onExport,
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -2876,10 +2918,19 @@ function CashflowTable({
 
   const canRemoveColumns = columns.length > 1;
   const hasHiddenColumns = hiddenColumns.length > 0;
+  const canExport = typeof onExport === 'function' && rows.length > 0;
 
   return (
     <div className="space-y-2">
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={onExport}
+          className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!canExport}
+        >
+          ⬇️ Export CSV
+        </button>
         <div className="relative">
           <button
             type="button"
