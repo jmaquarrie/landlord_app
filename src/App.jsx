@@ -35,6 +35,37 @@ const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
 
+const CASHFLOW_COLUMN_DEFINITIONS = [
+  { key: 'propertyValue', label: 'Property value', format: currency },
+  { key: 'propertyGross', label: 'Property gross', format: currency },
+  { key: 'propertyNet', label: 'Property net', format: currency },
+  { key: 'propertyNetAfterTax', label: 'Property net after tax', format: currency },
+  { key: 'indexFundValue', label: 'Index fund value', format: currency },
+  { key: 'grossRent', label: 'Gross rent', format: currency },
+  { key: 'operatingExpenses', label: 'Operating expenses', format: currency },
+  { key: 'noi', label: 'NOI', format: currency },
+  { key: 'debtService', label: 'Debt service', format: currency },
+  { key: 'propertyTax', label: 'Income tax on rent', format: currency },
+  { key: 'cashPreTax', label: 'Cash flow (pre-tax)', format: currency },
+  { key: 'cashAfterTax', label: 'Cash flow (after tax)', format: currency },
+  { key: 'cumulativeAfterTax', label: 'Cumulative cash flow (after tax)', format: currency },
+  { key: 'reinvestFund', label: 'Reinvested fund value', format: currency },
+  { key: 'cumulativeTax', label: 'Cumulative tax', format: currency },
+];
+
+const DEFAULT_CASHFLOW_COLUMNS = [
+  'propertyValue',
+  'indexFundValue',
+  'grossRent',
+  'operatingExpenses',
+  'noi',
+  'debtService',
+  'propertyTax',
+  'cashPreTax',
+  'cashAfterTax',
+  'cumulativeAfterTax',
+];
+
 const DEFAULT_INPUTS = {
   propertyAddress: '',
   propertyUrl: '',
@@ -75,6 +106,8 @@ const roundTo = (value, decimals = 2) => {
 };
 
 const formatPercent = (value) => `${roundTo(value * 100, 2).toFixed(2)}%`;
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const encodeSharePayload = (payload) => {
   try {
@@ -118,6 +151,25 @@ const SCORE_TOOLTIPS = {
     'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
   deltaAfterTax:
     'After-tax wealth delta compares property net proceeds plus after-tax cash flow (and reinvested fund) to the index alternative at exit, using income or corporation tax depending on buyer type.',
+};
+
+const SECTION_DESCRIPTIONS = {
+  cashNeeded:
+    'Breaks down the upfront funds required to close the purchase, including deposit, stamp duty, closing costs, and renovation spend.',
+  performance:
+    'Shows rent, operating expenses, debt service, taxes, and cash flow for the selected hold year so you can compare annual performance.',
+  keyRatios:
+    'Highlights core deal ratios such as cap rate, yield on cost, cash-on-cash return, DSCR, and the monthly mortgage payment.',
+  exit:
+    'Projects future value, remaining loan balance, selling costs, and estimated equity at the chosen exit year.',
+  npv:
+    'Discounts annual cash flows (including sale proceeds) through the selected exit year back to today at your chosen discount rate.',
+  wealthTrajectory:
+    'Plots property value, property gross and net wealth, and the index fund alternative across the hold period.',
+  exitComparison:
+    'Compares exit-year totals for the property and the index fund, including after-tax wealth and cumulative rental tax.',
+  sensitivity:
+    'Adjust the rent sensitivity to see how Year 1 after-tax cash flow shifts when rents move up or down.',
 };
 
 function personalAllowance(income) {
@@ -541,6 +593,7 @@ function calculateEquity(rawInputs) {
     propertyGross: inputs.purchasePrice,
     propertyNet: initialNetEquity,
     propertyNetAfterTax: initialNetEquity,
+    reinvestFund: 0,
   });
 
   const propertyTaxes = [];
@@ -624,6 +677,7 @@ function calculateEquity(rawInputs) {
       propertyGross: propertyGrossValue,
       propertyNet: propertyNetValue,
       propertyNetAfterTax: propertyNetAfterTaxValue,
+      reinvestFund: reinvestFundValue,
     });
 
     rent *= 1 + inputs.rentGrowth;
@@ -707,6 +761,7 @@ export default function App() {
   const [livePreviewReady, setLivePreviewReady] = useState(false);
   const [captureStatus, setCaptureStatus] = useState('idle');
   const [captureError, setCaptureError] = useState('');
+  const [includePreviewOnLoad, setIncludePreviewOnLoad] = useState(true);
   const [collapsedSections, setCollapsedSections] = useState({
     buyerProfile: false,
     householdIncome: false,
@@ -714,6 +769,7 @@ export default function App() {
     rentalCashflow: false,
     cashflowDetail: false,
   });
+  const [cashflowColumnKeys, setCashflowColumnKeys] = useState(DEFAULT_CASHFLOW_COLUMNS);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [chatStatus, setChatStatus] = useState('idle');
@@ -726,7 +782,9 @@ export default function App() {
     propertyNetAfterTax: true,
   });
   const [performanceYear, setPerformanceYear] = useState(1);
+  const [sensitivityPct, setSensitivityPct] = useState(0.1);
   const [shareNotice, setShareNotice] = useState('');
+  const [isChatOpen, setIsChatOpen] = useState(false);
   const pageRef = useRef(null);
   const iframeRef = useRef(null);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
@@ -1069,6 +1127,42 @@ export default function App() {
       <div className="font-semibold">Total: {currency(equity.totalPropertyTax)}</div>
     </div>
   );
+  const availableCashflowColumns = useMemo(
+    () =>
+      CASHFLOW_COLUMN_DEFINITIONS.map((column) =>
+        column.key === 'propertyTax' ? { ...column, label: rentalTaxLabel } : column
+      ),
+    [rentalTaxLabel]
+  );
+  const cashflowColumnMap = useMemo(() => {
+    const map = new Map();
+    availableCashflowColumns.forEach((column) => {
+      map.set(column.key, column);
+    });
+    return map;
+  }, [availableCashflowColumns]);
+  const selectedCashflowColumns = useMemo(
+    () =>
+      cashflowColumnKeys
+        .map((key) => cashflowColumnMap.get(key))
+        .filter(Boolean),
+    [cashflowColumnKeys, cashflowColumnMap]
+  );
+  const hiddenCashflowColumns = useMemo(
+    () => availableCashflowColumns.filter((column) => !cashflowColumnKeys.includes(column.key)),
+    [availableCashflowColumns, cashflowColumnKeys]
+  );
+  const handleRemoveCashflowColumn = (key) => {
+    setCashflowColumnKeys((prev) => {
+      if (!prev.includes(key)) return prev;
+      if (prev.length <= 1) return prev;
+      return prev.filter((value) => value !== key);
+    });
+  };
+  const handleAddCashflowColumn = (key) => {
+    if (!key) return;
+    setCashflowColumnKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+  };
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
   const hasPropertyUrl = normalizedPropertyUrl !== '';
@@ -1080,23 +1174,31 @@ export default function App() {
     const chartByYear = new Map((equity.chart ?? []).map((point) => [point.year, point]));
     const rows = [];
     let cumulativeAfterTax = 0;
+    let cumulativeTax = 0;
     for (let index = 0; index < exitYearCount; index += 1) {
       const year = index + 1;
       const chartPoint = chartByYear.get(year);
       const cashAfterTax = equity.annualCashflowsAfterTax[index] ?? 0;
       cumulativeAfterTax += cashAfterTax;
+      const propertyTax = equity.propertyTaxes[index] ?? 0;
+      cumulativeTax += propertyTax;
       rows.push({
         year,
         grossRent: equity.annualGrossRents[index] ?? 0,
         operatingExpenses: equity.annualOperatingExpenses[index] ?? 0,
         noi: equity.annualNoiValues[index] ?? 0,
         debtService: equity.annualDebtService[index] ?? 0,
-        propertyTax: equity.propertyTaxes[index] ?? 0,
+        propertyTax,
         cashPreTax: equity.annualCashflowsPreTax[index] ?? 0,
         cashAfterTax,
         cumulativeAfterTax,
         propertyValue: chartPoint?.propertyValue ?? 0,
+        propertyGross: chartPoint?.propertyGross ?? 0,
+        propertyNet: chartPoint?.propertyNet ?? 0,
+        propertyNetAfterTax: chartPoint?.propertyNetAfterTax ?? 0,
         indexFundValue: chartPoint?.indexFund ?? 0,
+        reinvestFund: chartPoint?.reinvestFund ?? 0,
+        cumulativeTax,
       });
     }
     return rows;
@@ -1106,6 +1208,7 @@ export default function App() {
     if (typeof window === 'undefined') return;
     setShowLoadPanel(false);
     setShowTableModal(false);
+    setIsChatOpen(false);
     window.print();
   };
 
@@ -1113,6 +1216,7 @@ export default function App() {
     if (!pageRef.current) return;
     setShowLoadPanel(false);
     setShowTableModal(false);
+    setIsChatOpen(false);
     const element = pageRef.current;
     element.classList.add('exporting-pdf');
     try {
@@ -1565,12 +1669,23 @@ export default function App() {
       const adjustedRent = Math.max(0, roundTo(rent * multiplier, 2));
       return calculateEquity({ ...inputs, monthlyRent: adjustedRent }).cashflowYear1AfterTax;
     };
+    const downMultiplier = clamp(1 - sensitivityPct, 0, 2);
+    const upMultiplier = Math.max(0, 1 + sensitivityPct);
     return {
       base: scenarioBase,
-      down: evaluate(0.9),
-      up: evaluate(1.1),
+      down: evaluate(downMultiplier),
+      up: evaluate(upMultiplier),
     };
-  }, [equity.cashflowYear1AfterTax, inputs]);
+  }, [equity.cashflowYear1AfterTax, inputs, sensitivityPct]);
+  const sensitivityPercentLabel = `${roundTo(sensitivityPct * 100, 2)}%`;
+  const canDecreaseSensitivity = sensitivityPct > 0;
+  const canIncreaseSensitivity = sensitivityPct < 0.5;
+  const handleAdjustSensitivity = (delta) => {
+    setSensitivityPct((current) => {
+      const next = clamp(roundTo(current + delta, 3), 0, 0.5);
+      return next;
+    });
+  };
 
   const buildScenarioSnapshot = () => {
     const sanitizedInputs = JSON.parse(
@@ -1635,7 +1750,7 @@ export default function App() {
     if (!scenario) return;
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setShowLoadPanel(false);
-    setCapturedPreview(scenario.preview ?? null);
+    setCapturedPreview(includePreviewOnLoad ? scenario.preview ?? null : null);
     setLivePreview(null);
     setLivePreviewReady(false);
     setCaptureStatus('idle');
@@ -2152,7 +2267,7 @@ export default function App() {
 
           <section className="space-y-3 md:col-span-2">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <SummaryCard title="Cash needed">
+              <SummaryCard title="Cash needed" tooltip={SECTION_DESCRIPTIONS.cashNeeded}>
                 <Line label="Deposit" value={currency(equity.deposit)} />
                 <Line label="Stamp Duty (est.)" value={currency(equity.stampDuty)} />
                 <Line label="Other closing costs" value={currency(equity.otherClosing)} />
@@ -2164,7 +2279,11 @@ export default function App() {
               <SummaryCard
                 title={
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-slate-700">Performance</span>
+                    <SectionTitle
+                      label="Performance"
+                      tooltip={SECTION_DESCRIPTIONS.performance}
+                      className="text-sm font-semibold text-slate-700"
+                    />
                     <div className="flex items-center gap-1 text-[11px] text-slate-500">
                       <span>Year</span>
                       <select
@@ -2190,7 +2309,7 @@ export default function App() {
                 <Line label="Cash flow (after tax)" value={currency(selectedCashAfterTax)} bold />
               </SummaryCard>
 
-              <SummaryCard title="Key ratios">
+              <SummaryCard title="Key ratios" tooltip={SECTION_DESCRIPTIONS.keyRatios}>
                 <Line label="Cap rate" value={formatPercent(equity.cap)} />
                 <Line label="Yield on cost" value={formatPercent(equity.yoc)} />
                 <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} />
@@ -2203,7 +2322,7 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <SummaryCard title={`At exit (Year ${inputs.exitYear})`}>
+              <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
                 <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
                 <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
                 <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
@@ -2216,14 +2335,20 @@ export default function App() {
                 />
               </SummaryCard>
 
-              <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`}>
+              <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`} tooltip={SECTION_DESCRIPTIONS.npv}>
                 <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
                 <Line label="NPV" value={currency(equity.npv)} bold />
               </SummaryCard>
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h3 className="mb-2 text-sm font-semibold">Wealth trajectory vs Index Fund</h3>
+              <h3 className="mb-2">
+                <SectionTitle
+                  label="Wealth trajectory vs Index Fund"
+                  tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
+                  className="text-sm font-semibold text-slate-700"
+                />
+              </h3>
               <div className="h-72 w-full">
                 <ResponsiveContainer>
                   <AreaChart data={equity.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
@@ -2299,7 +2424,10 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <SummaryCard title={`Exit comparison (Year ${inputs.exitYear})`}>
+              <SummaryCard
+                title={`Exit comparison (Year ${inputs.exitYear})`}
+                tooltip={SECTION_DESCRIPTIONS.exitComparison}
+              >
                 <Line
                   label="Index fund value"
                   value={currency(equity.indexValEnd)}
@@ -2334,211 +2462,48 @@ export default function App() {
                 </div>
               </SummaryCard>
 
-              <SummaryCard title="Sensitivity: rent ±10% (Year 1 after-tax cash flow)">
+              <SummaryCard
+                title={
+                  <div className="flex items-center justify-between gap-2">
+                    <SectionTitle
+                      label="Sensitivity"
+                      tooltip={SECTION_DESCRIPTIONS.sensitivity}
+                      className="text-sm font-semibold text-slate-700"
+                    />
+                    <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustSensitivity(-0.01)}
+                        className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-label="Decrease rent sensitivity"
+                        disabled={!canDecreaseSensitivity}
+                      >
+                        ▼
+                      </button>
+                      <span className="min-w-[3ch] text-right font-semibold text-slate-700">
+                        {sensitivityPercentLabel}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleAdjustSensitivity(0.01)}
+                        className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-label="Increase rent sensitivity"
+                        disabled={!canIncreaseSensitivity}
+                      >
+                        ▲
+                      </button>
+                    </div>
+                  </div>
+                }
+              >
                 <div className="space-y-0.5">
-                  <SensitivityRow label="Rent −10%" value={sensitivityResults.down} />
+                  <SensitivityRow label={`Rent −${sensitivityPercentLabel}`} value={sensitivityResults.down} />
                   <SensitivityRow label="Base" value={sensitivityResults.base} />
-                  <SensitivityRow label="Rent +10%" value={sensitivityResults.up} />
+                  <SensitivityRow label={`Rent +${sensitivityPercentLabel}`} value={sensitivityResults.up} />
                 </div>
               </SummaryCard>
             </div>
 
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <h3 className="text-sm font-semibold text-slate-800">AI investment assistant</h3>
-                <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                  {chatStatus === 'loading' ? <span>Thinking…</span> : null}
-                  {chatMessages.length > 0 ? (
-                    <button
-                      type="button"
-                      onClick={handleClearChat}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100"
-                    >
-                      Clear chat
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              {chatMessages.length === 0 ? (
-                <p className="mb-3 text-xs text-slate-600">
-                  Ask follow-up questions about this forecast and receive AI-generated responses grounded in the current inputs.
-                </p>
-              ) : (
-                <div className="mb-3 max-h-64 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
-                  {chatMessages.map((message) => (
-                    <div
-                      key={message.id}
-                      className={
-                        message.role === 'user'
-                          ? 'ml-auto max-w-[85%] rounded-lg bg-indigo-100 px-2 py-1 text-indigo-800'
-                          : 'mr-auto max-w-[85%] rounded-lg bg-white px-2 py-1 text-slate-700 shadow-sm'
-                      }
-                    >
-                      {message.content}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {chatError ? (
-                <p className="mb-2 text-xs text-rose-600" role="alert">
-                  {chatError}
-                </p>
-              ) : null}
-              {!chatEnabled ? (
-                <p className="text-xs text-slate-500">
-                  Provide a Google Gemini API key (set <code className="font-mono text-[11px]">VITE_GOOGLE_API_KEY</code>) or configure{' '}
-                  <code className="font-mono text-[11px]">VITE_CHAT_API_URL</code> to enable the assistant.
-                </p>
-              ) : null}
-              <form onSubmit={handleSendChat} className="mt-2 space-y-2">
-                <label className="flex flex-col gap-1 text-xs text-slate-700">
-                  <span>Your question</span>
-                  <textarea
-                    value={chatInput}
-                    onChange={(event) => setChatInput(event.target.value)}
-                    className="min-h-[60px] w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
-                    placeholder="What should I watch out for in this investment?"
-                    disabled={chatStatus === 'loading'}
-                  />
-                </label>
-                <div className="flex items-center justify-end">
-                  <button
-                    type="submit"
-                    className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
-                    disabled={chatStatus === 'loading' || !chatEnabled}
-                  >
-                    {chatStatus === 'loading' ? 'Sending…' : 'Ask assistant'}
-                  </button>
-                </div>
-              </form>
-            </div>
-
-            <div className="p-3">
-              <h3 className="mb-2 text-sm font-semibold">Scenario history</h3>
-              <p className="text-xs text-slate-600">
-                Save your current inputs and reload any previous scenario to compare different deals quickly.
-              </p>
-              {remoteEnabled ? (
-                <p
-                  className={`text-xs ${syncError ? 'text-rose-600' : 'text-slate-500'}`}
-                  role={syncError ? 'alert' : undefined}
-                >
-                  {syncStatus === 'loading'
-                    ? 'Loading remote scenarios…'
-                    : syncStatus === 'syncing'
-                    ? 'Syncing scenarios with the remote service…'
-                    : syncError
-                    ? `Remote sync issue: ${syncError}`
-                    : 'Remote sync active.'}
-                </p>
-              ) : (
-                <p className="text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
-              )}
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleSaveScenario}
-                  className="no-print rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700"
-                >
-                  Save current scenario
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowLoadPanel((prev) => !prev)}
-                  className="no-print rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700"
-                >
-                  {showLoadPanel ? 'Close saved scenarios' : 'Load saved scenario'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowTableModal(true)}
-                  className="no-print rounded-full bg-slate-800 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
-                >
-                  Table view
-                </button>
-              </div>
-
-              {showLoadPanel && (
-                <div className="mt-3 space-y-3">
-                  {savedScenarios.length === 0 ? (
-                    <p className="text-xs text-slate-600">No scenarios saved yet. Save a scenario to build your history.</p>
-                  ) : (
-                    <>
-                      <label className="flex flex-col gap-1 text-xs text-slate-700">
-                        <span>Choose a saved scenario</span>
-                        <select
-                          value={selectedScenarioId}
-                          onChange={(event) => setSelectedScenarioId(event.target.value)}
-                          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-xs"
-                        >
-                          {savedScenarios.map((scenario) => (
-                            <option key={scenario.id} value={scenario.id}>
-                              {scenario.name} — saved {friendlyDateTime(scenario.savedAt)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={handleLoadScenario}
-                        className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
-                      >
-                        Load selected scenario
-                      </button>
-                      <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
-                        {savedScenarios.map((scenario) => (
-                          <div
-                            key={`${scenario.id}-meta`}
-                            className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
-                          >
-                            <div className="flex flex-col">
-                              <span className="font-semibold text-slate-700">{scenario.name}</span>
-                              <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
-                              {scenario.data?.propertyAddress ? (
-                                <span className="text-slate-500">{scenario.data.propertyAddress}</span>
-                              ) : null}
-                              {scenario.data?.propertyUrl ? (
-                                <a
-                                  href={scenario.data.propertyUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-slate-500 underline-offset-2 hover:underline"
-                                >
-                                  View listing
-                                </a>
-                              ) : null}
-                            </div>
-                            <div className="no-print flex items-center gap-2 text-[11px]">
-                              <button
-                                type="button"
-                                onClick={() => handleUpdateScenario(scenario.id)}
-                                className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
-                              >
-                                Update
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleRenameScenario(scenario.id)}
-                                className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
-                              >
-                                Rename
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteScenario(scenario.id)}
-                                className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
           </section>
         </div>
 
@@ -2550,8 +2515,162 @@ export default function App() {
             className="rounded-2xl bg-white p-3 shadow-sm"
           >
             <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-            <CashflowTable rows={cashflowTableRows} rentalTaxLabel={rentalTaxLabel} />
+            <CashflowTable
+              rows={cashflowTableRows}
+              columns={selectedCashflowColumns}
+              hiddenColumns={hiddenCashflowColumns}
+              onRemoveColumn={handleRemoveCashflowColumn}
+              onAddColumn={handleAddCashflowColumn}
+            />
           </CollapsibleSection>
+        </section>
+
+        <section className="mt-6">
+          <div className="p-3">
+            <h3 className="mb-2 text-sm font-semibold text-slate-800">Scenario history</h3>
+            <p className="text-xs text-slate-600">
+              Save your current inputs and reload any previous scenario to compare different deals quickly.
+            </p>
+            {remoteEnabled ? (
+              <p
+                className={`text-xs ${syncError ? 'text-rose-600' : 'text-slate-500'}`}
+                role={syncError ? 'alert' : undefined}
+              >
+                {syncStatus === 'loading'
+                  ? 'Loading remote scenarios…'
+                  : syncStatus === 'syncing'
+                  ? 'Syncing scenarios with the remote service…'
+                  : syncError
+                  ? `Remote sync issue: ${syncError}`
+                  : 'Remote sync active.'}
+              </p>
+            ) : (
+              <p className="text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
+            )}
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleSaveScenario}
+                className="no-print inline-flex items-center gap-1 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+              >
+                Save scenario
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowLoadPanel((prev) => !prev)}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                {showLoadPanel ? 'Hide saved scenarios' : 'Load saved scenario'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTableModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Table
+              </button>
+              <button
+                type="button"
+                onClick={handleExportTableCsv}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={scenarioTableData.length === 0}
+              >
+                Export CSV
+              </button>
+            </div>
+            {showLoadPanel ? (
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-col gap-1 text-xs text-slate-700">
+                  <label className="font-semibold text-slate-800" htmlFor="scenario-select">
+                    Choose scenario
+                  </label>
+                  <select
+                    id="scenario-select"
+                    value={selectedScenarioId}
+                    onChange={(event) => setSelectedScenarioId(event.target.value)}
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
+                  >
+                    {savedScenarios.length === 0 ? (
+                      <option value="">No scenarios saved</option>
+                    ) : null}
+                    {savedScenarios.map((scenario) => (
+                      <option key={scenario.id} value={scenario.id}>
+                        {scenario.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {savedScenarios.length > 0 ? (
+                  <>
+                    <label className="flex items-center gap-2 text-xs text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(includePreviewOnLoad)}
+                        onChange={(event) => setIncludePreviewOnLoad(event.target.checked)}
+                      />
+                      <span>Restore captured listing snapshot when loading</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleLoadScenario}
+                      className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+                    >
+                      Load selected scenario
+                    </button>
+                    <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
+                      {savedScenarios.map((scenario) => (
+                        <div
+                          key={`${scenario.id}-meta`}
+                          className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
+                        >
+                          <div className="flex flex-col">
+                            <span className="font-semibold text-slate-700">{scenario.name}</span>
+                            <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                            {scenario.data?.propertyAddress ? (
+                              <span className="text-slate-500">{scenario.data.propertyAddress}</span>
+                            ) : null}
+                            {scenario.data?.propertyUrl ? (
+                              <a
+                                href={scenario.data.propertyUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-slate-500 underline-offset-2 hover:underline"
+                              >
+                                View listing
+                              </a>
+                            ) : null}
+                          </div>
+                          <div className="no-print flex items-center gap-2 text-[11px]">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateScenario(scenario.id)}
+                              className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                            >
+                              Update
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRenameScenario(scenario.id)}
+                              className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteScenario(scenario.id)}
+                              className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </section>
 
         {showListingPreview ? (
@@ -2660,6 +2779,18 @@ export default function App() {
         ) : null}
 
       </main>
+      <ChatBubble
+        open={isChatOpen}
+        onToggle={() => setIsChatOpen((prev) => !prev)}
+        messages={chatMessages}
+        status={chatStatus}
+        error={chatError}
+        enabled={chatEnabled}
+        inputValue={chatInput}
+        onInputChange={(event) => setChatInput(event.target.value)}
+        onSubmit={handleSendChat}
+        onClear={handleClearChat}
+      />
     </div>
 
     {showTableModal && (
@@ -2725,47 +2856,200 @@ export default function App() {
   );
 }
 
-function CashflowTable({ rows = [], rentalTaxLabel }) {
+function CashflowTable({
+  rows = [],
+  columns = [],
+  onRemoveColumn,
+  onAddColumn,
+  hiddenColumns = [],
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+
   if (!rows || rows.length === 0) {
     return <p className="text-xs text-slate-600">Cash flow data becomes available once a hold period is defined.</p>;
   }
 
+  const handleAdd = (key) => {
+    onAddColumn?.(key);
+    setPickerOpen(false);
+  };
+
+  const canRemoveColumns = columns.length > 1;
+  const hasHiddenColumns = hiddenColumns.length > 0;
+
   return (
-    <div className="overflow-x-auto">
-      <table className="min-w-full divide-y divide-slate-200 text-xs">
-        <thead className="bg-slate-50 text-slate-600">
-          <tr>
-            <th className="px-3 py-2 text-left font-semibold">Year</th>
-            <th className="px-3 py-2 text-right font-semibold">Property value</th>
-            <th className="px-3 py-2 text-right font-semibold">Index fund value</th>
-            <th className="px-3 py-2 text-right font-semibold">Gross rent</th>
-            <th className="px-3 py-2 text-right font-semibold">Operating expenses</th>
-            <th className="px-3 py-2 text-right font-semibold">NOI</th>
-            <th className="px-3 py-2 text-right font-semibold">Debt service</th>
-            <th className="px-3 py-2 text-right font-semibold">{rentalTaxLabel}</th>
-            <th className="px-3 py-2 text-right font-semibold">Cash flow (pre-tax)</th>
-            <th className="px-3 py-2 text-right font-semibold">Cash flow (after tax)</th>
-            <th className="px-3 py-2 text-right font-semibold">Cumulative cash flow (after tax)</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-200">
-          {rows.map((row) => (
-            <tr key={`cashflow-${row.year}`} className="odd:bg-white even:bg-slate-50">
-              <td className="px-3 py-2 font-semibold text-slate-700">Y{row.year}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.propertyValue)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.indexFundValue)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.grossRent)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.operatingExpenses)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.noi)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.debtService)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.propertyTax)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.cashPreTax)}</td>
-              <td className="px-3 py-2 text-right font-semibold text-slate-800">{currency(row.cashAfterTax)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.cumulativeAfterTax)}</td>
+    <div className="space-y-2">
+      <div className="flex justify-end">
+        <div className="relative">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => setPickerOpen((prev) => !prev)}
+            disabled={!hasHiddenColumns}
+          >
+            + Add column
+          </button>
+          {pickerOpen ? (
+            <div className="absolute right-0 z-20 mt-2 w-48 rounded-lg border border-slate-200 bg-white p-1 text-xs text-slate-700 shadow-xl">
+              {hasHiddenColumns ? (
+                hiddenColumns.map((column) => (
+                  <button
+                    key={column.key}
+                    type="button"
+                    onClick={() => handleAdd(column.key)}
+                    className="flex w-full items-center justify-between rounded-md px-2 py-1 hover:bg-slate-100"
+                  >
+                    <span>{column.label}</span>
+                    <span className="text-slate-400">+</span>
+                  </button>
+                ))
+              ) : (
+                <div className="px-2 py-1 text-[11px] text-slate-500">All columns are visible.</div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-slate-200 text-xs">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="px-3 py-2 text-left font-semibold">Year</th>
+              {columns.map((column) => (
+                <th key={column.key} className="px-3 py-2 text-right font-semibold">
+                  <div className="flex items-center justify-end gap-1">
+                    <span>{column.label}</span>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveColumn?.(column.key)}
+                      className="flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-[10px] text-slate-500 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={!canRemoveColumns}
+                      aria-label={`Remove ${column.label}`}
+                    >
+                      −
+                    </button>
+                  </div>
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {rows.map((row) => (
+              <tr key={`cashflow-${row.year}`} className="odd:bg-white even:bg-slate-50">
+                <td className="px-3 py-2 font-semibold text-slate-700">Y{row.year}</td>
+                {columns.map((column) => {
+                  const rawValue = row[column.key];
+                  const displayValue = column.format ? column.format(rawValue) : rawValue ?? '—';
+                  return (
+                    <td key={`${column.key}-${row.year}`} className="px-3 py-2 text-right text-slate-700">
+                      {displayValue}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ChatBubble({
+  open,
+  onToggle,
+  messages = [],
+  status = 'idle',
+  error,
+  enabled,
+  inputValue,
+  onInputChange,
+  onSubmit,
+  onClear,
+}) {
+  const hasMessages = messages.length > 0;
+  const loading = status === 'loading';
+
+  return (
+    <div className="no-print fixed bottom-4 right-4 z-50 flex flex-col items-end gap-3">
+      {open ? (
+        <div className="w-80 max-w-[90vw] rounded-2xl bg-white p-3 shadow-2xl ring-1 ring-slate-200">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm font-semibold text-slate-800">AI investment assistant</span>
+            <div className="flex items-center gap-2 text-[11px] text-slate-500">
+              {loading ? <span>Thinking…</span> : null}
+              {hasMessages ? (
+                <button
+                  type="button"
+                  onClick={onClear}
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2 py-0.5 font-semibold text-slate-600 transition hover:bg-slate-100"
+                >
+                  Clear
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {hasMessages ? (
+            <div className="mb-3 max-h-60 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-700">
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={
+                    message.role === 'user'
+                      ? 'ml-auto max-w-[85%] rounded-lg bg-indigo-100 px-2 py-1 text-indigo-800'
+                      : 'mr-auto max-w-[85%] rounded-lg bg-white px-2 py-1 text-slate-700 shadow-sm'
+                  }
+                >
+                  {message.content}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mb-3 text-[11px] leading-snug text-slate-600">
+              Ask follow-up questions about this forecast and receive AI-generated responses grounded in the current inputs.
+            </p>
+          )}
+          {error ? (
+            <p className="mb-2 text-[11px] text-rose-600" role="alert">
+              {error}
+            </p>
+          ) : null}
+          {!enabled ? (
+            <p className="mb-2 text-[11px] text-slate-500">
+              Provide a Google Gemini API key or chat endpoint to enable the assistant.
+            </p>
+          ) : null}
+          <form onSubmit={onSubmit} className="space-y-2 text-[11px] text-slate-700">
+            <label className="flex flex-col gap-1">
+              <span>Your question</span>
+              <textarea
+                value={inputValue}
+                onChange={onInputChange}
+                className="min-h-[60px] w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
+                placeholder="What should I watch out for in this investment?"
+                disabled={loading}
+              />
+            </label>
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-slate-400">Powered by Gemini</span>
+              <button
+                type="submit"
+                className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
+                disabled={loading || !enabled}
+              >
+                {loading ? 'Sending…' : 'Ask assistant'}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:bg-slate-700"
+      >
+        {open ? 'Close chat' : 'Chat with AI'}
+      </button>
     </div>
   );
 }
@@ -2801,17 +3085,37 @@ function ChartLegend({ payload = [], activeSeries, onToggle }) {
   );
 }
 
-function SummaryCard({ title, children }) {
+function SectionTitle({ label, tooltip, className }) {
+  const classNames = ['group relative inline-flex items-center gap-1', className ?? 'text-sm font-semibold text-slate-700']
+    .filter(Boolean)
+    .join(' ');
+
+  if (!tooltip) {
+    return <span className={classNames}>{label}</span>;
+  }
+
+  return (
+    <span className={classNames}>
+      <span>{label}</span>
+      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px] font-semibold text-slate-600">
+        i
+      </span>
+      <span className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block">
+        {tooltip}
+      </span>
+    </span>
+  );
+}
+
+function SummaryCard({ title, children, tooltip }) {
   const titleNode =
-    typeof title === 'string' ? (
-      <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
-    ) : (
-      title
-    );
+    typeof title === 'string'
+      ? <SectionTitle label={title} tooltip={tooltip} />
+      : title;
 
   return (
     <div className="rounded-2xl bg-white p-3 shadow-sm">
-      <div className="mb-2">{titleNode}</div>
+      {titleNode ? <div className="mb-2">{titleNode}</div> : null}
       <div className="space-y-0.5">{children}</div>
     </div>
   );
