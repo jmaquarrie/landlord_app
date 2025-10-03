@@ -21,7 +21,7 @@ npm run build
 
 ## Scenario persistence
 
-Saved scenarios are synced through a lightweight Express + SQLite service that lives in `server/index.js`. Start it alongside the Vite dev server in another terminal:
+Saved scenarios are stored locally in the browser by default. To sync them across devices, run the lightweight Express + SQLite service in `server/index.js` and point the frontend at it. Start the backend alongside the Vite dev server in another terminal:
 
 ```bash
 npm run server
@@ -42,7 +42,7 @@ All requests require HTTP Basic authentication using the credentials:
 - **Username:** `pi`
 - **Password:** `jmaq2460`
 
-The React app sends these credentials automatically, and the login dialog appears if the backend rejects a request. Scenario payloads include the captured inputs, preview state, and the selected cash-flow columns so that reloading or sharing a scenario restores the full layout.
+Expose the backend URL to the frontend by setting `VITE_SCENARIO_API_URL` (for example `http://localhost:4000/api`). When this environment variable is present the React app will automatically attempt to sync, prompting for the credentials above if the backend rejects a request. Scenario payloads include the captured inputs, preview state, and the selected cash-flow columns so that reloading or sharing a scenario restores the full layout.
 
 Environment variables let you tailor the service:
 
@@ -50,7 +50,7 @@ Environment variables let you tailor the service:
 - `SCENARIO_DB_PATH` – override the SQLite database location (defaults to `server/scenarios.db`).
 - `SCENARIO_USERNAME` / `SCENARIO_PASSWORD` – replace the default login.
 
-If you deploy the service elsewhere, point the frontend at it with `VITE_SCENARIO_API_URL` (for example `https://yourdomain.example/api`).
+If you deploy the service elsewhere, update `VITE_SCENARIO_API_URL` to match (for example `https://yourdomain.example/api`). If the variable is unset the app falls back to browser-only storage and hides remote sync prompts.
 
 ## AI investment assistant
 

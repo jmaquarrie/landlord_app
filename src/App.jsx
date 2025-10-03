@@ -17,11 +17,10 @@ const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
 const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL, VITE_GOOGLE_MODEL } = import.meta.env ?? {};
-const DEFAULT_SCENARIO_API_PATH = '/api';
 const SCENARIO_API_URL =
   typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
     ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
-    : DEFAULT_SCENARIO_API_PATH;
+    : '';
 const CHAT_API_URL =
   typeof VITE_CHAT_API_URL === 'string' && VITE_CHAT_API_URL.trim() !== ''
     ? VITE_CHAT_API_URL.replace(/\/$/, '')
@@ -1059,6 +1058,9 @@ export default function App() {
         if (error?.status === 401) {
           setAuthStatus('unauthorized');
           setAuthError('Incorrect username or password.');
+        } else if (error?.status === 404) {
+          setAuthStatus('error');
+          setSyncError('Scenario service not found. Set VITE_SCENARIO_API_URL to your backend.');
         } else {
           setAuthStatus('error');
           setSyncError(
@@ -2034,6 +2036,9 @@ export default function App() {
     } catch (error) {
       if (error?.status === 401) {
         setAuthError('Incorrect username or password.');
+      } else if (error?.status === 404) {
+        setAuthError('Scenario service not found. Set VITE_SCENARIO_API_URL to your backend.');
+        setSyncError('Scenario service not found. Set VITE_SCENARIO_API_URL to your backend.');
       } else {
         setAuthError(
           error instanceof Error ? error.message : 'Unable to reach the scenario service.'
