@@ -52,8 +52,69 @@ const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'reinvestFund', label: 'Reinvested fund value', format: currency },
   { key: 'cumulativeTax', label: 'Cumulative tax', format: currency },
 ];
+const CASHFLOW_COLUMN_KEY_SET = new Set(CASHFLOW_COLUMN_DEFINITIONS.map((column) => column.key));
+const DEFAULT_CASHFLOW_COLUMN_ORDER = [
+  'propertyValue',
+  'indexFundValue',
+  'reinvestFund',
+  'cumulativeAfterTax',
+  'cumulativeTax',
+];
+const sanitizeCashflowColumns = (keys, fallbackKeys = DEFAULT_CASHFLOW_COLUMN_ORDER) => {
+  const output = [];
+  if (Array.isArray(keys)) {
+    keys.forEach((key) => {
+      if (CASHFLOW_COLUMN_KEY_SET.has(key) && !output.includes(key)) {
+        output.push(key);
+      }
+    });
+  }
+  if (output.length > 0) {
+    return output;
+  }
+  const fallback = Array.isArray(fallbackKeys) ? fallbackKeys : DEFAULT_CASHFLOW_COLUMN_ORDER;
+  const fallbackOutput = [];
+  fallback.forEach((key) => {
+    if (CASHFLOW_COLUMN_KEY_SET.has(key) && !fallbackOutput.includes(key)) {
+      fallbackOutput.push(key);
+    }
+  });
+  if (fallbackOutput.length > 0) {
+    return fallbackOutput;
+  }
+  return Array.from(CASHFLOW_COLUMN_KEY_SET);
+};
 
-const DEFAULT_CASHFLOW_COLUMNS = ['propertyValue', 'indexFundValue', 'cumulativeAfterTax'];
+const DEFAULT_CASHFLOW_COLUMNS = sanitizeCashflowColumns(DEFAULT_CASHFLOW_COLUMN_ORDER);
+const CASHFLOW_COLUMNS_STORAGE_KEY = 'qc_cashflow_columns';
+
+const normalizeScenarioRecord = (scenario) => {
+  if (!scenario || typeof scenario !== 'object') {
+    return null;
+  }
+  const baseData =
+    scenario.data && typeof scenario.data === 'object'
+      ? { ...scenario.data }
+      : {};
+  if ('cashflowColumns' in baseData) {
+    delete baseData.cashflowColumns;
+  }
+  const normalized = {
+    ...scenario,
+    data: baseData,
+    cashflowColumns: sanitizeCashflowColumns(
+      scenario.cashflowColumns ?? scenario.data?.cashflowColumns ?? DEFAULT_CASHFLOW_COLUMNS
+    ),
+  };
+  return normalized;
+};
+
+const normalizeScenarioList = (list) =>
+  Array.isArray(list)
+    ? list
+        .map((item) => normalizeScenarioRecord(item))
+        .filter(Boolean)
+    : [];
 
 const DEFAULT_INPUTS = {
   propertyAddress: '',
@@ -724,7 +785,23 @@ export default function App() {
     rentalCashflow: false,
     cashflowDetail: false,
   });
-  const [cashflowColumnKeys, setCashflowColumnKeys] = useState(DEFAULT_CASHFLOW_COLUMNS);
+  const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = window.localStorage.getItem(CASHFLOW_COLUMNS_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          const sanitized = sanitizeCashflowColumns(parsed);
+          if (sanitized.length) {
+            return sanitized;
+          }
+        }
+      } catch (error) {
+        console.warn('Unable to read cashflow columns from storage:', error);
+      }
+    }
+    return DEFAULT_CASHFLOW_COLUMNS;
+  });
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [chatStatus, setChatStatus] = useState('idle');
@@ -779,6 +856,7 @@ export default function App() {
     const payload = decodeSharePayload(encoded);
     if (payload && typeof payload === 'object' && payload.inputs) {
       setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
+      setCashflowColumnKeys(sanitizeCashflowColumns(payload.cashflowColumns));
       const targetUrl = payload.inputs?.propertyUrl ?? '';
       const shouldActivatePreview =
         (payload.preview && payload.preview.active) || (typeof targetUrl === 'string' && targetUrl.trim() !== '');
@@ -802,9 +880,10 @@ export default function App() {
       if (!stored) return;
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed)) {
-        setSavedScenarios(parsed);
-        if (parsed.length > 0) {
-          setSelectedScenarioId(parsed[0].id ?? '');
+        const normalized = normalizeScenarioList(parsed);
+        setSavedScenarios(normalized);
+        if (normalized.length > 0) {
+          setSelectedScenarioId(normalized[0].id ?? '');
         }
       }
     } catch (error) {
@@ -820,6 +899,16 @@ export default function App() {
       console.warn('Unable to persist saved scenarios:', error);
     }
   }, [savedScenarios]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const sanitized = sanitizeCashflowColumns(cashflowColumnKeys);
+      window.localStorage.setItem(CASHFLOW_COLUMNS_STORAGE_KEY, JSON.stringify(sanitized));
+    } catch (error) {
+      console.warn('Unable to persist cashflow columns:', error);
+    }
+  }, [cashflowColumnKeys]);
 
   useEffect(() => {
     if (!remoteEnabled) return;
@@ -838,8 +927,9 @@ export default function App() {
           throw new Error('Remote response was not an array');
         }
         if (!cancelled) {
-          setSavedScenarios(payload);
-          setSelectedScenarioId(payload[0]?.id ?? '');
+          const normalized = normalizeScenarioList(payload);
+          setSavedScenarios(normalized);
+          setSelectedScenarioId(normalized[0]?.id ?? '');
         }
       } catch (error) {
         if (!cancelled) {
@@ -1685,14 +1775,22 @@ export default function App() {
     const previewSnapshot = {
       active: previewActive && Boolean(sanitizedInputs.propertyUrl),
     };
-    return { data: sanitizedInputs, preview: previewSnapshot };
+    return {
+      data: sanitizedInputs,
+      preview: previewSnapshot,
+      cashflowColumns: sanitizeCashflowColumns(cashflowColumnKeys),
+    };
   };
 
   const handleShareScenario = async () => {
     if (typeof window === 'undefined') return;
     try {
       const snapshot = buildScenarioSnapshot();
-      const payload = { inputs: snapshot.data, preview: snapshot.preview };
+      const payload = {
+        inputs: snapshot.data,
+        preview: snapshot.preview,
+        cashflowColumns: snapshot.cashflowColumns,
+      };
       const encoded = encodeSharePayload(payload);
       if (!encoded) {
         throw new Error('Unable to encode scenario');
@@ -1729,15 +1827,18 @@ export default function App() {
       savedAt: new Date().toISOString(),
       data: snapshot.data,
       preview: snapshot.preview,
+      cashflowColumns: snapshot.cashflowColumns,
     };
-    setSavedScenarios((prev) => [scenario, ...prev]);
-    setSelectedScenarioId(scenario.id);
+    const normalizedScenario = normalizeScenarioRecord(scenario);
+    setSavedScenarios((prev) => [normalizedScenario ?? scenario, ...prev]);
+    setSelectedScenarioId((normalizedScenario ?? scenario).id);
   };
 
   const handleLoadScenario = () => {
     const scenario = savedScenarios.find((item) => item.id === selectedScenarioId);
     if (!scenario) return;
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
+    setCashflowColumnKeys(sanitizeCashflowColumns(scenario.cashflowColumns));
     setShowLoadPanel(false);
     const scenarioUrl = scenario.data?.propertyUrl ?? '';
     const shouldActivate =
@@ -1772,16 +1873,17 @@ export default function App() {
     const snapshot = buildScenarioSnapshot();
     const updatedAt = new Date().toISOString();
     setSavedScenarios((prev) =>
-      prev.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              data: snapshot.data,
-              preview: snapshot.preview,
-              savedAt: updatedAt,
-            }
-          : item
-      )
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        const updated = normalizeScenarioRecord({
+          ...item,
+          data: snapshot.data,
+          preview: snapshot.preview,
+          cashflowColumns: snapshot.cashflowColumns,
+          savedAt: updatedAt,
+        });
+        return updated ?? item;
+      })
     );
   };
 
