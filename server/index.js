@@ -25,27 +25,58 @@ const pool = mysql.createPool({
 });
 
 const ensureSchema = async () => {
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS scenarios (
-      id CHAR(36) PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      data LONGTEXT NOT NULL,
-      preview LONGTEXT NOT NULL,
-      cashflow_columns LONGTEXT NOT NULL,
-      created_at VARCHAR(32) NOT NULL,
-      updated_at VARCHAR(32) NOT NULL
-    )
-  `);
+  const connection = await pool.getConnection();
   try {
-    await pool.execute(
-      'CREATE INDEX idx_scenarios_updated_at ON scenarios (updated_at)'
-    );
-  } catch (error) {
-    if (error?.code !== 'ER_DUP_KEYNAME') {
-      throw error;
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS scenarios (
+        id CHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        data LONGTEXT NOT NULL,
+        preview LONGTEXT NOT NULL,
+        cashflow_columns LONGTEXT NOT NULL,
+        created_at VARCHAR(32) NOT NULL,
+        updated_at VARCHAR(32) NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    try {
+      await connection.query(
+        'CREATE INDEX idx_scenarios_updated_at ON scenarios (updated_at)'
+      );
+    } catch (error) {
+      if (error?.code !== 'ER_DUP_KEYNAME') {
+        throw error;
+      }
     }
+  } finally {
+    connection.release();
   }
 };
+
+const withConnection = async (callback) => {
+  const connection = await pool.getConnection();
+  try {
+    return await callback(connection);
+  } finally {
+    connection.release();
+  }
+};
+
+const runInTransaction = async (callback) =>
+  withConnection(async (connection) => {
+    await connection.beginTransaction();
+    try {
+      const result = await callback(connection);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error('Failed to rollback transaction', rollbackError);
+      }
+      throw error;
+    }
+  });
 
 const app = express();
 app.use(cors({ origin: true, credentials: false }));
@@ -107,10 +138,14 @@ const sanitizeColumns = (value) => {
   return value.filter((item) => typeof item === 'string');
 };
 
-const getRowById = async (id) => {
-  const [rows] = await pool.execute('SELECT * FROM scenarios WHERE id = ?', [id]);
-  return rows[0] || null;
-};
+const getRowById = async (id) =>
+  withConnection(async (connection) => {
+    const [rows] = await connection.execute(
+      'SELECT * FROM scenarios WHERE id = ?',
+      [id]
+    );
+    return rows[0] || null;
+  });
 
 const respondWithError = (res, status, error, message) => {
   console.error(message, error);
@@ -147,29 +182,33 @@ app.post('/api/scenarios', async (req, res) => {
     const cashflowColumns = sanitizeColumns(req.body?.cashflowColumns);
     const id = randomUUID();
     const timestamp = now();
-    await pool.execute(
-      `INSERT INTO scenarios (id, name, data, preview, cashflow_columns, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        name,
-        JSON.stringify(data),
-        JSON.stringify(preview),
-        JSON.stringify(cashflowColumns),
-        timestamp,
-        timestamp,
-      ]
-    );
-    const row = await getRowById(id);
-    if (!row) {
-      return respondWithError(
-        res,
-        500,
-        new Error('Created scenario could not be retrieved'),
-        'Failed to load created scenario'
+    const scenario = await runInTransaction(async (connection) => {
+      const [result] = await connection.execute(
+        `INSERT INTO scenarios (id, name, data, preview, cashflow_columns, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          name,
+          JSON.stringify(data),
+          JSON.stringify(preview),
+          JSON.stringify(cashflowColumns),
+          timestamp,
+          timestamp,
+        ]
       );
-    }
-    res.status(201).json(rowToScenario(row));
+      if (result.affectedRows !== 1) {
+        throw new Error('Scenario insert did not affect any rows');
+      }
+      const [rows] = await connection.execute(
+        'SELECT * FROM scenarios WHERE id = ? LIMIT 1',
+        [id]
+      );
+      if (!rows[0]) {
+        throw new Error('Inserted scenario could not be found');
+      }
+      return rowToScenario(rows[0]);
+    });
+    res.status(201).json(scenario);
   } catch (error) {
     respondWithError(res, 500, error, 'Failed to create scenario');
   }
@@ -191,28 +230,37 @@ app.put('/api/scenarios/:id', async (req, res) => {
       req.body?.cashflowColumns ?? JSON.parse(existing.cashflow_columns)
     );
     const updatedAt = now();
-    await pool.execute(
-      `UPDATE scenarios
-       SET name = ?,
-           data = ?,
-           preview = ?,
-           cashflow_columns = ?,
-           updated_at = ?
-       WHERE id = ?`,
-      [
-        name,
-        JSON.stringify(data),
-        JSON.stringify(preview),
-        JSON.stringify(cashflowColumns),
-        updatedAt,
-        id,
-      ]
-    );
-    const row = await getRowById(id);
-    if (!row) {
-      return res.status(404).json({ error: 'Scenario not found' });
-    }
-    res.json(rowToScenario(row));
+    const scenario = await runInTransaction(async (connection) => {
+      const [result] = await connection.execute(
+        `UPDATE scenarios
+         SET name = ?,
+             data = ?,
+             preview = ?,
+             cashflow_columns = ?,
+             updated_at = ?
+         WHERE id = ?`,
+        [
+          name,
+          JSON.stringify(data),
+          JSON.stringify(preview),
+          JSON.stringify(cashflowColumns),
+          updatedAt,
+          id,
+        ]
+      );
+      if (result.affectedRows === 0) {
+        throw new Error('Scenario update did not affect any rows');
+      }
+      const [rows] = await connection.execute(
+        'SELECT * FROM scenarios WHERE id = ? LIMIT 1',
+        [id]
+      );
+      if (!rows[0]) {
+        throw new Error('Scenario not found after update');
+      }
+      return rowToScenario(rows[0]);
+    });
+    res.json(scenario);
   } catch (error) {
     respondWithError(res, 500, error, 'Failed to update scenario');
   }
@@ -236,28 +284,37 @@ app.patch('/api/scenarios/:id', async (req, res) => {
       ),
     };
     const updatedAt = now();
-    await pool.execute(
-      `UPDATE scenarios
-       SET name = ?,
-           data = ?,
-           preview = ?,
-           cashflow_columns = ?,
-           updated_at = ?
-       WHERE id = ?`,
-      [
-        next.name,
-        JSON.stringify(next.data),
-        JSON.stringify(next.preview),
-        JSON.stringify(next.cashflowColumns),
-        updatedAt,
-        id,
-      ]
-    );
-    const row = await getRowById(id);
-    if (!row) {
-      return res.status(404).json({ error: 'Scenario not found' });
-    }
-    res.json(rowToScenario(row));
+    const scenario = await runInTransaction(async (connection) => {
+      const [result] = await connection.execute(
+        `UPDATE scenarios
+         SET name = ?,
+             data = ?,
+             preview = ?,
+             cashflow_columns = ?,
+             updated_at = ?
+         WHERE id = ?`,
+        [
+          next.name,
+          JSON.stringify(next.data),
+          JSON.stringify(next.preview),
+          JSON.stringify(next.cashflowColumns),
+          updatedAt,
+          id,
+        ]
+      );
+      if (result.affectedRows === 0) {
+        throw new Error('Scenario update did not affect any rows');
+      }
+      const [rows] = await connection.execute(
+        'SELECT * FROM scenarios WHERE id = ? LIMIT 1',
+        [id]
+      );
+      if (!rows[0]) {
+        throw new Error('Scenario not found after update');
+      }
+      return rowToScenario(rows[0]);
+    });
+    res.json(scenario);
   } catch (error) {
     respondWithError(res, 500, error, 'Failed to update scenario');
   }
@@ -266,8 +323,14 @@ app.patch('/api/scenarios/:id', async (req, res) => {
 app.delete('/api/scenarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const [result] = await pool.execute('DELETE FROM scenarios WHERE id = ?', [id]);
-    if (result.affectedRows === 0) {
+    const deleted = await withConnection(async (connection) => {
+      const [result] = await connection.execute(
+        'DELETE FROM scenarios WHERE id = ?',
+        [id]
+      );
+      return result.affectedRows;
+    });
+    if (deleted === 0) {
       return res.status(404).json({ error: 'Scenario not found' });
     }
     res.status(204).send();
