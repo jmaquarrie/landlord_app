@@ -2097,7 +2097,7 @@ export default function App() {
                 onToggle={() => toggleSection('propertyInfo')}
               >
                 <div className="grid gap-2 md:grid-cols-2">
-                  {textInput('propertyAddress', 'Property address')}
+                  <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
                   <div className="flex flex-col gap-1 md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Property URL</label>
                     <div className="flex items-center gap-2">
@@ -2545,7 +2545,7 @@ export default function App() {
                 </SummaryCard>
               </div>
 
-              <div className="md:col-span-2">
+              <div className="md:col-span-2 md:order-3">
                 <CollapsibleSection
                   title="Annual cash flow detail"
                   collapsed={collapsedSections.cashflowDetail}
@@ -2964,13 +2964,22 @@ function CashflowTable({
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-slate-200 text-xs">
+        <table className="min-w-full table-fixed divide-y divide-slate-200 text-xs">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <th className="px-3 py-2 text-left font-semibold">Year</th>
+              <th
+                className="px-3 py-2 text-left font-semibold"
+                style={{ width: `${100 / (columns.length + 1)}%` }}
+              >
+                Year
+              </th>
               {columns.map((column) => (
-                <th key={column.key} className="px-3 py-2 text-right font-semibold">
-                  <div className="flex items-center justify-end gap-1">
+                <th
+                  key={column.key}
+                  className="px-3 py-2 text-right font-semibold"
+                  style={{ width: `${100 / (columns.length + 1)}%` }}
+                >
+                  <div className="flex flex-wrap items-center justify-end gap-1">
                     <span>{column.label}</span>
                     <button
                       type="button"
@@ -2989,12 +2998,21 @@ function CashflowTable({
           <tbody className="divide-y divide-slate-200">
             {rows.map((row) => (
               <tr key={`cashflow-${row.year}`} className="odd:bg-white even:bg-slate-50">
-                <td className="px-3 py-2 font-semibold text-slate-700">Y{row.year}</td>
+                <td
+                  className="px-3 py-2 font-semibold text-slate-700"
+                  style={{ width: `${100 / (columns.length + 1)}%` }}
+                >
+                  Y{row.year}
+                </td>
                 {columns.map((column) => {
                   const rawValue = row[column.key];
                   const displayValue = column.format ? column.format(rawValue) : rawValue ?? '—';
                   return (
-                    <td key={`${column.key}-${row.year}`} className="px-3 py-2 text-right text-slate-700">
+                    <td
+                      key={`${column.key}-${row.year}`}
+                      className="px-3 py-2 text-right text-slate-700"
+                      style={{ width: `${100 / (columns.length + 1)}%` }}
+                    >
                       {displayValue}
                     </td>
                   );
