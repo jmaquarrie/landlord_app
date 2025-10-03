@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="grad-bars" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#1b7f3a" />
+      <stop offset="1" stop-color="#32a852" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="12" ry="12" fill="#f5f5f5" />
+  <path d="M12 28.5 32 12l20 16.5v23.5a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2z" fill="#0f4c81"/>
+  <path d="M32 18 16 31.2V48h32V31.2z" fill="#ffffff"/>
+  <rect x="20" y="34" width="6" height="12" rx="1.5" fill="url(#grad-bars)" />
+  <rect x="28.5" y="30" width="6" height="16" rx="1.5" fill="url(#grad-bars)" />
+  <rect x="37" y="26" width="6" height="20" rx="1.5" fill="url(#grad-bars)" />
+  <path d="M20 43.5 37 28.5l5 4.2 7-8.2" fill="none" stroke="#0f8a43" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M40 22c0-2.21-1.79-4-4-4h-1v-2a2 2 0 1 0-4 0v2h-1c-2.21 0-4 1.79-4 4s1.79 4 4 4h5c1.1 0 2 .9 2 2s-.9 2-2 2h-3c-2.21 0-4 1.79-4 4s1.79 4 4 4h1v2a2 2 0 1 0 4 0v-2h1c2.21 0 4-1.79 4-4s-1.79-4-4-4h-5c-1.1 0-2-.9-2-2s.9-2 2-2h3c2.21 0 4-1.79 4-4z" fill="#0f8a43" />
+</svg>
