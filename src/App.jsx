@@ -41,11 +41,13 @@ const SHORT_IO_API_KEY =
   typeof VITE_SHORT_IO_API_KEY === 'string' && VITE_SHORT_IO_API_KEY.trim() !== ''
     ? VITE_SHORT_IO_API_KEY.trim()
     : '';
-const SHORT_IO_DOMAIN =
+const SHORT_IO_CONFIGURED_DOMAIN =
   typeof VITE_SHORT_IO_DOMAIN === 'string' && VITE_SHORT_IO_DOMAIN.trim() !== ''
     ? VITE_SHORT_IO_DOMAIN.trim()
     : '';
-const SHORT_IO_ENABLED = SHORT_IO_API_KEY !== '' && SHORT_IO_DOMAIN !== '';
+let shortIoDomainCache = SHORT_IO_CONFIGURED_DOMAIN;
+let shortIoDomainLookupPromise = null;
+const SHORT_IO_ENABLED = SHORT_IO_API_KEY !== '';
 const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
@@ -385,6 +387,71 @@ function ensureAbsoluteUrl(value) {
 }
 
 const SHORT_IO_ENDPOINT = 'https://api.short.io/links';
+const SHORT_IO_DOMAINS_ENDPOINT = 'https://api.short.io/api/domains';
+
+const resolveShortIoDomain = async () => {
+  if (!SHORT_IO_ENABLED) {
+    return '';
+  }
+  if (shortIoDomainCache) {
+    return shortIoDomainCache;
+  }
+  if (typeof fetch !== 'function') {
+    return '';
+  }
+  if (!shortIoDomainLookupPromise) {
+    shortIoDomainLookupPromise = (async () => {
+      try {
+        const response = await fetch(SHORT_IO_DOMAINS_ENDPOINT, {
+          method: 'GET',
+          headers: {
+            accept: 'application/json',
+            Authorization: SHORT_IO_API_KEY,
+          },
+        });
+        if (!response.ok) {
+          throw new Error(`Short.io domains request failed with status ${response.status}`);
+        }
+        const payload = await response.json();
+        const list = Array.isArray(payload) ? payload : payload ? [payload] : [];
+        const pickDomain = (items) =>
+          items.find((item) => {
+            const host =
+              typeof item?.hostname === 'string' && item.hostname.trim() !== ''
+                ? item.hostname.trim()
+                : '';
+            const active = item?.active !== false;
+            return host !== '' && active;
+          }) ??
+          items.find((item) =>
+            typeof item?.hostname === 'string' && item.hostname.trim() !== ''
+          );
+        const selected = pickDomain(list);
+        const hostname =
+          typeof selected?.hostname === 'string' && selected.hostname.trim() !== ''
+            ? selected.hostname.trim()
+            : '';
+        if (hostname) {
+          shortIoDomainCache = hostname;
+          return hostname;
+        }
+        return '';
+      } catch (error) {
+        console.error('Unable to load short.io domains', error);
+        return '';
+      }
+    })();
+  }
+  const resolved = await shortIoDomainLookupPromise;
+  if (resolved && typeof resolved === 'string') {
+    const trimmed = resolved.trim();
+    if (trimmed !== '') {
+      shortIoDomainCache = trimmed;
+      return trimmed;
+    }
+  }
+  return '';
+};
 
 const shortenUrlWithShortIo = async (originalUrl) => {
   if (!SHORT_IO_ENABLED) {
@@ -394,6 +461,10 @@ const shortenUrlWithShortIo = async (originalUrl) => {
     return { url: originalUrl, shortened: false };
   }
   try {
+    const domain = await resolveShortIoDomain();
+    if (!domain) {
+      throw new Error('No short.io domain available');
+    }
     const response = await fetch(SHORT_IO_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -402,7 +473,7 @@ const shortenUrlWithShortIo = async (originalUrl) => {
         Authorization: SHORT_IO_API_KEY,
       },
       body: JSON.stringify({
-        domain: SHORT_IO_DOMAIN,
+        domain,
         originalURL: originalUrl,
         allowDuplicates: false,
       }),
@@ -2057,11 +2128,20 @@ export default function App() {
         : SHORT_IO_ENABLED
         ? 'Share link ready (short.io unavailable)'
         : 'Share link ready';
+      let copiedToClipboard = false;
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(linkToCopy);
-        setShareNotice(clipboardMessage);
-      } else {
-        window.prompt('Copy this share link', linkToCopy);
+        try {
+          await navigator.clipboard.writeText(linkToCopy);
+          setShareNotice(clipboardMessage);
+          copiedToClipboard = true;
+        } catch (clipboardError) {
+          console.error('Unable to copy share link to clipboard', clipboardError);
+        }
+      }
+      if (!copiedToClipboard) {
+        if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
+          window.prompt('Copy this share link', linkToCopy);
+        }
         setShareNotice(promptMessage);
       }
     } catch (error) {
