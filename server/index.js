@@ -1,35 +1,51 @@
 import express from 'express';
 import cors from 'cors';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import Database from 'better-sqlite3';
+import mysql from 'mysql2/promise';
 import { randomUUID } from 'crypto';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const DEFAULT_DB_PATH = process.env.SCENARIO_DB_PATH || path.join(__dirname, 'scenarios.db');
+const DB_HOST = process.env.SCENARIO_DB_HOST || 'sql8.freesqldatabase.com';
+const DB_PORT = Number(process.env.SCENARIO_DB_PORT) || 3306;
+const DB_NAME = process.env.SCENARIO_DB_NAME || 'sql8801207';
+const DB_USER = process.env.SCENARIO_DB_USER || 'sql8801207';
+const DB_PASSWORD = process.env.SCENARIO_DB_PASSWORD || 'jeN72vEAWL';
+const DB_CONNECTION_LIMIT = Number(process.env.SCENARIO_DB_CONNECTION_LIMIT) || 10;
 const SCENARIO_USERNAME = process.env.SCENARIO_USERNAME || 'pi';
 const SCENARIO_PASSWORD = process.env.SCENARIO_PASSWORD || 'jmaq2460';
 const PORT = Number(process.env.PORT) || 4000;
 
-const db = new Database(DEFAULT_DB_PATH);
-db.pragma('journal_mode = WAL');
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS scenarios (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    data TEXT NOT NULL,
-    preview TEXT NOT NULL,
-    cashflow_columns TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )
-`).run();
+const pool = mysql.createPool({
+  host: DB_HOST,
+  port: DB_PORT,
+  user: DB_USER,
+  password: DB_PASSWORD,
+  database: DB_NAME,
+  waitForConnections: true,
+  connectionLimit: DB_CONNECTION_LIMIT,
+  queueLimit: 0,
+});
 
-db.prepare(
-  'CREATE INDEX IF NOT EXISTS idx_scenarios_updated_at ON scenarios (updated_at DESC)'
-).run();
+const ensureSchema = async () => {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS scenarios (
+      id CHAR(36) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      data LONGTEXT NOT NULL,
+      preview LONGTEXT NOT NULL,
+      cashflow_columns LONGTEXT NOT NULL,
+      created_at VARCHAR(32) NOT NULL,
+      updated_at VARCHAR(32) NOT NULL
+    )
+  `);
+  try {
+    await pool.execute(
+      'CREATE INDEX idx_scenarios_updated_at ON scenarios (updated_at)'
+    );
+  } catch (error) {
+    if (error?.code !== 'ER_DUP_KEYNAME') {
+      throw error;
+    }
+  }
+};
 
 const app = express();
 app.use(cors({ origin: true, credentials: false }));
@@ -91,113 +107,173 @@ const sanitizeColumns = (value) => {
   return value.filter((item) => typeof item === 'string');
 };
 
+const getRowById = async (id) => {
+  const [rows] = await pool.execute('SELECT * FROM scenarios WHERE id = ?', [id]);
+  return rows[0] || null;
+};
+
+const respondWithError = (res, status, error, message) => {
+  console.error(message, error);
+  res.status(status).json({ error: message });
+};
+
+try {
+  await ensureSchema();
+} catch (error) {
+  console.error('Failed to initialize database schema', error);
+  process.exit(1);
+}
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: now() });
 });
 
-app.get('/api/scenarios', (req, res) => {
-  const rows = db.prepare('SELECT * FROM scenarios ORDER BY updated_at DESC').all();
-  res.json(rows.map((row) => rowToScenario(row)));
-});
-
-app.post('/api/scenarios', (req, res) => {
-  const name = sanitizeName(req.body?.name);
-  const data = sanitizeData(req.body?.data);
-  const preview = sanitizePreview(req.body?.preview);
-  const cashflowColumns = sanitizeColumns(req.body?.cashflowColumns);
-  const id = randomUUID();
-  const timestamp = now();
-  db.prepare(
-    `INSERT INTO scenarios (id, name, data, preview, cashflow_columns, created_at, updated_at)
-     VALUES (@id, @name, @data, @preview, @cashflowColumns, @createdAt, @updatedAt)`
-  ).run({
-    id,
-    name,
-    data: JSON.stringify(data),
-    preview: JSON.stringify(preview),
-    cashflowColumns: JSON.stringify(cashflowColumns),
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  });
-  const row = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(id);
-  res.status(201).json(rowToScenario(row));
-});
-
-app.put('/api/scenarios/:id', (req, res) => {
-  const { id } = req.params;
-  const existing = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(id);
-  if (!existing) {
-    return res.status(404).json({ error: 'Scenario not found' });
+app.get('/api/scenarios', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM scenarios ORDER BY updated_at DESC'
+    );
+    res.json(rows.map((row) => rowToScenario(row)));
+  } catch (error) {
+    respondWithError(res, 500, error, 'Failed to fetch scenarios');
   }
-  const name = sanitizeName(req.body?.name ?? existing.name);
-  const data = sanitizeData(req.body?.data ?? JSON.parse(existing.data));
-  const preview = sanitizePreview(req.body?.preview ?? JSON.parse(existing.preview));
-  const cashflowColumns = sanitizeColumns(
-    req.body?.cashflowColumns ?? JSON.parse(existing.cashflow_columns)
-  );
-  const updatedAt = now();
-  db.prepare(
-    `UPDATE scenarios
-     SET name = @name,
-         data = @data,
-         preview = @preview,
-         cashflow_columns = @cashflowColumns,
-         updated_at = @updatedAt
-     WHERE id = @id`
-  ).run({
-    id,
-    name,
-    data: JSON.stringify(data),
-    preview: JSON.stringify(preview),
-    cashflowColumns: JSON.stringify(cashflowColumns),
-    updatedAt,
-  });
-  const row = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(id);
-  res.json(rowToScenario(row));
 });
 
-app.patch('/api/scenarios/:id', (req, res) => {
-  const { id } = req.params;
-  const existing = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(id);
-  if (!existing) {
-    return res.status(404).json({ error: 'Scenario not found' });
+app.post('/api/scenarios', async (req, res) => {
+  try {
+    const name = sanitizeName(req.body?.name);
+    const data = sanitizeData(req.body?.data);
+    const preview = sanitizePreview(req.body?.preview);
+    const cashflowColumns = sanitizeColumns(req.body?.cashflowColumns);
+    const id = randomUUID();
+    const timestamp = now();
+    await pool.execute(
+      `INSERT INTO scenarios (id, name, data, preview, cashflow_columns, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        name,
+        JSON.stringify(data),
+        JSON.stringify(preview),
+        JSON.stringify(cashflowColumns),
+        timestamp,
+        timestamp,
+      ]
+    );
+    const row = await getRowById(id);
+    if (!row) {
+      return respondWithError(
+        res,
+        500,
+        new Error('Created scenario could not be retrieved'),
+        'Failed to load created scenario'
+      );
+    }
+    res.status(201).json(rowToScenario(row));
+  } catch (error) {
+    respondWithError(res, 500, error, 'Failed to create scenario');
   }
-  const next = {
-    name: sanitizeName(req.body?.name ?? existing.name),
-    data: sanitizeData(req.body?.data ?? JSON.parse(existing.data)),
-    preview: sanitizePreview(req.body?.preview ?? JSON.parse(existing.preview)),
-    cashflowColumns: sanitizeColumns(
+});
+
+app.put('/api/scenarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await getRowById(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Scenario not found' });
+    }
+    const name = sanitizeName(req.body?.name ?? existing.name);
+    const data = sanitizeData(req.body?.data ?? JSON.parse(existing.data));
+    const preview = sanitizePreview(
+      req.body?.preview ?? JSON.parse(existing.preview)
+    );
+    const cashflowColumns = sanitizeColumns(
       req.body?.cashflowColumns ?? JSON.parse(existing.cashflow_columns)
-    ),
-  };
-  const updatedAt = now();
-  db.prepare(
-    `UPDATE scenarios
-     SET name = @name,
-         data = @data,
-         preview = @preview,
-         cashflow_columns = @cashflowColumns,
-         updated_at = @updatedAt
-     WHERE id = @id`
-  ).run({
-    id,
-    name: next.name,
-    data: JSON.stringify(next.data),
-    preview: JSON.stringify(next.preview),
-    cashflowColumns: JSON.stringify(next.cashflowColumns),
-    updatedAt,
-  });
-  const row = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(id);
-  res.json(rowToScenario(row));
+    );
+    const updatedAt = now();
+    await pool.execute(
+      `UPDATE scenarios
+       SET name = ?,
+           data = ?,
+           preview = ?,
+           cashflow_columns = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [
+        name,
+        JSON.stringify(data),
+        JSON.stringify(preview),
+        JSON.stringify(cashflowColumns),
+        updatedAt,
+        id,
+      ]
+    );
+    const row = await getRowById(id);
+    if (!row) {
+      return res.status(404).json({ error: 'Scenario not found' });
+    }
+    res.json(rowToScenario(row));
+  } catch (error) {
+    respondWithError(res, 500, error, 'Failed to update scenario');
+  }
 });
 
-app.delete('/api/scenarios/:id', (req, res) => {
-  const { id } = req.params;
-  const result = db.prepare('DELETE FROM scenarios WHERE id = ?').run(id);
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Scenario not found' });
+app.patch('/api/scenarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await getRowById(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Scenario not found' });
+    }
+    const next = {
+      name: sanitizeName(req.body?.name ?? existing.name),
+      data: sanitizeData(req.body?.data ?? JSON.parse(existing.data)),
+      preview: sanitizePreview(
+        req.body?.preview ?? JSON.parse(existing.preview)
+      ),
+      cashflowColumns: sanitizeColumns(
+        req.body?.cashflowColumns ?? JSON.parse(existing.cashflow_columns)
+      ),
+    };
+    const updatedAt = now();
+    await pool.execute(
+      `UPDATE scenarios
+       SET name = ?,
+           data = ?,
+           preview = ?,
+           cashflow_columns = ?,
+           updated_at = ?
+       WHERE id = ?`,
+      [
+        next.name,
+        JSON.stringify(next.data),
+        JSON.stringify(next.preview),
+        JSON.stringify(next.cashflowColumns),
+        updatedAt,
+        id,
+      ]
+    );
+    const row = await getRowById(id);
+    if (!row) {
+      return res.status(404).json({ error: 'Scenario not found' });
+    }
+    res.json(rowToScenario(row));
+  } catch (error) {
+    respondWithError(res, 500, error, 'Failed to update scenario');
   }
-  res.status(204).send();
+});
+
+app.delete('/api/scenarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [result] = await pool.execute('DELETE FROM scenarios WHERE id = ?', [id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Scenario not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    respondWithError(res, 500, error, 'Failed to delete scenario');
+  }
 });
 
 app.use((req, res) => {
