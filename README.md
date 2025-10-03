@@ -21,7 +21,7 @@ npm run build
 
 ## Scenario persistence
 
-Saved scenarios are stored locally in the browser by default. To sync them across devices, run the lightweight Express + SQLite service in `server/index.js` and point the frontend at it. Start the backend alongside the Vite dev server in another terminal:
+Saved scenarios are stored locally in the browser by default. To sync them across devices, run the lightweight Express + MySQL service in `server/index.js` and point the frontend at it. Start the backend alongside the Vite dev server in another terminal:
 
 ```bash
 npm run server
@@ -47,8 +47,10 @@ Expose the backend URL to the frontend by setting `VITE_SCENARIO_API_URL` (for e
 Environment variables let you tailor the service:
 
 - `PORT` – change the listen port (defaults to `4000`).
-- `SCENARIO_DB_PATH` – override the SQLite database location (defaults to `server/scenarios.db`).
+- `SCENARIO_DB_HOST`, `SCENARIO_DB_PORT`, `SCENARIO_DB_NAME`, `SCENARIO_DB_USER`, `SCENARIO_DB_PASSWORD` – override the MySQL connection (defaults point at the hosted instance on `sql8.freesqldatabase.com`).
+- `SCENARIO_DB_CONNECTION_LIMIT` – tune the size of the MySQL connection pool (defaults to `10`).
 - `SCENARIO_USERNAME` / `SCENARIO_PASSWORD` – replace the default login.
+- `VITE_SHORT_IO_API_KEY` / `VITE_SHORT_IO_DOMAIN` – optionally enable automatic short.io links when sharing scenarios from the UI.
 
 If you deploy the service elsewhere, update `VITE_SCENARIO_API_URL` to match (for example `https://yourdomain.example/api`). If the variable is unset the app falls back to browser-only storage and hides remote sync prompts.
 

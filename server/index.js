@@ -52,6 +52,39 @@ const ensureSchema = async () => {
   }
 };
 
+const isMissingTableError = (error) =>
+  error?.code === 'ER_NO_SUCH_TABLE' ||
+  error?.code === 'ER_BAD_TABLE_ERROR' ||
+  error?.errno === 1146;
+
+let schemaPromise = null;
+const getSchemaPromise = () => {
+  if (!schemaPromise) {
+    schemaPromise = ensureSchema().catch((error) => {
+      schemaPromise = null;
+      throw error;
+    });
+  }
+  return schemaPromise;
+};
+
+const runWithSchema = async (operation) => {
+  let attemptedRetry = false;
+  for (;;) {
+    await getSchemaPromise();
+    try {
+      return await operation();
+    } catch (error) {
+      if (isMissingTableError(error) && !attemptedRetry) {
+        attemptedRetry = true;
+        schemaPromise = null;
+        continue;
+      }
+      throw error;
+    }
+  }
+};
+
 const withConnection = async (callback) => {
   const connection = await pool.getConnection();
   try {
@@ -62,21 +95,23 @@ const withConnection = async (callback) => {
 };
 
 const runInTransaction = async (callback) =>
-  withConnection(async (connection) => {
-    await connection.beginTransaction();
-    try {
-      const result = await callback(connection);
-      await connection.commit();
-      return result;
-    } catch (error) {
+  runWithSchema(() =>
+    withConnection(async (connection) => {
+      await connection.beginTransaction();
       try {
-        await connection.rollback();
-      } catch (rollbackError) {
-        console.error('Failed to rollback transaction', rollbackError);
+        const result = await callback(connection);
+        await connection.commit();
+        return result;
+      } catch (error) {
+        try {
+          await connection.rollback();
+        } catch (rollbackError) {
+          console.error('Failed to rollback transaction', rollbackError);
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
+    })
+  );
 
 const app = express();
 app.use(cors({ origin: true, credentials: false }));
@@ -107,14 +142,26 @@ app.use('/api', requireAuth);
 
 const now = () => new Date().toISOString();
 
+const safeParseJson = (value, fallback) => {
+  if (typeof value !== 'string' || value === '') {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    console.warn('Unable to parse scenario JSON payload', error);
+    return fallback;
+  }
+};
+
 const rowToScenario = (row) => ({
   id: row.id,
   name: row.name,
   createdAt: row.created_at,
   savedAt: row.updated_at,
-  data: JSON.parse(row.data),
-  preview: JSON.parse(row.preview),
-  cashflowColumns: JSON.parse(row.cashflow_columns),
+  data: safeParseJson(row.data, {}),
+  preview: safeParseJson(row.preview, { active: false }),
+  cashflowColumns: sanitizeColumns(safeParseJson(row.cashflow_columns, [])),
 });
 
 const sanitizeName = (value) => {
@@ -139,13 +186,15 @@ const sanitizeColumns = (value) => {
 };
 
 const getRowById = async (id) =>
-  withConnection(async (connection) => {
-    const [rows] = await connection.execute(
-      'SELECT * FROM scenarios WHERE id = ?',
-      [id]
-    );
-    return rows[0] || null;
-  });
+  runWithSchema(() =>
+    withConnection(async (connection) => {
+      const [rows] = await connection.execute(
+        'SELECT * FROM scenarios WHERE id = ?',
+        [id]
+      );
+      return rows[0] || null;
+    })
+  );
 
 const respondWithError = (res, status, error, message) => {
   console.error(message, error);
@@ -153,7 +202,7 @@ const respondWithError = (res, status, error, message) => {
 };
 
 try {
-  await ensureSchema();
+  await getSchemaPromise();
 } catch (error) {
   console.error('Failed to initialize database schema', error);
   process.exit(1);
@@ -165,8 +214,13 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/scenarios', async (req, res) => {
   try {
-    const [rows] = await pool.execute(
-      'SELECT * FROM scenarios ORDER BY updated_at DESC'
+    const rows = await runWithSchema(() =>
+      withConnection(async (connection) => {
+        const [result] = await connection.execute(
+          'SELECT * FROM scenarios ORDER BY updated_at DESC'
+        );
+        return result;
+      })
     );
     res.json(rows.map((row) => rowToScenario(row)));
   } catch (error) {
@@ -323,13 +377,15 @@ app.patch('/api/scenarios/:id', async (req, res) => {
 app.delete('/api/scenarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await withConnection(async (connection) => {
-      const [result] = await connection.execute(
-        'DELETE FROM scenarios WHERE id = ?',
-        [id]
-      );
-      return result.affectedRows;
-    });
+    const deleted = await runWithSchema(() =>
+      withConnection(async (connection) => {
+        const [result] = await connection.execute(
+          'DELETE FROM scenarios WHERE id = ?',
+          [id]
+        );
+        return result.affectedRows;
+      })
+    );
     if (deleted === 0) {
       return res.status(404).json({ error: 'Scenario not found' });
     }

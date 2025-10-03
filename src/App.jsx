@@ -16,7 +16,13 @@ const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'cur
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
-const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL, VITE_GOOGLE_MODEL } = import.meta.env ?? {};
+const {
+  VITE_SCENARIO_API_URL,
+  VITE_CHAT_API_URL,
+  VITE_GOOGLE_MODEL,
+  VITE_SHORT_IO_API_KEY,
+  VITE_SHORT_IO_DOMAIN,
+} = import.meta.env ?? {};
 const SCENARIO_API_URL =
   typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
     ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
@@ -31,6 +37,15 @@ const GOOGLE_MODEL =
   typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
     ? VITE_GOOGLE_MODEL.trim()
     : GOOGLE_DEFAULT_MODEL;
+const SHORT_IO_API_KEY =
+  typeof VITE_SHORT_IO_API_KEY === 'string' && VITE_SHORT_IO_API_KEY.trim() !== ''
+    ? VITE_SHORT_IO_API_KEY.trim()
+    : '';
+const SHORT_IO_DOMAIN =
+  typeof VITE_SHORT_IO_DOMAIN === 'string' && VITE_SHORT_IO_DOMAIN.trim() !== ''
+    ? VITE_SHORT_IO_DOMAIN.trim()
+    : '';
+const SHORT_IO_ENABLED = SHORT_IO_API_KEY !== '' && SHORT_IO_DOMAIN !== '';
 const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
@@ -368,6 +383,47 @@ function ensureAbsoluteUrl(value) {
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   return `https://${trimmed}`;
 }
+
+const SHORT_IO_ENDPOINT = 'https://api.short.io/links';
+
+const shortenUrlWithShortIo = async (originalUrl) => {
+  if (!SHORT_IO_ENABLED) {
+    return { url: originalUrl, shortened: false };
+  }
+  if (typeof fetch !== 'function') {
+    return { url: originalUrl, shortened: false };
+  }
+  try {
+    const response = await fetch(SHORT_IO_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        accept: 'application/json',
+        Authorization: SHORT_IO_API_KEY,
+      },
+      body: JSON.stringify({
+        domain: SHORT_IO_DOMAIN,
+        originalURL: originalUrl,
+        allowDuplicates: false,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Short.io request failed with status ${response.status}`);
+    }
+    const payload = await response.json();
+    const shortUrl =
+      typeof payload?.shortURL === 'string' && payload.shortURL.trim() !== ''
+        ? payload.shortURL.trim()
+        : '';
+    if (!shortUrl) {
+      throw new Error('Short.io response missing shortURL');
+    }
+    return { url: shortUrl, shortened: true };
+  } catch (error) {
+    console.error('Unable to shorten share URL', error);
+    return { url: originalUrl, shortened: false };
+  }
+};
 
 function scoreDeal({ coc, cap, dscr, npv, cashflowYear1 }) {
   let s = 0;
@@ -1990,12 +2046,23 @@ export default function App() {
       const url = new URL(window.location.href);
       url.searchParams.set('scenario', encoded);
       const shareUrl = url.toString();
+      const { url: linkToCopy, shortened } = await shortenUrlWithShortIo(shareUrl);
+      const clipboardMessage = shortened
+        ? 'Short link copied to clipboard'
+        : SHORT_IO_ENABLED
+        ? 'Share link copied to clipboard (short.io unavailable)'
+        : 'Share link copied to clipboard';
+      const promptMessage = shortened
+        ? 'Short link ready (short.io)'
+        : SHORT_IO_ENABLED
+        ? 'Share link ready (short.io unavailable)'
+        : 'Share link ready';
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(shareUrl);
-        setShareNotice('Share link copied to clipboard');
+        await navigator.clipboard.writeText(linkToCopy);
+        setShareNotice(clipboardMessage);
       } else {
-        window.prompt('Copy this share link', shareUrl);
-        setShareNotice('Share link ready');
+        window.prompt('Copy this share link', linkToCopy);
+        setShareNotice(promptMessage);
       }
     } catch (error) {
       console.error('Unable to share scenario', error);
