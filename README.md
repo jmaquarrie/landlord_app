@@ -21,63 +21,36 @@ npm run build
 
 ## Scenario persistence
 
-By default, saved scenarios live in the browser's `localStorage`. They are automatically restored when the app reloads on the same device.
+Saved scenarios are synced through a lightweight Express + SQLite service that lives in `server/index.js`. Start it alongside the Vite dev server in another terminal:
 
-Set a `VITE_SCENARIO_API_URL` environment variable to synchronise scenarios with a backend service. When provided, the app will:
-
-- `GET <VITE_SCENARIO_API_URL>/scenarios` on load to hydrate the UI.
-- `PUT <VITE_SCENARIO_API_URL>/scenarios` with the full array of scenarios whenever you add, rename, or delete a save.
-
-The expected JSON shape is an array of objects in the form:
-
-```json
-[
-  {
-    "id": "1707249960000-ab12cd",
-    "name": "Manchester duplex",
-    "savedAt": "2024-10-16T14:52:00.123Z",
-    "data": {
-      "propertyAddress": "123 Example Street, Manchester",
-      "propertyUrl": "https://example.com/listing/123",
-      "purchasePrice": 250000,
-      "depositPct": 0.25
-      // ...rest of the input model
-    }
-  }
-]
+```bash
+npm run server
 ```
 
-### Sample Node backend
+The service listens on `http://localhost:4000` by default and exposes the following authenticated endpoints:
 
-You can create a lightweight Express server to satisfy the API contract:
+| Method | Path                  | Description                            |
+| ------ | --------------------- | -------------------------------------- |
+| GET    | `/api/scenarios`      | List all saved scenarios (newest first) |
+| POST   | `/api/scenarios`      | Create a new scenario                   |
+| PUT    | `/api/scenarios/:id`  | Replace an existing scenario            |
+| PATCH  | `/api/scenarios/:id`  | Partially update a scenario (e.g. name) |
+| DELETE | `/api/scenarios/:id`  | Remove a scenario                       |
 
-```js
-import express from 'express';
-import cors from 'cors';
+All requests require HTTP Basic authentication using the credentials:
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+- **Username:** `pi`
+- **Password:** `jmaq2460`
 
-let scenarios = [];
+The React app sends these credentials automatically, and the login dialog appears if the backend rejects a request. Scenario payloads include the captured inputs, preview state, and the selected cash-flow columns so that reloading or sharing a scenario restores the full layout.
 
-app.get('/scenarios', (req, res) => {
-  res.json(scenarios);
-});
+Environment variables let you tailor the service:
 
-app.put('/scenarios', (req, res) => {
-  if (!Array.isArray(req.body)) {
-    return res.status(400).json({ error: 'Expected an array of scenarios' });
-  }
-  scenarios = req.body;
-  res.json({ ok: true, count: scenarios.length });
-});
+- `PORT` – change the listen port (defaults to `4000`).
+- `SCENARIO_DB_PATH` – override the SQLite database location (defaults to `server/scenarios.db`).
+- `SCENARIO_USERNAME` / `SCENARIO_PASSWORD` – replace the default login.
 
-const port = process.env.PORT || 4000;
-app.listen(port, () => console.log(`Scenario API listening on ${port}`));
-```
-
-Deploy the server (for example on Render, Railway, or Vercel serverless functions) and expose its base URL via `VITE_SCENARIO_API_URL`. With that in place, your saved scenarios stay in sync across devices and networks.
+If you deploy the service elsewhere, point the frontend at it with `VITE_SCENARIO_API_URL` (for example `https://yourdomain.example/api`).
 
 ## AI investment assistant
 

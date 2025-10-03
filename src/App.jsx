@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -15,11 +15,13 @@ import jsPDF from 'jspdf';
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
+const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
 const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL, VITE_GOOGLE_MODEL } = import.meta.env ?? {};
+const DEFAULT_SCENARIO_API_PATH = '/api';
 const SCENARIO_API_URL =
   typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
     ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
-    : '';
+    : DEFAULT_SCENARIO_API_PATH;
 const CHAT_API_URL =
   typeof VITE_CHAT_API_URL === 'string' && VITE_CHAT_API_URL.trim() !== ''
     ? VITE_CHAT_API_URL.replace(/\/$/, '')
@@ -34,6 +36,8 @@ const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
+const SCENARIO_USERNAME = 'pi';
+const SCENARIO_PASSWORD = 'jmaq2460';
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
@@ -87,6 +91,32 @@ const sanitizeCashflowColumns = (keys, fallbackKeys = DEFAULT_CASHFLOW_COLUMN_OR
 
 const DEFAULT_CASHFLOW_COLUMNS = sanitizeCashflowColumns(DEFAULT_CASHFLOW_COLUMN_ORDER);
 const CASHFLOW_COLUMNS_STORAGE_KEY = 'qc_cashflow_columns';
+const DEFAULT_AUTH_CREDENTIALS = { username: SCENARIO_USERNAME, password: SCENARIO_PASSWORD };
+
+const encodeBasicCredentials = (username, password) => {
+  const safeUser = typeof username === 'string' ? username : '';
+  const safePass = typeof password === 'string' ? password : '';
+  const raw = `${safeUser}:${safePass}`;
+  if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
+    return window.btoa(raw);
+  }
+  if (typeof btoa === 'function') {
+    return btoa(raw);
+  }
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(raw, 'utf-8').toString('base64');
+  }
+  return '';
+};
+
+const sortScenarios = (list) =>
+  Array.isArray(list)
+    ? [...list].sort((a, b) => {
+        const aTime = a?.savedAt ? new Date(a.savedAt).getTime() : 0;
+        const bTime = b?.savedAt ? new Date(b.savedAt).getTime() : 0;
+        return bTime - aTime;
+      })
+    : [];
 
 const normalizeScenarioRecord = (scenario) => {
   if (!scenario || typeof scenario !== 'object') {
@@ -99,9 +129,21 @@ const normalizeScenarioRecord = (scenario) => {
   if ('cashflowColumns' in baseData) {
     delete baseData.cashflowColumns;
   }
+  const name = typeof scenario.name === 'string' && scenario.name.trim() !== '' ? scenario.name.trim() : 'Scenario';
+  const createdAt =
+    scenario.createdAt ?? scenario.created_at ?? scenario.savedAt ?? scenario.saved_at ?? new Date().toISOString();
+  const updatedAt = scenario.savedAt ?? scenario.saved_at ?? scenario.updatedAt ?? scenario.updated_at ?? createdAt;
+  const preview =
+    scenario.preview && typeof scenario.preview === 'object'
+      ? { active: Boolean(scenario.preview.active) }
+      : { active: false };
   const normalized = {
-    ...scenario,
+    id: scenario.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    name,
+    createdAt,
+    savedAt: updatedAt,
     data: baseData,
+    preview,
     cashflowColumns: sanitizeCashflowColumns(
       scenario.cashflowColumns ?? scenario.data?.cashflowColumns ?? DEFAULT_CASHFLOW_COLUMNS
     ),
@@ -110,11 +152,13 @@ const normalizeScenarioRecord = (scenario) => {
 };
 
 const normalizeScenarioList = (list) =>
-  Array.isArray(list)
-    ? list
-        .map((item) => normalizeScenarioRecord(item))
-        .filter(Boolean)
-    : [];
+  sortScenarios(
+    Array.isArray(list)
+      ? list
+          .map((item) => normalizeScenarioRecord(item))
+          .filter(Boolean)
+      : []
+  );
 
 const DEFAULT_INPUTS = {
   propertyAddress: '',
@@ -777,6 +821,29 @@ export default function App() {
   const [previewStatus, setPreviewStatus] = useState('idle');
   const [previewError, setPreviewError] = useState('');
   const [previewKey, setPreviewKey] = useState(0);
+  const remoteEnabled = Boolean(SCENARIO_API_URL);
+  const [authCredentials, setAuthCredentials] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = window.localStorage.getItem(SCENARIO_AUTH_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed && typeof parsed.username === 'string' && typeof parsed.password === 'string') {
+            return { username: parsed.username, password: parsed.password };
+          }
+        }
+      } catch (error) {
+        console.warn('Unable to read scenario auth from storage:', error);
+      }
+    }
+    return { ...DEFAULT_AUTH_CREDENTIALS };
+  });
+  const [authStatus, setAuthStatus] = useState(remoteEnabled ? 'pending' : 'ready');
+  const [authError, setAuthError] = useState('');
+  const [loginForm, setLoginForm] = useState({
+    username: authCredentials.username ?? '',
+    password: authCredentials.password ?? '',
+  });
   const [collapsedSections, setCollapsedSections] = useState({
     propertyInfo: false,
     buyerProfile: false,
@@ -819,10 +886,63 @@ export default function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const pageRef = useRef(null);
   const iframeRef = useRef(null);
-  const remoteEnabled = Boolean(SCENARIO_API_URL);
-  const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
+
+  const remoteAvailable = remoteEnabled && authStatus === 'ready';
+
+  const apiFetch = useCallback(
+    async (path, options = {}, credentialsOverride) => {
+      if (!remoteEnabled) {
+        const error = new Error('Remote API disabled');
+        error.status = 503;
+        throw error;
+      }
+      const creds = credentialsOverride ?? authCredentials;
+      if (!creds || !creds.username || !creds.password) {
+        const error = new Error('Authentication required');
+        error.status = 401;
+        throw error;
+      }
+      const token = encodeBasicCredentials(creds.username, creds.password);
+      const headers = new Headers(options.headers || {});
+      if (token) {
+        headers.set('Authorization', `Basic ${token}`);
+      }
+      const bodyProvided = options.body !== undefined && !(options.body instanceof FormData);
+      if (bodyProvided && !headers.has('Content-Type')) {
+        headers.set('Content-Type', 'application/json');
+      }
+      let response;
+      try {
+        response = await fetch(`${SCENARIO_API_URL}${path}`, {
+          ...options,
+          headers,
+        });
+      } catch (error) {
+        const networkError = new Error('Unable to reach the scenario service');
+        networkError.status = 0;
+        networkError.cause = error;
+        throw networkError;
+      }
+      if (!response.ok) {
+        const failure = new Error(`Request failed with status ${response.status}`);
+        failure.status = response.status;
+        try {
+          failure.detail = await response.json();
+        } catch {
+          try {
+            failure.detail = await response.text();
+          } catch {
+            failure.detail = null;
+          }
+        }
+        throw failure;
+      }
+      return response;
+    },
+    [remoteEnabled, authCredentials]
+  );
 
   const clearPreview = () => {
     setPreviewActive(false);
@@ -876,6 +996,28 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
+      window.localStorage.setItem(
+        SCENARIO_AUTH_STORAGE_KEY,
+        JSON.stringify({
+          username: authCredentials.username ?? '',
+          password: authCredentials.password ?? '',
+        })
+      );
+    } catch (error) {
+      console.warn('Unable to persist scenario auth:', error);
+    }
+  }, [authCredentials]);
+
+  useEffect(() => {
+    setLoginForm({
+      username: authCredentials.username ?? '',
+      password: authCredentials.password ?? '',
+    });
+  }, [authCredentials.username, authCredentials.password]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
       const stored = window.localStorage.getItem(SCENARIO_STORAGE_KEY);
       if (!stored) return;
       const parsed = JSON.parse(stored);
@@ -890,6 +1032,50 @@ export default function App() {
       console.warn('Unable to read saved scenarios:', error);
     }
   }, []);
+
+  useEffect(() => {
+    if (!remoteEnabled) return;
+    if (authStatus !== 'pending') return;
+    if (!authCredentials?.username || !authCredentials?.password) {
+      setAuthStatus('unauthorized');
+      setAuthError('Enter your credentials to connect to the scenario service.');
+      return;
+    }
+    let cancelled = false;
+    setSyncStatus('loading');
+    setSyncError('');
+    const loadRemote = async () => {
+      try {
+        const response = await apiFetch('/scenarios', { method: 'GET' }, authCredentials);
+        const payload = await response.json();
+        if (cancelled) return;
+        const normalized = normalizeScenarioList(payload);
+        setSavedScenarios(normalized);
+        setSelectedScenarioId(normalized[0]?.id ?? '');
+        setAuthStatus('ready');
+        setAuthError('');
+      } catch (error) {
+        if (cancelled) return;
+        if (error?.status === 401) {
+          setAuthStatus('unauthorized');
+          setAuthError('Incorrect username or password.');
+        } else {
+          setAuthStatus('error');
+          setSyncError(
+            error instanceof Error ? error.message : 'Unable to load remote scenarios'
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setSyncStatus('idle');
+        }
+      }
+    };
+    loadRemote();
+    return () => {
+      cancelled = true;
+    };
+  }, [remoteEnabled, authStatus, authCredentials, apiFetch]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -911,86 +1097,10 @@ export default function App() {
   }, [cashflowColumnKeys]);
 
   useEffect(() => {
-    if (!remoteEnabled) return;
-    let cancelled = false;
-
-    const loadRemoteScenarios = async () => {
-      setSyncStatus('loading');
-      setSyncError('');
-      try {
-        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, { method: 'GET' });
-        if (!response.ok) {
-          throw new Error(`Remote load failed with status ${response.status}`);
-        }
-        const payload = await response.json();
-        if (!Array.isArray(payload)) {
-          throw new Error('Remote response was not an array');
-        }
-        if (!cancelled) {
-          const normalized = normalizeScenarioList(payload);
-          setSavedScenarios(normalized);
-          setSelectedScenarioId(normalized[0]?.id ?? '');
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setSyncError(error instanceof Error ? error.message : 'Unable to load remote scenarios');
-        }
-      } finally {
-        if (!cancelled) {
-          setSyncStatus('idle');
-          setRemoteHydrated(true);
-        }
-      }
-    };
-
-    loadRemoteScenarios();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [remoteEnabled]);
-
-  useEffect(() => {
     if (!shareNotice || typeof window === 'undefined') return;
     const timeout = window.setTimeout(() => setShareNotice(''), 3000);
     return () => window.clearTimeout(timeout);
   }, [shareNotice]);
-
-  useEffect(() => {
-    if (!remoteEnabled || !remoteHydrated) return;
-    let cancelled = false;
-
-    const pushRemoteScenarios = async () => {
-      setSyncStatus('syncing');
-      try {
-        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(savedScenarios),
-        });
-        if (!response.ok) {
-          throw new Error(`Remote sync failed with status ${response.status}`);
-        }
-        if (!cancelled) {
-          setSyncError('');
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setSyncError(error instanceof Error ? error.message : 'Unable to sync scenarios');
-        }
-      } finally {
-        if (!cancelled) {
-          setSyncStatus('idle');
-        }
-      }
-    };
-
-    pushRemoteScenarios();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [savedScenarios, remoteEnabled, remoteHydrated]);
 
   const equity = useMemo(() => calculateEquity(inputs), [inputs]);
 
@@ -1038,6 +1148,61 @@ export default function App() {
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
   const appreciationPower = Math.pow(appreciationFactor, exitYears);
   const appreciationPowerDisplay = appreciationPower.toFixed(4);
+  const verifyingAuth = authStatus === 'verifying';
+  const shouldShowAuthOverlay = remoteEnabled && (authStatus === 'unauthorized' || verifyingAuth);
+  const scenarioStatus = (() => {
+    if (!remoteEnabled) {
+      return { message: 'Scenarios are stored locally in your browser.', tone: 'neutral', retry: false };
+    }
+    if (authStatus === 'pending') {
+      return { message: 'Connecting to the scenario service…', tone: 'info', retry: false };
+    }
+    if (authStatus === 'verifying') {
+      return { message: 'Checking credentials…', tone: 'info', retry: false };
+    }
+    if (authStatus === 'unauthorized') {
+      return {
+        message: authError || 'Sign in to sync scenarios across devices.',
+        tone: 'warn',
+        retry: false,
+      };
+    }
+    if (authStatus === 'error') {
+      return {
+        message: syncError || 'Remote sync issue. Retry shortly.',
+        tone: 'error',
+        retry: true,
+      };
+    }
+    if (syncStatus === 'loading') {
+      return { message: 'Loading scenarios…', tone: 'info', retry: false };
+    }
+    if (syncStatus === 'saving') {
+      return { message: 'Saving scenario to the remote service…', tone: 'info', retry: false };
+    }
+    if (syncStatus === 'updating') {
+      return { message: 'Updating scenario on the remote service…', tone: 'info', retry: false };
+    }
+    if (syncStatus === 'deleting') {
+      return { message: 'Deleting scenario from the remote service…', tone: 'info', retry: false };
+    }
+    if (syncError) {
+      return {
+        message: `Remote sync issue: ${syncError}`,
+        tone: 'error',
+        retry: true,
+      };
+    }
+    return { message: 'Remote sync active.', tone: 'neutral', retry: false };
+  })();
+  const scenarioStatusClass =
+    scenarioStatus.tone === 'error'
+      ? 'text-rose-600'
+      : scenarioStatus.tone === 'warn'
+      ? 'text-amber-600'
+      : scenarioStatus.tone === 'info'
+      ? 'text-slate-600'
+      : 'text-slate-500';
   const estimatedExitEquity = equity.futureValue - equity.remaining - equity.sellingCosts;
   const amortisationYears = Math.min(exitYears, Number(inputs.mortgageYears) || 0);
   const amortisationPayments = Math.min(exitYears * 12, (Number(inputs.mortgageYears) || 0) * 12);
@@ -1764,6 +1929,31 @@ export default function App() {
     });
   };
 
+  const integrateScenario = (record, { select = false } = {}) => {
+    const normalized = normalizeScenarioRecord(record);
+    if (!normalized) return null;
+    setSavedScenarios((prev) => {
+      const filtered = prev.filter((item) => item.id !== normalized.id);
+      return sortScenarios([normalized, ...filtered]);
+    });
+    if (select) {
+      setSelectedScenarioId(normalized.id);
+    }
+    return normalized;
+  };
+
+  const removeScenarioById = (id) => {
+    setSavedScenarios((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      if (prev.length !== next.length) {
+        if (selectedScenarioId === id) {
+          setSelectedScenarioId(next[0]?.id ?? '');
+        }
+      }
+      return next;
+    });
+  };
+
   const buildScenarioSnapshot = () => {
     const sanitizedInputs = JSON.parse(
       JSON.stringify({
@@ -1811,7 +2001,61 @@ export default function App() {
     }
   };
 
-  const handleSaveScenario = () => {
+  const handleAuthInputChange = (field, value) => {
+    setLoginForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault();
+    if (!remoteEnabled) return;
+    const username = (loginForm.username ?? '').trim();
+    const password = loginForm.password ?? '';
+    if (!username || !password) {
+      setAuthError('Enter both username and password.');
+      return;
+    }
+    setAuthStatus('verifying');
+    setAuthError('');
+    setSyncStatus('loading');
+    setSyncError('');
+    try {
+      const response = await apiFetch(
+        '/scenarios',
+        { method: 'GET' },
+        { username, password }
+      );
+      const payload = await response.json();
+      const normalized = normalizeScenarioList(payload);
+      setAuthCredentials({ username, password });
+      setSavedScenarios(normalized);
+      setSelectedScenarioId(normalized[0]?.id ?? '');
+      setAuthStatus('ready');
+      setAuthError('');
+    } catch (error) {
+      if (error?.status === 401) {
+        setAuthError('Incorrect username or password.');
+      } else {
+        setAuthError(
+          error instanceof Error ? error.message : 'Unable to reach the scenario service.'
+        );
+        if (error instanceof Error && error.message) {
+          setSyncError(error.message);
+        }
+      }
+      setAuthStatus('unauthorized');
+    } finally {
+      setSyncStatus('idle');
+    }
+  };
+
+  const handleRetryConnection = () => {
+    if (!remoteEnabled) return;
+    setSyncError('');
+    setAuthError('');
+    setAuthStatus('pending');
+  };
+
+  const handleSaveScenario = async () => {
     if (typeof window === 'undefined') return;
     const addressLabel = (inputs.propertyAddress ?? '').trim();
     const fallbackLabel = `Scenario ${new Date().toLocaleString()}`;
@@ -1821,6 +2065,39 @@ export default function App() {
     const trimmed = nameInput.trim();
     const label = trimmed !== '' ? trimmed : defaultLabel;
     const snapshot = buildScenarioSnapshot();
+    if (remoteAvailable) {
+      setSyncStatus('saving');
+      setSyncError('');
+      try {
+        const response = await apiFetch(
+          '/scenarios',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              name: label,
+              data: snapshot.data,
+              preview: snapshot.preview,
+              cashflowColumns: snapshot.cashflowColumns,
+            }),
+          },
+          authCredentials
+        );
+        const payload = await response.json();
+        integrateScenario(payload, { select: true });
+      } catch (error) {
+        if (error?.status === 401) {
+          setAuthStatus('unauthorized');
+          setAuthError('Session expired. Sign in again to save scenarios.');
+        }
+        setSyncError(
+          error instanceof Error ? error.message : 'Unable to save scenario to the remote service'
+        );
+        setSyncStatus('idle');
+        return;
+      }
+      setSyncStatus('idle');
+      return;
+    }
     const scenario = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: label,
@@ -1829,9 +2106,7 @@ export default function App() {
       preview: snapshot.preview,
       cashflowColumns: snapshot.cashflowColumns,
     };
-    const normalizedScenario = normalizeScenarioRecord(scenario);
-    setSavedScenarios((prev) => [normalizedScenario ?? scenario, ...prev]);
-    setSelectedScenarioId((normalizedScenario ?? scenario).id);
+    integrateScenario(scenario, { select: true });
   };
 
   const handleLoadScenario = () => {
@@ -1854,7 +2129,7 @@ export default function App() {
     openPreviewForUrl(inputs.propertyUrl, { force: true });
   };
 
-  const handleRenameScenario = (id) => {
+  const handleRenameScenario = async (id) => {
     if (typeof window === 'undefined') return;
     const scenario = savedScenarios.find((item) => item.id === id);
     if (!scenario) return;
@@ -1862,47 +2137,171 @@ export default function App() {
     if (nextName === null) return;
     const trimmed = nextName.trim();
     if (trimmed === '') return;
+    if (remoteAvailable) {
+      setSyncStatus('updating');
+      setSyncError('');
+      try {
+        const response = await apiFetch(`/scenarios/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name: trimmed }),
+        });
+        const payload = await response.json();
+        integrateScenario(payload, { select: selectedScenarioId === id });
+      } catch (error) {
+        if (error?.status === 401) {
+          setAuthStatus('unauthorized');
+          setAuthError('Session expired. Sign in again to rename scenarios.');
+        }
+        setSyncError(
+          error instanceof Error ? error.message : 'Unable to rename scenario on the remote service'
+        );
+        setSyncStatus('idle');
+        return;
+      }
+      setSyncStatus('idle');
+      return;
+    }
     setSavedScenarios((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item))
+      sortScenarios(prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item)))
     );
   };
 
-  const handleUpdateScenario = (id) => {
+  const handleUpdateScenario = async (id) => {
     const scenario = savedScenarios.find((item) => item.id === id);
     if (!scenario) return;
     const snapshot = buildScenarioSnapshot();
     const updatedAt = new Date().toISOString();
-    setSavedScenarios((prev) =>
-      prev.map((item) => {
-        if (item.id !== id) return item;
-        const updated = normalizeScenarioRecord({
-          ...item,
-          data: snapshot.data,
-          preview: snapshot.preview,
-          cashflowColumns: snapshot.cashflowColumns,
-          savedAt: updatedAt,
+    if (remoteAvailable) {
+      setSyncStatus('updating');
+      setSyncError('');
+      try {
+        const response = await apiFetch(`/scenarios/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            name: scenario.name,
+            data: snapshot.data,
+            preview: snapshot.preview,
+            cashflowColumns: snapshot.cashflowColumns,
+          }),
         });
-        return updated ?? item;
-      })
+        const payload = await response.json();
+        integrateScenario(payload, { select: selectedScenarioId === id });
+      } catch (error) {
+        if (error?.status === 401) {
+          setAuthStatus('unauthorized');
+          setAuthError('Session expired. Sign in again to update scenarios.');
+        }
+        setSyncError(
+          error instanceof Error ? error.message : 'Unable to update scenario on the remote service'
+        );
+        setSyncStatus('idle');
+        return;
+      }
+      setSyncStatus('idle');
+      return;
+    }
+    integrateScenario(
+      {
+        ...scenario,
+        data: snapshot.data,
+        preview: snapshot.preview,
+        cashflowColumns: snapshot.cashflowColumns,
+        savedAt: updatedAt,
+      },
+      { select: selectedScenarioId === id }
     );
   };
 
-  const handleDeleteScenario = (id) => {
+  const handleDeleteScenario = async (id) => {
     if (typeof window !== 'undefined') {
       const confirmDelete = window.confirm('Delete this saved scenario?');
       if (!confirmDelete) return;
     }
-    setSavedScenarios((prev) => {
-      const next = prev.filter((item) => item.id !== id);
-      if (selectedScenarioId === id) {
-        setSelectedScenarioId(next[0]?.id ?? '');
+    if (remoteAvailable) {
+      setSyncStatus('deleting');
+      setSyncError('');
+      try {
+        await apiFetch(`/scenarios/${id}`, { method: 'DELETE' });
+        removeScenarioById(id);
+      } catch (error) {
+        if (error?.status === 401) {
+          setAuthStatus('unauthorized');
+          setAuthError('Session expired. Sign in again to delete scenarios.');
+        }
+        setSyncError(
+          error instanceof Error ? error.message : 'Unable to delete scenario on the remote service'
+        );
+        setSyncStatus('idle');
+        return;
       }
-      return next;
-    });
+      setSyncStatus('idle');
+      return;
+    }
+    removeScenarioById(id);
   };
 
   return (
     <div ref={pageRef} data-export-root className="min-h-screen bg-slate-50 text-slate-900">
+      {shouldShowAuthOverlay ? (
+        <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 backdrop-blur-sm">
+          <form
+            onSubmit={handleAuthSubmit}
+            className="w-full max-w-sm space-y-4 rounded-2xl bg-white p-6 shadow-xl"
+          >
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Sign in to scenario vault</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Use username{' '}
+                <code className="rounded bg-slate-100 px-1 py-0.5 text-xs font-semibold text-slate-700">pi</code>{' '}
+                and password{' '}
+                <code className="rounded bg-slate-100 px-1 py-0.5 text-xs font-semibold text-slate-700">
+                  jmaq2460
+                </code>{' '}
+                to access saved scenarios.
+              </p>
+            </div>
+            <div className="space-y-3">
+              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+                Username
+                <input
+                  type="text"
+                  value={loginForm.username}
+                  onChange={(event) => handleAuthInputChange('username', event.target.value)}
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  autoFocus
+                  disabled={verifyingAuth}
+                  autoComplete="username"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+                Password
+                <input
+                  type="password"
+                  value={loginForm.password}
+                  onChange={(event) => handleAuthInputChange('password', event.target.value)}
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  disabled={verifyingAuth}
+                  autoComplete="current-password"
+                />
+              </label>
+            </div>
+            {authError ? (
+              <div className="text-sm text-rose-600" role="alert">
+                {authError}
+              </div>
+            ) : null}
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="submit"
+                className="inline-flex items-center rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={verifyingAuth}
+              >
+                {verifyingAuth ? 'Signing in…' : 'Sign in'}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
       <div className="mx-auto max-w-6xl px-4">
         <div className="sticky top-0 z-30 -mx-4 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-slate-50/80 print:relative print:mx-0 print:border-0 print:bg-white">
           <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -2471,18 +2870,25 @@ export default function App() {
               Save your current inputs and reload any previous scenario to compare different deals quickly.
             </p>
             {remoteEnabled ? (
-              <p
-                className={`text-xs ${syncError ? 'text-rose-600' : 'text-slate-500'}`}
-                role={syncError ? 'alert' : undefined}
-              >
-                {syncStatus === 'loading'
-                  ? 'Loading remote scenarios…'
-                  : syncStatus === 'syncing'
-                  ? 'Syncing scenarios with the remote service…'
-                  : syncError
-                  ? `Remote sync issue: ${syncError}`
-                  : 'Remote sync active.'}
-              </p>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <p
+                  className={scenarioStatusClass}
+                  role={
+                    scenarioStatus.tone === 'error' || scenarioStatus.tone === 'warn' ? 'alert' : undefined
+                  }
+                >
+                  {scenarioStatus.message}
+                </p>
+                {scenarioStatus.retry ? (
+                  <button
+                    type="button"
+                    onClick={handleRetryConnection}
+                    className="inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Retry
+                  </button>
+                ) : null}
+              </div>
             ) : (
               <p className="text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
             )}
