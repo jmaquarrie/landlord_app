@@ -28,8 +28,8 @@ const GOOGLE_API_KEY = 'AIzaSyB9K7pla_JX_vy-d5zGXikxD9sJ1pglH94';
 const GOOGLE_MODEL =
   typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
     ? VITE_GOOGLE_MODEL.trim()
-    : 'gemini-1.5-flash-latest';
-const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+    : 'gemini-2.5-flash';
+const GOOGLE_API_BASE = 'https://apigateway.googleapis.com/$discovery/rest?version=v1';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
