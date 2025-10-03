@@ -2098,7 +2098,7 @@ export default function App() {
               >
                 <div className="grid gap-2 md:grid-cols-2">
                   {textInput('propertyAddress', 'Property address')}
-                  <div className="flex flex-col gap-1 md:col-span-1">
+                  <div className="flex flex-col gap-1 md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Property URL</label>
                     <div className="flex items-center gap-2">
                       <input
@@ -2462,7 +2462,7 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="space-y-3 md:order-2">
+              <div className="space-y-3 md:order-2 md:col-span-1">
                 <SummaryCard
                   title={`Exit comparison (Year ${inputs.exitYear})`}
                   tooltip={SECTION_DESCRIPTIONS.exitComparison}
@@ -2500,26 +2500,9 @@ export default function App() {
                       : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
                   </div>
                 </SummaryCard>
-
-                <CollapsibleSection
-                  title="Annual cash flow detail"
-                  collapsed={collapsedSections.cashflowDetail}
-                  onToggle={() => toggleSection('cashflowDetail')}
-                  className="rounded-2xl bg-white p-3 shadow-sm"
-                >
-                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-                  <CashflowTable
-                    rows={cashflowTableRows}
-                    columns={selectedCashflowColumns}
-                    hiddenColumns={hiddenCashflowColumns}
-                    onRemoveColumn={handleRemoveCashflowColumn}
-                    onAddColumn={handleAddCashflowColumn}
-                    onExport={handleExportCashflowCsv}
-                  />
-                </CollapsibleSection>
               </div>
 
-              <div className="md:order-1">
+              <div className="md:order-1 md:col-span-1">
                 <SummaryCard
                   title={
                     <div className="flex items-center justify-between gap-2">
@@ -2560,6 +2543,25 @@ export default function App() {
                     <SensitivityRow label={`Rent +${sensitivityPercentLabel}`} value={sensitivityResults.up} />
                   </div>
                 </SummaryCard>
+              </div>
+
+              <div className="md:col-span-2">
+                <CollapsibleSection
+                  title="Annual cash flow detail"
+                  collapsed={collapsedSections.cashflowDetail}
+                  onToggle={() => toggleSection('cashflowDetail')}
+                  className="rounded-2xl bg-white p-3 shadow-sm"
+                >
+                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
+                  <CashflowTable
+                    rows={cashflowTableRows}
+                    columns={selectedCashflowColumns}
+                    hiddenColumns={hiddenCashflowColumns}
+                    onRemoveColumn={handleRemoveCashflowColumn}
+                    onAddColumn={handleAddCashflowColumn}
+                    onExport={handleExportCashflowCsv}
+                  />
+                </CollapsibleSection>
               </div>
             </div>
 
