@@ -1885,9 +1885,38 @@ export default function App() {
                           href={normalizedPropertyUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="no-print inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                          aria-label="Open property link"
+                          className="no-print inline-flex items-center rounded-full border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
                         >
-                          Open
+                          <svg
+                            aria-hidden="true"
+                            className="h-4 w-4"
+                            viewBox="0 0 20 20"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                          >
+                            <path
+                              d="M11.25 3.5H5.5A2 2 0 0 0 3.5 5.5v9A2 2 0 0 0 5.5 16.5h9a2 2 0 0 0 2-2v-5.75"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <path
+                              d="M9.5 10.5 16.5 3.5"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                            <path
+                              d="M12.5 3.5h4v4"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
                         </a>
                       ) : null}
                       <button
@@ -1896,7 +1925,7 @@ export default function App() {
                         className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
                         disabled={!hasPropertyUrl || previewLoading}
                       >
-                        {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Load preview'}
+                        {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Preview'}
                       </button>
                     </div>
                   </div>
@@ -1905,7 +1934,7 @@ export default function App() {
                   <div>
                     {previewActive
                       ? 'The live listing below will be stored with saved scenarios and share links.'
-                      : 'Choose “Load preview” to open the listing below; the frame is saved with scenarios and share links.'}
+                      : 'Choose “Preview” to open the listing below; the frame is saved with scenarios and share links.'}
                   </div>
                   {previewLoading ? <div>Loading preview…</div> : null}
                   {previewError ? <div className="text-rose-600">{previewError}</div> : null}
@@ -2483,7 +2512,7 @@ export default function App() {
                     {previewActive
                       ? 'Live view of the property URL. This frame is saved with scenarios and share links.'
                       : hasPropertyUrl
-                      ? 'Load the preview to view the property page without leaving the dashboard.'
+                      ? 'Preview the property page without leaving the dashboard.'
                       : 'Enter a property URL to display the listing preview here.'}
                   </p>
                   {previewError ? <p className="text-[11px] text-rose-600">{previewError}</p> : null}
@@ -2495,7 +2524,7 @@ export default function App() {
                     className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
                     disabled={!hasPropertyUrl || previewLoading}
                   >
-                    {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Load preview'}
+                    {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Preview'}
                   </button>
                   <button
                     type="button"
