@@ -1925,7 +1925,7 @@ export default function App() {
                         className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
                         disabled={!hasPropertyUrl || previewLoading}
                       >
-                        {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Preview'}
+                        {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
                       </button>
                     </div>
                   </div>
@@ -2524,7 +2524,7 @@ export default function App() {
                     className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
                     disabled={!hasPropertyUrl || previewLoading}
                   >
-                    {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Preview'}
+                    {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
                   </button>
                   <button
                     type="button"
