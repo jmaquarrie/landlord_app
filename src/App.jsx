@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -698,8 +698,8 @@ function calculateEquity(rawInputs) {
 export default function App() {
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS }));
   const [savedScenarios, setSavedScenarios] = useState([]);
+  const [remoteScenarios, setRemoteScenarios] = useState([]);
   const [showLoadPanel, setShowLoadPanel] = useState(false);
-  const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
   const [capturedPreview, setCapturedPreview] = useState(null);
   const [livePreview, setLivePreview] = useState(null);
@@ -729,7 +729,6 @@ export default function App() {
   const pageRef = useRef(null);
   const iframeRef = useRef(null);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
-  const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
 
@@ -761,10 +760,11 @@ export default function App() {
       if (!stored) return;
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed)) {
-        setSavedScenarios(parsed);
-        if (parsed.length > 0) {
-          setSelectedScenarioId(parsed[0].id ?? '');
-        }
+        const normalised = parsed.map((scenario) => ({
+          ...scenario,
+          syncedToRemote: Boolean(scenario.syncedToRemote),
+        }));
+        setSavedScenarios(normalised);
       }
     } catch (error) {
       console.warn('Unable to read saved scenarios:', error);
@@ -780,15 +780,17 @@ export default function App() {
     }
   }, [savedScenarios]);
 
-  useEffect(() => {
-    if (!remoteEnabled) return;
-    let cancelled = false;
+  const fetchRemoteScenarios = useCallback(
+    async ({ signal, silent = false } = {}) => {
+      if (!remoteEnabled) return [];
 
-    const loadRemoteScenarios = async () => {
-      setSyncStatus('loading');
-      setSyncError('');
+      if (!silent) {
+        setSyncStatus('loading');
+        setSyncError('');
+      }
+
       try {
-        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, { method: 'GET' });
+        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, { method: 'GET', signal });
         if (!response.ok) {
           throw new Error(`Remote load failed with status ${response.status}`);
         }
@@ -796,28 +798,36 @@ export default function App() {
         if (!Array.isArray(payload)) {
           throw new Error('Remote response was not an array');
         }
-        if (!cancelled) {
-          setSavedScenarios(payload);
-          setSelectedScenarioId(payload[0]?.id ?? '');
+        const mapped = payload.map((scenario) => ({
+          ...scenario,
+          syncedToRemote: true,
+        }));
+        if (!signal?.aborted) {
+          setRemoteScenarios(mapped);
+          setSyncError('');
         }
+        return mapped;
       } catch (error) {
-        if (!cancelled) {
-          setSyncError(error instanceof Error ? error.message : 'Unable to load remote scenarios');
+        if (signal?.aborted) {
+          return [];
         }
+        setSyncError(error instanceof Error ? error.message : 'Unable to load remote scenarios');
+        throw error;
       } finally {
-        if (!cancelled) {
+        if (!silent && !signal?.aborted) {
           setSyncStatus('idle');
-          setRemoteHydrated(true);
         }
       }
-    };
+    },
+    [remoteEnabled]
+  );
 
-    loadRemoteScenarios();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [remoteEnabled]);
+  useEffect(() => {
+    if (!remoteEnabled) return;
+    const controller = new AbortController();
+    fetchRemoteScenarios({ signal: controller.signal }).catch(() => {});
+    return () => controller.abort();
+  }, [remoteEnabled, fetchRemoteScenarios]);
 
   useEffect(() => {
     if (!shareNotice || typeof window === 'undefined') return;
@@ -825,51 +835,31 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [shareNotice]);
 
-  useEffect(() => {
-    if (!remoteEnabled || !remoteHydrated) return;
-    let cancelled = false;
-
-    const pushRemoteScenarios = async () => {
-      setSyncStatus('syncing');
-      try {
-        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(savedScenarios),
-        });
-        if (!response.ok) {
-          throw new Error(`Remote sync failed with status ${response.status}`);
-        }
-        if (!cancelled) {
-          setSyncError('');
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setSyncError(error instanceof Error ? error.message : 'Unable to sync scenarios');
-        }
-      } finally {
-        if (!cancelled) {
-          setSyncStatus('idle');
-        }
-      }
-    };
-
-    pushRemoteScenarios();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [savedScenarios, remoteEnabled, remoteHydrated]);
+  const combinedScenarios = useMemo(() => {
+    const remoteItems = remoteScenarios.map((scenario) => ({
+      ...scenario,
+      origin: 'remote',
+      syncedToRemote: true,
+    }));
+    const remoteIds = new Set(remoteItems.map((item) => item.id));
+    const localItems = savedScenarios.map((scenario) => ({
+      ...scenario,
+      origin: 'local',
+      syncedToRemote: Boolean(scenario.syncedToRemote),
+    }));
+    const localFiltered = localItems.filter((item) => !remoteIds.has(item.id));
+    return [...remoteItems, ...localFiltered];
+  }, [remoteScenarios, savedScenarios]);
 
   const equity = useMemo(() => calculateEquity(inputs), [inputs]);
 
   const scenarioTableData = useMemo(
     () =>
-      savedScenarios.map((scenario) => ({
+      combinedScenarios.map((scenario) => ({
         scenario,
         metrics: calculateEquity({ ...DEFAULT_INPUTS, ...scenario.data }),
       })),
-    [savedScenarios]
+    [combinedScenarios]
   );
 
   const exitYearCount = Math.max(1, Math.floor(Number(equity.exitYear) || 1));
@@ -1377,7 +1367,7 @@ export default function App() {
   };
 
   const handleExportTableCsv = () => {
-    if (savedScenarios.length === 0) {
+    if (combinedScenarios.length === 0) {
       if (typeof window !== 'undefined') {
         window.alert('No saved scenarios to export yet.');
       }
@@ -1388,7 +1378,7 @@ export default function App() {
       return;
     }
 
-    const scenarioData = savedScenarios.map((scenario) => {
+    const scenarioData = combinedScenarios.map((scenario) => {
       const data = { ...DEFAULT_INPUTS, ...scenario.data };
       const metrics = calculateEquity(data);
       const preview = scenario.preview ?? null;
@@ -1618,13 +1608,12 @@ export default function App() {
       savedAt: new Date().toISOString(),
       data: snapshot.data,
       preview: snapshot.preview,
+      syncedToRemote: false,
     };
     setSavedScenarios((prev) => [scenario, ...prev]);
-    setSelectedScenarioId(scenario.id);
   };
 
-  const handleLoadScenario = () => {
-    const scenario = savedScenarios.find((item) => item.id === selectedScenarioId);
+  const handleLoadScenario = (scenario) => {
     if (!scenario) return;
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setShowLoadPanel(false);
@@ -1833,7 +1822,9 @@ export default function App() {
     const trimmed = nextName.trim();
     if (trimmed === '') return;
     setSavedScenarios((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item))
+      prev.map((item) =>
+        item.id === id ? { ...item, name: trimmed, syncedToRemote: false } : item
+      )
     );
   };
 
@@ -1850,6 +1841,7 @@ export default function App() {
               data: snapshot.data,
               preview: snapshot.preview,
               savedAt: updatedAt,
+              syncedToRemote: false,
             }
           : item
       )
@@ -1861,13 +1853,55 @@ export default function App() {
       const confirmDelete = window.confirm('Delete this saved scenario?');
       if (!confirmDelete) return;
     }
-    setSavedScenarios((prev) => {
-      const next = prev.filter((item) => item.id !== id);
-      if (selectedScenarioId === id) {
-        setSelectedScenarioId(next[0]?.id ?? '');
+    setSavedScenarios((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const handleSendScenarioToDatabase = async (scenario) => {
+    if (!remoteEnabled) {
+      if (typeof window !== 'undefined') {
+        window.alert('Database sync is not configured.');
       }
-      return next;
-    });
+      return;
+    }
+
+    if (!scenario) return;
+
+    setSyncStatus('syncing');
+    setSyncError('');
+
+    try {
+      const payload = {
+        id: scenario.id,
+        name: scenario.name,
+        savedAt: scenario.savedAt,
+        data: scenario.data,
+        preview: scenario.preview ?? null,
+      };
+
+      const response = await fetch(`${SCENARIO_API_URL}/scenarios`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Remote save failed with status ${response.status}`);
+      }
+
+      await fetchRemoteScenarios({ silent: true });
+
+      setSavedScenarios((prev) =>
+        prev.map((item) =>
+          item.id === scenario.id ? { ...item, syncedToRemote: true } : item
+        )
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to sync scenarios';
+      setSyncError(message);
+      console.error('Unable to send scenario to database', error);
+    } finally {
+      setSyncStatus('idle');
+    }
   };
 
   return (
@@ -2417,12 +2451,12 @@ export default function App() {
                   role={syncError ? 'alert' : undefined}
                 >
                   {syncStatus === 'loading'
-                    ? 'Loading remote scenarios…'
+                    ? 'Loading saved scenarios from the database…'
                     : syncStatus === 'syncing'
-                    ? 'Syncing scenarios with the remote service…'
+                    ? 'Sending scenario to the database…'
                     : syncError
-                    ? `Remote sync issue: ${syncError}`
-                    : 'Remote sync active.'}
+                    ? `Database issue: ${syncError}`
+                    : 'Database connection ready. Use “Send to database” to sync scenarios.'}
                 </p>
               ) : (
                 <p className="text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
@@ -2453,40 +2487,45 @@ export default function App() {
 
               {showLoadPanel && (
                 <div className="mt-3 space-y-3">
-                  {savedScenarios.length === 0 ? (
-                    <p className="text-xs text-slate-600">No scenarios saved yet. Save a scenario to build your history.</p>
+                  {combinedScenarios.length === 0 ? (
+                    <p className="text-xs text-slate-600">
+                      No scenarios saved yet. Save a scenario or send one to the database to build your history.
+                    </p>
                   ) : (
-                    <>
-                      <label className="flex flex-col gap-1 text-xs text-slate-700">
-                        <span>Choose a saved scenario</span>
-                        <select
-                          value={selectedScenarioId}
-                          onChange={(event) => setSelectedScenarioId(event.target.value)}
-                          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-xs"
-                        >
-                          {savedScenarios.map((scenario) => (
-                            <option key={scenario.id} value={scenario.id}>
-                              {scenario.name} — saved {friendlyDateTime(scenario.savedAt)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={handleLoadScenario}
-                        className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
-                      >
-                        Load selected scenario
-                      </button>
-                      <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
-                        {savedScenarios.map((scenario) => (
+                    <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
+                      {combinedScenarios.map((scenario) => {
+                        const isRemote = scenario.origin === 'remote';
+                        const isLocal = scenario.origin === 'local';
+                        const sendDisabled = syncStatus === 'syncing';
+                        const sendLabel = scenario.syncedToRemote ? 'Update database' : 'Send to database';
+                        return (
                           <div
                             key={`${scenario.id}-meta`}
                             className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
                           >
-                            <div className="flex flex-col">
+                            <div className="flex flex-col gap-1">
                               <span className="font-semibold text-slate-700">{scenario.name}</span>
                               <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                              <div className="flex flex-wrap items-center gap-1 text-[10px] font-semibold">
+                                <span
+                                  className={`rounded-full px-2 py-0.5 ${
+                                    isRemote ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'
+                                  }`}
+                                >
+                                  {isRemote ? 'Database' : 'Local'}
+                                </span>
+                                {remoteEnabled && isLocal ? (
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 ${
+                                      scenario.syncedToRemote
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : 'bg-amber-100 text-amber-700'
+                                    }`}
+                                  >
+                                    {scenario.syncedToRemote ? 'Synced' : 'Not in database'}
+                                  </span>
+                                ) : null}
+                              </div>
                               {scenario.data?.propertyAddress ? (
                                 <span className="text-slate-500">{scenario.data.propertyAddress}</span>
                               ) : null}
@@ -2501,33 +2540,54 @@ export default function App() {
                                 </a>
                               ) : null}
                             </div>
-                            <div className="no-print flex items-center gap-2 text-[11px]">
+                            <div className="no-print flex flex-wrap items-center gap-2 text-[11px]">
                               <button
                                 type="button"
-                                onClick={() => handleUpdateScenario(scenario.id)}
-                                className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                                onClick={() => handleLoadScenario(scenario)}
+                                className="rounded-full bg-slate-900 px-3 py-1 font-semibold text-white transition hover:bg-slate-700"
                               >
-                                Update
+                                Load
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => handleRenameScenario(scenario.id)}
-                                className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
-                              >
-                                Rename
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteScenario(scenario.id)}
-                                className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
-                              >
-                                Delete
-                              </button>
+                              {isLocal ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateScenario(scenario.id)}
+                                    className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                                  >
+                                    Update
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRenameScenario(scenario.id)}
+                                    className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
+                                  >
+                                    Rename
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteScenario(scenario.id)}
+                                    className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
+                                  >
+                                    Delete
+                                  </button>
+                                  {remoteEnabled ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSendScenarioToDatabase(scenario)}
+                                      className="rounded-full border border-indigo-300 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                      disabled={sendDisabled}
+                                    >
+                                      {sendLabel}
+                                    </button>
+                                  ) : null}
+                                </>
+                              ) : null}
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    </>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               )}
@@ -2701,7 +2761,7 @@ export default function App() {
               )}
             </div>
             <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-500">
-              <span>CSV export includes every saved scenario.</span>
+              <span>CSV export includes every available scenario.</span>
               <button
                 type="button"
                 onClick={handleExportTableCsv}
