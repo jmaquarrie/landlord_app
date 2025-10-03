@@ -25,7 +25,7 @@ const CHAT_API_URL =
     ? VITE_CHAT_API_URL.replace(/\/$/, '')
     : '';
 const GOOGLE_API_KEY = 'AIzaSyB9K7pla_JX_vy-d5zGXikxD9sJ1pglH94';
-const GOOGLE_DEFAULT_MODEL = 'gemini-1.5-flash';
+const GOOGLE_DEFAULT_MODEL = 'gemini-flash-latest';
 const GOOGLE_MODEL =
   typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
     ? VITE_GOOGLE_MODEL.trim()

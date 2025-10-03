@@ -85,7 +85,7 @@ The in-app chatbot can call Google&#39;s Gemini API directly. Provide your API k
 
 ```bash
 export VITE_GOOGLE_API_KEY="your-google-api-key"
-# Optional: override the default model (defaults to gemini-1.5-flash)
+# Optional: override the default model (defaults to gemini-flash-latest)
 export VITE_GOOGLE_MODEL="gemini-1.5-pro"
 ```
 
