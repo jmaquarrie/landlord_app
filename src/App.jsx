@@ -1851,6 +1851,7 @@ export default function App() {
             displaySurface: 'browser',
             logicalSurface: true,
             preferCurrentTab: true,
+            surfaceSwitching: 'exclude',
           },
           audio: false,
         });
@@ -1864,13 +1865,21 @@ export default function App() {
         return null;
       }
 
+      const surface = track.getSettings ? track.getSettings().displaySurface : undefined;
+      if (surface && surface !== 'browser') {
+        stopStream(stream);
+        setCaptureError('Please choose “This Tab” when prompted so we can capture the preview area.');
+        return null;
+      }
+
       const elementRect = iframeElement.getBoundingClientRect();
 
       const computeCrop = (sourceWidth, sourceHeight) => {
         const viewportWidth = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : elementRect.width;
         const viewportHeight = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : elementRect.height;
-        const scaleX = viewportWidth > 0 ? sourceWidth / viewportWidth : 1;
-        const scaleY = viewportHeight > 0 ? sourceHeight / viewportHeight : 1;
+        const devicePixelRatio = typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
+        const scaleX = viewportWidth > 0 ? sourceWidth / viewportWidth : devicePixelRatio;
+        const scaleY = viewportHeight > 0 ? sourceHeight / viewportHeight : devicePixelRatio;
         let sx = Math.round((elementRect.left < 0 ? 0 : elementRect.left) * scaleX);
         let sy = Math.round((elementRect.top < 0 ? 0 : elementRect.top) * scaleY);
         let sw = Math.round(elementRect.width * scaleX);
@@ -2726,7 +2735,8 @@ export default function App() {
                   </h3>
                   {isLivePreviewActive ? (
                     <p className="text-[11px] text-slate-500">
-                      Viewing the live listing below. Use “Take snapshot” to store it with this scenario.
+                      Viewing the live listing below. Use “Take snapshot” to store it with this scenario. When prompted, share
+                      this tab so the capture matches exactly what you see in the frame.
                     </p>
                   ) : capturedPreview?.capturedAt ? (
                     <p className="text-[11px] text-slate-500">
@@ -2769,6 +2779,7 @@ export default function App() {
                       title="Property listing preview"
                       className="h-full w-full border-0"
                       allowFullScreen
+                      allow="display-capture"
                       onLoad={() => {
                         setLivePreviewReady(true);
                         setCaptureStatus('idle');
