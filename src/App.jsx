@@ -1,17 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
   Area,
-  LineChart,
   XAxis,
   YAxis,
   Tooltip,
   Legend,
   CartesianGrid,
-  ReferenceLine,
-  ReferenceDot,
-  Line as RechartsLine,
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -19,14 +15,7 @@ import jsPDF from 'jspdf';
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
-const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
-const {
-  VITE_SCENARIO_API_URL,
-  VITE_CHAT_API_URL,
-  VITE_GOOGLE_MODEL,
-  VITE_SHORT_IO_API_KEY,
-  VITE_SHORT_IO_DOMAIN,
-} = import.meta.env ?? {};
+const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL, VITE_GOOGLE_MODEL } = import.meta.env ?? {};
 const SCENARIO_API_URL =
   typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
     ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
@@ -41,76 +30,10 @@ const GOOGLE_MODEL =
   typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
     ? VITE_GOOGLE_MODEL.trim()
     : GOOGLE_DEFAULT_MODEL;
-const SHORT_IO_API_KEY =
-  typeof VITE_SHORT_IO_API_KEY === 'string' && VITE_SHORT_IO_API_KEY.trim() !== ''
-    ? VITE_SHORT_IO_API_KEY.trim()
-    : '';
-const SHORT_IO_CONFIGURED_DOMAIN =
-  typeof VITE_SHORT_IO_DOMAIN === 'string' && VITE_SHORT_IO_DOMAIN.trim() !== ''
-    ? VITE_SHORT_IO_DOMAIN.trim()
-    : '';
-let shortIoDomainCache = SHORT_IO_CONFIGURED_DOMAIN;
-let shortIoDomainLookupPromise = null;
-const SHORT_IO_ENABLED = SHORT_IO_API_KEY !== '';
 const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
-const SCENARIO_USERNAME = 'pi';
-const SCENARIO_PASSWORD = 'jmaq2460';
-
-const SERIES_COLORS = {
-  indexFund: '#f97316',
-  cashflow: '#facc15',
-  propertyValue: '#0ea5e9',
-  propertyGross: '#2563eb',
-  propertyNet: '#16a34a',
-  propertyNetAfterTax: '#9333ea',
-  investedRent: '#0d9488',
-  indexFund1_5x: '#fb7185',
-  indexFund2x: '#ec4899',
-  indexFund4x: '#c026d3',
-  capRate: '#1e293b',
-  yieldRate: '#0369a1',
-  cashOnCash: '#0f766e',
-  irrSeries: '#7c3aed',
-};
-
-const SERIES_LABELS = {
-  indexFund: 'Index fund',
-  cashflow: 'Cashflow',
-  propertyValue: 'Property value',
-  propertyGross: 'Property gross',
-  propertyNet: 'Property net',
-  propertyNetAfterTax: 'Property net after tax',
-  investedRent: 'Invested rent',
-  indexFund1_5x: 'Index fund 1.5×',
-  indexFund2x: 'Index fund 2×',
-  indexFund4x: 'Index fund 4×',
-  capRate: 'Cap rate',
-  yieldRate: 'Yield rate',
-  cashOnCash: 'Cash on cash',
-  irrSeries: 'IRR',
-};
-
-const EXPANDED_SERIES_ORDER = [
-  'indexFund',
-  'cashflow',
-  'propertyValue',
-  'propertyGross',
-  'propertyNet',
-  'propertyNetAfterTax',
-  'investedRent',
-  'indexFund1_5x',
-  'indexFund2x',
-  'indexFund4x',
-  'capRate',
-  'yieldRate',
-  'cashOnCash',
-  'irrSeries',
-];
-
-const PERCENT_SERIES_KEYS = new Set(['capRate', 'yieldRate', 'cashOnCash', 'irrSeries']);
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
@@ -129,110 +52,8 @@ const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'reinvestFund', label: 'Reinvested fund value', format: currency },
   { key: 'cumulativeTax', label: 'Cumulative tax', format: currency },
 ];
-const CASHFLOW_COLUMN_KEY_SET = new Set(CASHFLOW_COLUMN_DEFINITIONS.map((column) => column.key));
-const DEFAULT_CASHFLOW_COLUMN_ORDER = [
-  'propertyValue',
-  'indexFundValue',
-  'cashAfterTax',
-  'reinvestFund',
-  'cumulativeAfterTax',
-  'cumulativeTax',
-];
-const sanitizeCashflowColumns = (keys, fallbackKeys = DEFAULT_CASHFLOW_COLUMN_ORDER) => {
-  const output = [];
-  if (Array.isArray(keys)) {
-    keys.forEach((key) => {
-      if (CASHFLOW_COLUMN_KEY_SET.has(key) && !output.includes(key)) {
-        output.push(key);
-      }
-    });
-  }
-  if (output.length > 0) {
-    return output;
-  }
-  const fallback = Array.isArray(fallbackKeys) ? fallbackKeys : DEFAULT_CASHFLOW_COLUMN_ORDER;
-  const fallbackOutput = [];
-  fallback.forEach((key) => {
-    if (CASHFLOW_COLUMN_KEY_SET.has(key) && !fallbackOutput.includes(key)) {
-      fallbackOutput.push(key);
-    }
-  });
-  if (fallbackOutput.length > 0) {
-    return fallbackOutput;
-  }
-  return Array.from(CASHFLOW_COLUMN_KEY_SET);
-};
 
-const DEFAULT_CASHFLOW_COLUMNS = sanitizeCashflowColumns(DEFAULT_CASHFLOW_COLUMN_ORDER);
-const CASHFLOW_COLUMNS_STORAGE_KEY = 'qc_cashflow_columns';
-const DEFAULT_AUTH_CREDENTIALS = { username: SCENARIO_USERNAME, password: SCENARIO_PASSWORD };
-
-const encodeBasicCredentials = (username, password) => {
-  const safeUser = typeof username === 'string' ? username : '';
-  const safePass = typeof password === 'string' ? password : '';
-  const raw = `${safeUser}:${safePass}`;
-  if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
-    return window.btoa(raw);
-  }
-  if (typeof btoa === 'function') {
-    return btoa(raw);
-  }
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(raw, 'utf-8').toString('base64');
-  }
-  return '';
-};
-
-const sortScenarios = (list) =>
-  Array.isArray(list)
-    ? [...list].sort((a, b) => {
-        const aTime = a?.savedAt ? new Date(a.savedAt).getTime() : 0;
-        const bTime = b?.savedAt ? new Date(b.savedAt).getTime() : 0;
-        return bTime - aTime;
-      })
-    : [];
-
-const normalizeScenarioRecord = (scenario) => {
-  if (!scenario || typeof scenario !== 'object') {
-    return null;
-  }
-  const baseData =
-    scenario.data && typeof scenario.data === 'object'
-      ? { ...scenario.data }
-      : {};
-  if ('cashflowColumns' in baseData) {
-    delete baseData.cashflowColumns;
-  }
-  const name = typeof scenario.name === 'string' && scenario.name.trim() !== '' ? scenario.name.trim() : 'Scenario';
-  const createdAt =
-    scenario.createdAt ?? scenario.created_at ?? scenario.savedAt ?? scenario.saved_at ?? new Date().toISOString();
-  const updatedAt = scenario.savedAt ?? scenario.saved_at ?? scenario.updatedAt ?? scenario.updated_at ?? createdAt;
-  const preview =
-    scenario.preview && typeof scenario.preview === 'object'
-      ? { active: Boolean(scenario.preview.active) }
-      : { active: false };
-  const normalized = {
-    id: scenario.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-    name,
-    createdAt,
-    savedAt: updatedAt,
-    data: baseData,
-    preview,
-    cashflowColumns: sanitizeCashflowColumns(
-      scenario.cashflowColumns ?? scenario.data?.cashflowColumns ?? DEFAULT_CASHFLOW_COLUMNS
-    ),
-  };
-  return normalized;
-};
-
-const normalizeScenarioList = (list) =>
-  sortScenarios(
-    Array.isArray(list)
-      ? list
-          .map((item) => normalizeScenarioRecord(item))
-          .filter(Boolean)
-      : []
-  );
+const DEFAULT_CASHFLOW_COLUMNS = ['propertyValue', 'indexFundValue', 'cumulativeAfterTax'];
 
 const DEFAULT_INPUTS = {
   propertyAddress: '',
@@ -273,12 +94,7 @@ const roundTo = (value, decimals = 2) => {
   return Math.round((value + Number.EPSILON) * factor) / factor;
 };
 
-const formatPercent = (value) => {
-  if (!Number.isFinite(value)) {
-    return '—';
-  }
-  return `${roundTo(value * 100, 2).toFixed(2)}%`;
-};
+const formatPercent = (value) => `${roundTo(value * 100, 2).toFixed(2)}%`;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -332,7 +148,7 @@ const SECTION_DESCRIPTIONS = {
   performance:
     'Shows rent, operating expenses, debt service, taxes, and cash flow for the selected hold year so you can compare annual performance.',
   keyRatios:
-    'Highlights core deal ratios such as cap rate, yield on cost, cash-on-cash return, DSCR, monthly mortgage payment, and IRR across the modeled hold period.',
+    'Highlights core deal ratios such as cap rate, yield on cost, cash-on-cash return, DSCR, and the monthly mortgage payment.',
   exit:
     'Projects future value, remaining loan balance, selling costs, and estimated equity at the chosen exit year.',
   npv:
@@ -343,15 +159,6 @@ const SECTION_DESCRIPTIONS = {
     'Compares exit-year totals for the property and the index fund, including after-tax wealth and cumulative rental tax.',
   sensitivity:
     'Adjust the rent sensitivity to see how Year 1 after-tax cash flow shifts when rents move up or down.',
-};
-
-const KEY_RATIO_TOOLTIPS = {
-  cap: 'First-year net operating income divided by the purchase price.',
-  yoc: 'First-year net operating income divided by total project cost (price + closing + renovation).',
-  coc: 'Year 1 after-debt cash flow divided by total cash invested.',
-  dscr: 'Debt service coverage ratio: Year 1 NOI divided by annual debt service.',
-  mortgage: 'Estimated monthly mortgage payment for the modeled loan.',
-  irr: 'Internal rate of return based on annual cash flows and sale proceeds through the modeled exit year.',
 };
 
 function personalAllowance(income) {
@@ -406,59 +213,6 @@ function npv(rate, cashflows) {
   return cashflows.reduce((acc, cf, t) => acc + cf / Math.pow(1 + rate, t), 0);
 }
 
-function irr(cashflows) {
-  if (!Array.isArray(cashflows) || cashflows.length < 2) {
-    return null;
-  }
-  const hasPositive = cashflows.some((value) => Number.isFinite(value) && value > 0);
-  const hasNegative = cashflows.some((value) => Number.isFinite(value) && value < 0);
-  if (!hasPositive || !hasNegative) {
-    return null;
-  }
-  const npvAt = (rate) => {
-    if (rate <= -0.9999) {
-      return Number.POSITIVE_INFINITY;
-    }
-    return cashflows.reduce((acc, cf, index) => acc + cf / Math.pow(1 + rate, index), 0);
-  };
-
-  let low = -0.9999;
-  let high = 1;
-  let lowVal = npvAt(low);
-  let highVal = npvAt(high);
-
-  let guard = 0;
-  while (lowVal * highVal > 0 && guard < 50) {
-    high *= 2;
-    highVal = npvAt(high);
-    guard += 1;
-    if (!Number.isFinite(highVal)) {
-      break;
-    }
-  }
-
-  if (lowVal * highVal > 0) {
-    return null;
-  }
-
-  for (let iteration = 0; iteration < 100; iteration += 1) {
-    const mid = (low + high) / 2;
-    const midVal = npvAt(mid);
-    if (Math.abs(midVal) < 1e-6) {
-      return mid;
-    }
-    if (lowVal * midVal < 0) {
-      high = mid;
-      highVal = midVal;
-    } else {
-      low = mid;
-      lowVal = midVal;
-    }
-  }
-
-  return (low + high) / 2;
-}
-
 function calcStampDuty(price, buyerType, propertiesOwned, firstTimeBuyer) {
   if (!price || price <= 0) return 0;
 
@@ -510,116 +264,6 @@ function ensureAbsoluteUrl(value) {
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   return `https://${trimmed}`;
 }
-
-const SHORT_IO_ENDPOINT = 'https://api.short.io/links';
-const SHORT_IO_DOMAINS_ENDPOINT = 'https://api.short.io/api/domains';
-
-const resolveShortIoDomain = async () => {
-  if (!SHORT_IO_ENABLED) {
-    return '';
-  }
-  if (shortIoDomainCache) {
-    return shortIoDomainCache;
-  }
-  if (typeof fetch !== 'function') {
-    return '';
-  }
-  if (!shortIoDomainLookupPromise) {
-    shortIoDomainLookupPromise = (async () => {
-      try {
-        const response = await fetch(SHORT_IO_DOMAINS_ENDPOINT, {
-          method: 'GET',
-          headers: {
-            accept: 'application/json',
-            Authorization: SHORT_IO_API_KEY,
-          },
-        });
-        if (!response.ok) {
-          throw new Error(`Short.io domains request failed with status ${response.status}`);
-        }
-        const payload = await response.json();
-        const list = Array.isArray(payload) ? payload : payload ? [payload] : [];
-        const pickDomain = (items) =>
-          items.find((item) => {
-            const host =
-              typeof item?.hostname === 'string' && item.hostname.trim() !== ''
-                ? item.hostname.trim()
-                : '';
-            const active = item?.active !== false;
-            return host !== '' && active;
-          }) ??
-          items.find((item) =>
-            typeof item?.hostname === 'string' && item.hostname.trim() !== ''
-          );
-        const selected = pickDomain(list);
-        const hostname =
-          typeof selected?.hostname === 'string' && selected.hostname.trim() !== ''
-            ? selected.hostname.trim()
-            : '';
-        if (hostname) {
-          shortIoDomainCache = hostname;
-          return hostname;
-        }
-        return '';
-      } catch (error) {
-        console.error('Unable to load short.io domains', error);
-        return '';
-      }
-    })();
-  }
-  const resolved = await shortIoDomainLookupPromise;
-  if (resolved && typeof resolved === 'string') {
-    const trimmed = resolved.trim();
-    if (trimmed !== '') {
-      shortIoDomainCache = trimmed;
-      return trimmed;
-    }
-  }
-  return '';
-};
-
-const shortenUrlWithShortIo = async (originalUrl) => {
-  if (!SHORT_IO_ENABLED) {
-    return { url: originalUrl, shortened: false };
-  }
-  if (typeof fetch !== 'function') {
-    return { url: originalUrl, shortened: false };
-  }
-  try {
-    const domain = await resolveShortIoDomain();
-    if (!domain) {
-      throw new Error('No short.io domain available');
-    }
-    const response = await fetch(SHORT_IO_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        accept: 'application/json',
-        Authorization: SHORT_IO_API_KEY,
-      },
-      body: JSON.stringify({
-        domain,
-        originalURL: originalUrl,
-        allowDuplicates: false,
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`Short.io request failed with status ${response.status}`);
-    }
-    const payload = await response.json();
-    const shortUrl =
-      typeof payload?.shortURL === 'string' && payload.shortURL.trim() !== ''
-        ? payload.shortURL.trim()
-        : '';
-    if (!shortUrl) {
-      throw new Error('Short.io response missing shortURL');
-    }
-    return { url: shortUrl, shortened: true };
-  } catch (error) {
-    console.error('Unable to shorten share URL', error);
-    return { url: originalUrl, shortened: false };
-  }
-};
 
 function scoreDeal({ coc, cap, dscr, npv, cashflowYear1 }) {
   let s = 0;
@@ -859,7 +503,6 @@ function calculateEquity(rawInputs) {
 
   const cap = noiYear1 / inputs.purchasePrice;
   const cashIn = deposit + closing + inputs.renovationCost;
-  const projectCost = inputs.purchasePrice + closing + inputs.renovationCost;
   const coc = cashflowYear1 / cashIn;
   const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
 
@@ -875,20 +518,16 @@ function calculateEquity(rawInputs) {
   const cf = [];
   const initialOutlay = -cashIn;
   cf.push(initialOutlay);
-  const irrCashflows = [initialOutlay];
 
   let rent = inputs.monthlyRent * 12;
   let cumulativeCashPreTax = 0;
   let cumulativeCashAfterTax = 0;
   let cumulativeReinvested = 0;
-  let cumulativePropertyTax = 0;
   let exitCumCash = 0;
   let exitCumCashAfterTax = 0;
   let exitNetSaleProceeds = 0;
   let indexVal = cashIn;
   let reinvestFundValue = 0;
-  let investedRentValue = 0;
-  const indexBasis = cashIn;
   const reinvestShare = inputs.reinvestIncome
     ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
     : 0;
@@ -902,66 +541,14 @@ function calculateEquity(rawInputs) {
   const annualCashflowsAfterTax = [];
   const initialNetEquity =
     inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
-  const initialSaleValue = inputs.purchasePrice;
-  const initialSaleCosts = initialSaleValue * inputs.sellingCostsPct;
-  const initialNetSaleProceeds = initialSaleValue - initialSaleCosts - loan;
   chart.push({
     year: 0,
     indexFund: indexVal,
-    indexFund1_5x: indexVal * 1.5,
-    indexFund2x: indexVal * 2,
-    indexFund4x: indexVal * 4,
     propertyValue: inputs.purchasePrice,
     propertyGross: inputs.purchasePrice,
     propertyNet: initialNetEquity,
     propertyNetAfterTax: initialNetEquity,
     reinvestFund: 0,
-    cashflow: 0,
-    investedRent: shouldReinvest ? 0 : null,
-    capRate: null,
-    yieldRate: null,
-    cashOnCash: null,
-    irrSeries: null,
-    meta: {
-      propertyValue: initialSaleValue,
-      saleValue: initialSaleValue,
-      saleCosts: initialSaleCosts,
-      remainingLoan: loan,
-      netSaleIfSold: initialNetSaleProceeds,
-      cumulativeCashPreTax: 0,
-      cumulativeCashPreTaxNet: 0,
-      cumulativeCashAfterTax: 0,
-      cumulativeCashAfterTaxNet: 0,
-      cumulativeCashAfterTaxKept: 0,
-      cumulativeCashPreTaxKept: 0,
-      cumulativePropertyTax: 0,
-      reinvestFundValue: 0,
-      cumulativeReinvested: 0,
-      reinvestFundGrowth: 0,
-      investedRentValue: 0,
-      investedRentContributions: 0,
-      investedRentGrowth: 0,
-      indexFundValue: indexVal,
-      indexBasis,
-      reinvestShare,
-      shouldReinvest,
-      purchasePrice: inputs.purchasePrice,
-      projectCost,
-      cashInvested: cashIn,
-      initialOutlay,
-      yearly: {
-        gross: 0,
-        operatingExpenses: 0,
-        noi: 0,
-        debtService: 0,
-        cashPreTax: 0,
-        cashAfterTax: 0,
-        cashAfterTaxRetained: 0,
-        tax: 0,
-        reinvestContribution: 0,
-        investedRentGrowth: 0,
-      },
-    },
   });
 
   const propertyTaxes = [];
@@ -974,7 +561,6 @@ function calculateEquity(rawInputs) {
     const noi = gross - (varOpex + fixed);
     const debtService = annualDebtService[y - 1] ?? 0;
     const cash = noi - debtService;
-    irrCashflows.push(cash);
     cumulativeCashPreTax += cash;
 
     const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
@@ -990,18 +576,12 @@ function calculateEquity(rawInputs) {
       propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
     }
     propertyTaxes.push(propertyTax);
-    cumulativePropertyTax += propertyTax;
     const afterTaxCash = cash - propertyTax;
     cumulativeCashAfterTax += afterTaxCash;
     const investableCash = Math.max(0, afterTaxCash);
     const reinvestContribution = shouldReinvest ? investableCash * reinvestShare : 0;
-    const priorReinvestFund = reinvestFundValue;
-    const reinvestGrowthThisYear = shouldReinvest ? priorReinvestFund * indexGrowth : 0;
     cumulativeReinvested += reinvestContribution;
-    reinvestFundValue = shouldReinvest
-      ? priorReinvestFund + reinvestGrowthThisYear + reinvestContribution
-      : 0;
-    investedRentValue = shouldReinvest ? reinvestFundValue : 0;
+    reinvestFundValue = shouldReinvest ? reinvestFundValue * (1 + indexGrowth) + reinvestContribution : 0;
 
     annualGrossRents.push(gross);
     annualOperatingExpenses.push(varOpex + fixed);
@@ -1018,14 +598,6 @@ function calculateEquity(rawInputs) {
     const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     const saleCostsEstimate = vt * inputs.sellingCostsPct;
     const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
-    const capRateYear = vt > 0 ? noi / vt : 0;
-    const yieldRateYear = projectCost > 0 ? noi / projectCost : 0;
-    const cashOnCashYear = cashIn > 0 ? cash / cashIn : 0;
-    const irrSequence = irrCashflows.slice();
-    if (irrSequence.length > 0) {
-      irrSequence[irrSequence.length - 1] += netSaleIfSold;
-    }
-    const irrToDate = irrSequence.length > 1 ? irr(irrSequence) : 0;
     const cumulativeCashPreTaxNet = shouldReinvest
       ? cumulativeCashPreTax - cumulativeReinvested
       : cumulativeCashPreTax;
@@ -1053,76 +625,14 @@ function calculateEquity(rawInputs) {
     }
 
     indexVal = indexVal * (1 + indexGrowth);
-    const cumulativeCashAfterTaxKept = shouldReinvest
-      ? cumulativeCashAfterTax - cumulativeReinvested
-      : cumulativeCashAfterTax;
-    const cumulativeCashPreTaxKept = shouldReinvest
-      ? cumulativeCashPreTax - cumulativeReinvested
-      : cumulativeCashPreTax;
-    const reinvestFundGrowth = Math.max(0, reinvestFundValue - cumulativeReinvested);
-    const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
-
     chart.push({
       year: y,
       indexFund: indexVal,
-      indexFund1_5x: indexVal * 1.5,
-      indexFund2x: indexVal * 2,
-      indexFund4x: indexVal * 4,
       propertyValue: vt,
       propertyGross: propertyGrossValue,
       propertyNet: propertyNetValue,
       propertyNetAfterTax: propertyNetAfterTaxValue,
       reinvestFund: reinvestFundValue,
-      cashflow: cumulativeCashAfterTax,
-      investedRent: shouldReinvest ? investedRentValue : null,
-      capRate: capRateYear,
-      yieldRate: yieldRateYear,
-      cashOnCash: cashOnCashYear,
-      irrSeries: irrToDate,
-      meta: {
-        propertyValue: vt,
-        saleValue: vt,
-        saleCosts: saleCostsEstimate,
-        remainingLoan: remainingLoanYear,
-        netSaleIfSold,
-        cumulativeCashPreTax,
-        cumulativeCashPreTaxNet,
-        cumulativeCashAfterTax,
-        cumulativeCashAfterTaxNet,
-        cumulativeCashAfterTaxKept,
-        cumulativeCashPreTaxKept,
-        cumulativePropertyTax,
-        reinvestFundValue,
-        cumulativeReinvested,
-        reinvestFundGrowth,
-        investedRentValue,
-        investedRentContributions: cumulativeReinvested,
-        investedRentGrowth,
-        indexFundValue: indexVal,
-        indexBasis,
-        reinvestShare,
-        shouldReinvest,
-        purchasePrice: inputs.purchasePrice,
-        projectCost,
-        cashInvested: cashIn,
-        initialOutlay,
-        capRate: capRateYear,
-        yieldRate: yieldRateYear,
-        cashOnCash: cashOnCashYear,
-        irrSeries: irrToDate,
-        yearly: {
-          gross,
-          operatingExpenses: varOpex + fixed,
-          noi,
-          debtService,
-          cashPreTax: cash,
-          cashAfterTax: afterTaxCash,
-          cashAfterTaxRetained: shouldReinvest ? afterTaxCash - reinvestContribution : afterTaxCash,
-          tax: propertyTax,
-          reinvestContribution,
-          investedRentGrowth: reinvestGrowthThisYear,
-        },
-      },
     });
 
     rent *= 1 + inputs.rentGrowth;
@@ -1141,7 +651,6 @@ function calculateEquity(rawInputs) {
   const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
   const propertyTaxYear1 = propertyTaxes[0] ?? 0;
   const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
-  const irrValue = irr(cf);
 
   return {
     deposit,
@@ -1169,7 +678,7 @@ function calculateEquity(rawInputs) {
     cf,
     chart,
     cashIn,
-    projectCost,
+    projectCost: inputs.purchasePrice + closing + inputs.renovationCost,
     yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
     indexValEnd: indexVal,
     exitCumCash,
@@ -1182,7 +691,6 @@ function calculateEquity(rawInputs) {
     totalPropertyTax,
     totalReinvested: cumulativeReinvested,
     reinvestFundValue,
-    investedRentValue: reinvestFundValue,
     propertyTaxes,
     propertyNetWealthAfterTax,
     wealthDeltaAfterTax,
@@ -1194,7 +702,6 @@ function calculateEquity(rawInputs) {
     annualCashflowsPreTax,
     annualCashflowsAfterTax,
     annualDebtService,
-    irr: irrValue,
   };
 }
 
@@ -1209,29 +716,6 @@ export default function App() {
   const [previewStatus, setPreviewStatus] = useState('idle');
   const [previewError, setPreviewError] = useState('');
   const [previewKey, setPreviewKey] = useState(0);
-  const remoteEnabled = Boolean(SCENARIO_API_URL);
-  const [authCredentials, setAuthCredentials] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = window.localStorage.getItem(SCENARIO_AUTH_STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (parsed && typeof parsed.username === 'string' && typeof parsed.password === 'string') {
-            return { username: parsed.username, password: parsed.password };
-          }
-        }
-      } catch (error) {
-        console.warn('Unable to read scenario auth from storage:', error);
-      }
-    }
-    return { ...DEFAULT_AUTH_CREDENTIALS };
-  });
-  const [authStatus, setAuthStatus] = useState(remoteEnabled ? 'pending' : 'ready');
-  const [authError, setAuthError] = useState('');
-  const [loginForm, setLoginForm] = useState({
-    username: authCredentials.username ?? '',
-    password: authCredentials.password ?? '',
-  });
   const [collapsedSections, setCollapsedSections] = useState({
     propertyInfo: false,
     buyerProfile: false,
@@ -1240,116 +724,28 @@ export default function App() {
     rentalCashflow: false,
     cashflowDetail: false,
   });
-  const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = window.localStorage.getItem(CASHFLOW_COLUMNS_STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          const sanitized = sanitizeCashflowColumns(parsed);
-          if (sanitized.length) {
-            return sanitized;
-          }
-        }
-      } catch (error) {
-        console.warn('Unable to read cashflow columns from storage:', error);
-      }
-    }
-    return DEFAULT_CASHFLOW_COLUMNS;
-  });
+  const [cashflowColumnKeys, setCashflowColumnKeys] = useState(DEFAULT_CASHFLOW_COLUMNS);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [chatStatus, setChatStatus] = useState('idle');
   const [chatError, setChatError] = useState('');
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
-    indexFund1_5x: false,
-    indexFund2x: false,
-    indexFund4x: false,
     propertyValue: true,
     propertyGross: true,
     propertyNet: true,
     propertyNetAfterTax: true,
-    cashflow: true,
-    investedRent: false,
-    capRate: false,
-    yieldRate: false,
-    cashOnCash: false,
-    irrSeries: false,
   });
-  const [showChartModal, setShowChartModal] = useState(false);
-  const [showRatioChartModal, setShowRatioChartModal] = useState(false);
-  const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
-  const [chartRangeTouched, setChartRangeTouched] = useState(false);
-  const [chartFocus, setChartFocus] = useState(null);
-  const [chartFocusLocked, setChartFocusLocked] = useState(false);
-  const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
-  const chartAreaRef = useRef(null);
-  const chartOverlayRef = useRef(null);
-  const chartModalContentRef = useRef(null);
   const [performanceYear, setPerformanceYear] = useState(1);
   const [sensitivityPct, setSensitivityPct] = useState(0.1);
   const [shareNotice, setShareNotice] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const pageRef = useRef(null);
   const iframeRef = useRef(null);
+  const remoteEnabled = Boolean(SCENARIO_API_URL);
+  const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
-
-  const remoteAvailable = remoteEnabled && authStatus === 'ready';
-
-  const apiFetch = useCallback(
-    async (path, options = {}, credentialsOverride) => {
-      if (!remoteEnabled) {
-        const error = new Error('Remote API disabled');
-        error.status = 503;
-        throw error;
-      }
-      const creds = credentialsOverride ?? authCredentials;
-      if (!creds || !creds.username || !creds.password) {
-        const error = new Error('Authentication required');
-        error.status = 401;
-        throw error;
-      }
-      const token = encodeBasicCredentials(creds.username, creds.password);
-      const headers = new Headers(options.headers || {});
-      if (token) {
-        headers.set('Authorization', `Basic ${token}`);
-      }
-      const bodyProvided = options.body !== undefined && !(options.body instanceof FormData);
-      if (bodyProvided && !headers.has('Content-Type')) {
-        headers.set('Content-Type', 'application/json');
-      }
-      let response;
-      try {
-        response = await fetch(`${SCENARIO_API_URL}${path}`, {
-          ...options,
-          headers,
-        });
-      } catch (error) {
-        const networkError = new Error('Unable to reach the scenario service');
-        networkError.status = 0;
-        networkError.cause = error;
-        throw networkError;
-      }
-      if (!response.ok) {
-        const failure = new Error(`Request failed with status ${response.status}`);
-        failure.status = response.status;
-        try {
-          failure.detail = await response.json();
-        } catch {
-          try {
-            failure.detail = await response.text();
-          } catch {
-            failure.detail = null;
-          }
-        }
-        throw failure;
-      }
-      return response;
-    },
-    [remoteEnabled, authCredentials]
-  );
 
   const clearPreview = () => {
     setPreviewActive(false);
@@ -1383,7 +779,6 @@ export default function App() {
     const payload = decodeSharePayload(encoded);
     if (payload && typeof payload === 'object' && payload.inputs) {
       setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
-      setCashflowColumnKeys(sanitizeCashflowColumns(payload.cashflowColumns));
       const targetUrl = payload.inputs?.propertyUrl ?? '';
       const shouldActivatePreview =
         (payload.preview && payload.preview.active) || (typeof targetUrl === 'string' && targetUrl.trim() !== '');
@@ -1403,89 +798,19 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
-      window.localStorage.setItem(
-        SCENARIO_AUTH_STORAGE_KEY,
-        JSON.stringify({
-          username: authCredentials.username ?? '',
-          password: authCredentials.password ?? '',
-        })
-      );
-    } catch (error) {
-      console.warn('Unable to persist scenario auth:', error);
-    }
-  }, [authCredentials]);
-
-  useEffect(() => {
-    setLoginForm({
-      username: authCredentials.username ?? '',
-      password: authCredentials.password ?? '',
-    });
-  }, [authCredentials.username, authCredentials.password]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
       const stored = window.localStorage.getItem(SCENARIO_STORAGE_KEY);
       if (!stored) return;
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed)) {
-        const normalized = normalizeScenarioList(parsed);
-        setSavedScenarios(normalized);
-        if (normalized.length > 0) {
-          setSelectedScenarioId(normalized[0].id ?? '');
+        setSavedScenarios(parsed);
+        if (parsed.length > 0) {
+          setSelectedScenarioId(parsed[0].id ?? '');
         }
       }
     } catch (error) {
       console.warn('Unable to read saved scenarios:', error);
     }
   }, []);
-
-  useEffect(() => {
-    if (!remoteEnabled) return;
-    if (authStatus !== 'pending') return;
-    if (!authCredentials?.username || !authCredentials?.password) {
-      setAuthStatus('unauthorized');
-      setAuthError('Enter your credentials to connect to the scenario service.');
-      return;
-    }
-    let cancelled = false;
-    setSyncStatus('loading');
-    setSyncError('');
-    const loadRemote = async () => {
-      try {
-        const response = await apiFetch('/scenarios', { method: 'GET' }, authCredentials);
-        const payload = await response.json();
-        if (cancelled) return;
-        const normalized = normalizeScenarioList(payload);
-        setSavedScenarios(normalized);
-        setSelectedScenarioId(normalized[0]?.id ?? '');
-        setAuthStatus('ready');
-        setAuthError('');
-      } catch (error) {
-        if (cancelled) return;
-        if (error?.status === 401) {
-          setAuthStatus('unauthorized');
-          setAuthError('Incorrect username or password.');
-        } else if (error?.status === 404) {
-          setAuthStatus('error');
-          setSyncError('Scenario service not found. Set VITE_SCENARIO_API_URL to your backend.');
-        } else {
-          setAuthStatus('error');
-          setSyncError(
-            error instanceof Error ? error.message : 'Unable to load remote scenarios'
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setSyncStatus('idle');
-        }
-      }
-    };
-    loadRemote();
-    return () => {
-      cancelled = true;
-    };
-  }, [remoteEnabled, authStatus, authCredentials, apiFetch]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1497,20 +822,85 @@ export default function App() {
   }, [savedScenarios]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const sanitized = sanitizeCashflowColumns(cashflowColumnKeys);
-      window.localStorage.setItem(CASHFLOW_COLUMNS_STORAGE_KEY, JSON.stringify(sanitized));
-    } catch (error) {
-      console.warn('Unable to persist cashflow columns:', error);
-    }
-  }, [cashflowColumnKeys]);
+    if (!remoteEnabled) return;
+    let cancelled = false;
+
+    const loadRemoteScenarios = async () => {
+      setSyncStatus('loading');
+      setSyncError('');
+      try {
+        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, { method: 'GET' });
+        if (!response.ok) {
+          throw new Error(`Remote load failed with status ${response.status}`);
+        }
+        const payload = await response.json();
+        if (!Array.isArray(payload)) {
+          throw new Error('Remote response was not an array');
+        }
+        if (!cancelled) {
+          setSavedScenarios(payload);
+          setSelectedScenarioId(payload[0]?.id ?? '');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSyncError(error instanceof Error ? error.message : 'Unable to load remote scenarios');
+        }
+      } finally {
+        if (!cancelled) {
+          setSyncStatus('idle');
+          setRemoteHydrated(true);
+        }
+      }
+    };
+
+    loadRemoteScenarios();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [remoteEnabled]);
 
   useEffect(() => {
     if (!shareNotice || typeof window === 'undefined') return;
     const timeout = window.setTimeout(() => setShareNotice(''), 3000);
     return () => window.clearTimeout(timeout);
   }, [shareNotice]);
+
+  useEffect(() => {
+    if (!remoteEnabled || !remoteHydrated) return;
+    let cancelled = false;
+
+    const pushRemoteScenarios = async () => {
+      setSyncStatus('syncing');
+      try {
+        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(savedScenarios),
+        });
+        if (!response.ok) {
+          throw new Error(`Remote sync failed with status ${response.status}`);
+        }
+        if (!cancelled) {
+          setSyncError('');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSyncError(error instanceof Error ? error.message : 'Unable to sync scenarios');
+        }
+      } finally {
+        if (!cancelled) {
+          setSyncStatus('idle');
+        }
+      }
+    };
+
+    pushRemoteScenarios();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [savedScenarios, remoteEnabled, remoteHydrated]);
 
   const equity = useMemo(() => calculateEquity(inputs), [inputs]);
 
@@ -1542,198 +932,6 @@ export default function App() {
   const selectedCashAfterTax = equity.annualCashflowsAfterTax[performanceYearIndex] ?? 0;
   const selectedRentalTax = equity.propertyTaxes[performanceYearIndex] ?? 0;
 
-  const maxChartYear = useMemo(() => {
-    const data = Array.isArray(equity.chart) ? equity.chart : [];
-    if (data.length === 0) {
-      return 0;
-    }
-    const lastYear = Number(data[data.length - 1]?.year);
-    if (Number.isFinite(lastYear)) {
-      return Math.max(0, Math.round(lastYear));
-    }
-    return data.reduce((acc, point) => {
-      const year = Number(point?.year);
-      return Number.isFinite(year) ? Math.max(acc, Math.round(year)) : acc;
-    }, 0);
-  }, [equity.chart]);
-
-  useEffect(() => {
-    setChartRange((prev) => {
-      let safeStart = Math.max(0, Math.min(prev.start, maxChartYear));
-      let safeEnd = Math.max(safeStart, Math.min(prev.end, maxChartYear));
-      if (!chartRangeTouched) {
-        safeStart = 0;
-        safeEnd = maxChartYear;
-      } else if (maxChartYear > 0 && safeEnd === 0) {
-        safeEnd = maxChartYear;
-      }
-      if (safeStart === prev.start && safeEnd === prev.end) {
-        return prev;
-      }
-      return { start: safeStart, end: safeEnd };
-    });
-  }, [chartRangeTouched, maxChartYear]);
-
-  const filteredChartData = useMemo(() => {
-    const data = Array.isArray(equity.chart) ? equity.chart : [];
-    if (data.length === 0) {
-      return data;
-    }
-    const startYear = Math.max(0, Math.min(chartRange.start, chartRange.end));
-    const endYear = Math.max(startYear, chartRange.end);
-    return data.filter((point) => {
-      const year = Number(point?.year);
-      return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
-    });
-  }, [equity.chart, chartRange]);
-
-  useEffect(() => {
-    if (!showChartModal) {
-      setChartFocus(null);
-      setExpandedMetricDetails({});
-      setChartFocusLocked(false);
-    }
-  }, [showChartModal]);
-
-  useEffect(() => {
-    setChartFocus((prev) => {
-      if (!prev) {
-        return prev;
-      }
-      const yearValue = Number(prev.year);
-      const match = filteredChartData.find((point) => Number(point?.year) === yearValue);
-      if (!match) {
-        return null;
-      }
-      if (prev.data === match) {
-        return prev;
-      }
-      return { year: yearValue, data: match };
-    });
-  }, [filteredChartData]);
-
-  useEffect(() => {
-    if (!showChartModal || !chartFocus) {
-      return undefined;
-    }
-    const handleDocumentClick = (event) => {
-      const target = event.target;
-      if (chartAreaRef.current && chartAreaRef.current.contains(target)) {
-        return;
-      }
-      if (chartOverlayRef.current && chartOverlayRef.current.contains(target)) {
-        return;
-      }
-      if (chartModalContentRef.current && chartModalContentRef.current.contains(target)) {
-        return;
-      }
-      setChartFocus(null);
-      setExpandedMetricDetails({});
-      setChartFocusLocked(false);
-    };
-    document.addEventListener('mousedown', handleDocumentClick);
-    return () => {
-      document.removeEventListener('mousedown', handleDocumentClick);
-    };
-  }, [showChartModal, chartFocus]);
-
-  const handleChartRangeChange = useCallback(
-    (key, value) => {
-      setChartRangeTouched(true);
-      setChartRange((prev) => {
-        const sanitized = Number.isFinite(value) ? Math.round(value) : 0;
-        const clamped = Math.max(0, Math.min(sanitized, maxChartYear));
-        if (key === 'start') {
-          const nextStart = clamped;
-          const nextEnd = Math.max(nextStart, Math.min(prev.end, maxChartYear));
-          if (nextStart === prev.start && nextEnd === prev.end) {
-            return prev;
-          }
-          return { start: nextStart, end: nextEnd };
-        }
-        if (key === 'end') {
-          const nextEnd = Math.max(prev.start, clamped);
-          if (nextEnd === prev.end) {
-            return prev;
-          }
-          return { start: prev.start, end: nextEnd };
-        }
-        return prev;
-      });
-    },
-    [maxChartYear]
-  );
-
-  const handleChartHover = useCallback(
-    (event) => {
-      if (chartFocusLocked) {
-        return;
-      }
-      if (!event || event.isTooltipActive === false) {
-        setChartFocus(null);
-        return;
-      }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setChartFocus(null);
-        return;
-      }
-      const match = filteredChartData.find((point) => Number(point?.year) === activeYear);
-      if (!match) {
-        setChartFocus(null);
-        return;
-      }
-      setChartFocus((prev) => {
-        if (prev?.year === activeYear && prev.data === match) {
-          return prev;
-        }
-        return { year: activeYear, data: match };
-      });
-    },
-    [chartFocusLocked, filteredChartData]
-  );
-
-  const handleChartMouseLeave = useCallback(() => {
-    if (chartFocusLocked) {
-      return;
-    }
-    setChartFocus(null);
-  }, [chartFocusLocked]);
-
-  const handleChartPointClick = useCallback(
-    (event) => {
-      if (!event) {
-        return;
-      }
-      const { activeLabel } = event;
-      const activeYear = Number(activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        return;
-      }
-      const match = filteredChartData.find((point) => Number(point?.year) === activeYear);
-      if (!match) {
-        return;
-      }
-      setChartFocusLocked(true);
-      setChartFocus({ year: activeYear, data: match });
-      setExpandedMetricDetails({});
-    },
-    [filteredChartData]
-  );
-
-  const toggleMetricDetail = useCallback((key) => {
-    setExpandedMetricDetails((prev) => ({
-      ...prev,
-      [key]: !prev[key],
-    }));
-  }, []);
-
-  const clearChartFocus = useCallback(() => {
-    setChartFocus(null);
-    setExpandedMetricDetails({});
-    setChartFocusLocked(false);
-  }, []);
-
   const isCompanyBuyer = inputs.buyerType === 'company';
   const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
   const rentalTaxCumulativeLabel = isCompanyBuyer
@@ -1741,7 +939,7 @@ export default function App() {
     : 'Rental income tax (cumulative)';
   const propertyNetAfterTaxLabel = isCompanyBuyer
     ? 'Property net after corporation tax'
-    : 'Property net after tax';
+    : 'Property net after rental tax';
   const afterTaxComparisonPrefix = isCompanyBuyer ? 'After corporation tax' : 'After income tax';
   const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const appreciationRate = Number(inputs.annualAppreciation) || 0;
@@ -1750,61 +948,6 @@ export default function App() {
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
   const appreciationPower = Math.pow(appreciationFactor, exitYears);
   const appreciationPowerDisplay = appreciationPower.toFixed(4);
-  const verifyingAuth = authStatus === 'verifying';
-  const shouldShowAuthOverlay = remoteEnabled && (authStatus === 'unauthorized' || verifyingAuth);
-  const scenarioStatus = (() => {
-    if (!remoteEnabled) {
-      return { message: 'Scenarios are stored locally in your browser.', tone: 'neutral', retry: false };
-    }
-    if (authStatus === 'pending') {
-      return { message: 'Connecting to the scenario service…', tone: 'info', retry: false };
-    }
-    if (authStatus === 'verifying') {
-      return { message: 'Checking credentials…', tone: 'info', retry: false };
-    }
-    if (authStatus === 'unauthorized') {
-      return {
-        message: authError || 'Sign in to sync scenarios across devices.',
-        tone: 'warn',
-        retry: false,
-      };
-    }
-    if (authStatus === 'error') {
-      return {
-        message: syncError || 'Remote sync issue. Retry shortly.',
-        tone: 'error',
-        retry: true,
-      };
-    }
-    if (syncStatus === 'loading') {
-      return { message: 'Loading scenarios…', tone: 'info', retry: false };
-    }
-    if (syncStatus === 'saving') {
-      return { message: 'Saving scenario to the remote service…', tone: 'info', retry: false };
-    }
-    if (syncStatus === 'updating') {
-      return { message: 'Updating scenario on the remote service…', tone: 'info', retry: false };
-    }
-    if (syncStatus === 'deleting') {
-      return { message: 'Deleting scenario from the remote service…', tone: 'info', retry: false };
-    }
-    if (syncError) {
-      return {
-        message: `Remote sync issue: ${syncError}`,
-        tone: 'error',
-        retry: true,
-      };
-    }
-    return { message: 'Remote sync active.', tone: 'neutral', retry: false };
-  })();
-  const scenarioStatusClass =
-    scenarioStatus.tone === 'error'
-      ? 'text-rose-600'
-      : scenarioStatus.tone === 'warn'
-      ? 'text-amber-600'
-      : scenarioStatus.tone === 'info'
-      ? 'text-slate-600'
-      : 'text-slate-500';
   const estimatedExitEquity = equity.futureValue - equity.remaining - equity.sellingCosts;
   const amortisationYears = Math.min(exitYears, Number(inputs.mortgageYears) || 0);
   const amortisationPayments = Math.min(exitYears * 12, (Number(inputs.mortgageYears) || 0) * 12);
@@ -1887,18 +1030,6 @@ export default function App() {
   const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
   const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
   const reinvestActive = Boolean(inputs.reinvestIncome) && reinvestRate > 0 && reinvestFundValue > 0;
-
-  useEffect(() => {
-    if (reinvestActive) {
-      return;
-    }
-    setActiveSeries((prev) => {
-      if (prev.investedRent === false) {
-        return prev;
-      }
-      return { ...prev, investedRent: false };
-    });
-  }, [reinvestActive]);
   const reinvestRateLabel = formatPercent(reinvestRate);
 
   const exitCumCashPreTaxNet = exitCumCash - reinvestFundValue;
@@ -2543,31 +1674,6 @@ export default function App() {
     });
   };
 
-  const integrateScenario = (record, { select = false } = {}) => {
-    const normalized = normalizeScenarioRecord(record);
-    if (!normalized) return null;
-    setSavedScenarios((prev) => {
-      const filtered = prev.filter((item) => item.id !== normalized.id);
-      return sortScenarios([normalized, ...filtered]);
-    });
-    if (select) {
-      setSelectedScenarioId(normalized.id);
-    }
-    return normalized;
-  };
-
-  const removeScenarioById = (id) => {
-    setSavedScenarios((prev) => {
-      const next = prev.filter((item) => item.id !== id);
-      if (prev.length !== next.length) {
-        if (selectedScenarioId === id) {
-          setSelectedScenarioId(next[0]?.id ?? '');
-        }
-      }
-      return next;
-    });
-  };
-
   const buildScenarioSnapshot = () => {
     const sanitizedInputs = JSON.parse(
       JSON.stringify({
@@ -2579,22 +1685,14 @@ export default function App() {
     const previewSnapshot = {
       active: previewActive && Boolean(sanitizedInputs.propertyUrl),
     };
-    return {
-      data: sanitizedInputs,
-      preview: previewSnapshot,
-      cashflowColumns: sanitizeCashflowColumns(cashflowColumnKeys),
-    };
+    return { data: sanitizedInputs, preview: previewSnapshot };
   };
 
   const handleShareScenario = async () => {
     if (typeof window === 'undefined') return;
     try {
       const snapshot = buildScenarioSnapshot();
-      const payload = {
-        inputs: snapshot.data,
-        preview: snapshot.preview,
-        cashflowColumns: snapshot.cashflowColumns,
-      };
+      const payload = { inputs: snapshot.data, preview: snapshot.preview };
       const encoded = encodeSharePayload(payload);
       if (!encoded) {
         throw new Error('Unable to encode scenario');
@@ -2602,32 +1700,12 @@ export default function App() {
       const url = new URL(window.location.href);
       url.searchParams.set('scenario', encoded);
       const shareUrl = url.toString();
-      const { url: linkToCopy, shortened } = await shortenUrlWithShortIo(shareUrl);
-      const clipboardMessage = shortened
-        ? 'Short link copied to clipboard'
-        : SHORT_IO_ENABLED
-        ? 'Share link copied to clipboard (short.io unavailable)'
-        : 'Share link copied to clipboard';
-      const promptMessage = shortened
-        ? 'Short link ready (short.io)'
-        : SHORT_IO_ENABLED
-        ? 'Share link ready (short.io unavailable)'
-        : 'Share link ready';
-      let copiedToClipboard = false;
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        try {
-          await navigator.clipboard.writeText(linkToCopy);
-          setShareNotice(clipboardMessage);
-          copiedToClipboard = true;
-        } catch (clipboardError) {
-          console.error('Unable to copy share link to clipboard', clipboardError);
-        }
-      }
-      if (!copiedToClipboard) {
-        if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
-          window.prompt('Copy this share link', linkToCopy);
-        }
-        setShareNotice(promptMessage);
+        await navigator.clipboard.writeText(shareUrl);
+        setShareNotice('Share link copied to clipboard');
+      } else {
+        window.prompt('Copy this share link', shareUrl);
+        setShareNotice('Share link ready');
       }
     } catch (error) {
       console.error('Unable to share scenario', error);
@@ -2635,64 +1713,7 @@ export default function App() {
     }
   };
 
-  const handleAuthInputChange = (field, value) => {
-    setLoginForm((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const handleAuthSubmit = async (event) => {
-    event.preventDefault();
-    if (!remoteEnabled) return;
-    const username = (loginForm.username ?? '').trim();
-    const password = loginForm.password ?? '';
-    if (!username || !password) {
-      setAuthError('Enter both username and password.');
-      return;
-    }
-    setAuthStatus('verifying');
-    setAuthError('');
-    setSyncStatus('loading');
-    setSyncError('');
-    try {
-      const response = await apiFetch(
-        '/scenarios',
-        { method: 'GET' },
-        { username, password }
-      );
-      const payload = await response.json();
-      const normalized = normalizeScenarioList(payload);
-      setAuthCredentials({ username, password });
-      setSavedScenarios(normalized);
-      setSelectedScenarioId(normalized[0]?.id ?? '');
-      setAuthStatus('ready');
-      setAuthError('');
-    } catch (error) {
-      if (error?.status === 401) {
-        setAuthError('Incorrect username or password.');
-      } else if (error?.status === 404) {
-        setAuthError('Scenario service not found. Set VITE_SCENARIO_API_URL to your backend.');
-        setSyncError('Scenario service not found. Set VITE_SCENARIO_API_URL to your backend.');
-      } else {
-        setAuthError(
-          error instanceof Error ? error.message : 'Unable to reach the scenario service.'
-        );
-        if (error instanceof Error && error.message) {
-          setSyncError(error.message);
-        }
-      }
-      setAuthStatus('unauthorized');
-    } finally {
-      setSyncStatus('idle');
-    }
-  };
-
-  const handleRetryConnection = () => {
-    if (!remoteEnabled) return;
-    setSyncError('');
-    setAuthError('');
-    setAuthStatus('pending');
-  };
-
-  const handleSaveScenario = async () => {
+  const handleSaveScenario = () => {
     if (typeof window === 'undefined') return;
     const addressLabel = (inputs.propertyAddress ?? '').trim();
     const fallbackLabel = `Scenario ${new Date().toLocaleString()}`;
@@ -2702,55 +1723,21 @@ export default function App() {
     const trimmed = nameInput.trim();
     const label = trimmed !== '' ? trimmed : defaultLabel;
     const snapshot = buildScenarioSnapshot();
-    if (remoteAvailable) {
-      setSyncStatus('saving');
-      setSyncError('');
-      try {
-        const response = await apiFetch(
-          '/scenarios',
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              name: label,
-              data: snapshot.data,
-              preview: snapshot.preview,
-              cashflowColumns: snapshot.cashflowColumns,
-            }),
-          },
-          authCredentials
-        );
-        const payload = await response.json();
-        integrateScenario(payload, { select: true });
-      } catch (error) {
-        if (error?.status === 401) {
-          setAuthStatus('unauthorized');
-          setAuthError('Session expired. Sign in again to save scenarios.');
-        }
-        setSyncError(
-          error instanceof Error ? error.message : 'Unable to save scenario to the remote service'
-        );
-        setSyncStatus('idle');
-        return;
-      }
-      setSyncStatus('idle');
-      return;
-    }
     const scenario = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: label,
       savedAt: new Date().toISOString(),
       data: snapshot.data,
       preview: snapshot.preview,
-      cashflowColumns: snapshot.cashflowColumns,
     };
-    integrateScenario(scenario, { select: true });
+    setSavedScenarios((prev) => [scenario, ...prev]);
+    setSelectedScenarioId(scenario.id);
   };
 
   const handleLoadScenario = () => {
     const scenario = savedScenarios.find((item) => item.id === selectedScenarioId);
     if (!scenario) return;
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
-    setCashflowColumnKeys(sanitizeCashflowColumns(scenario.cashflowColumns));
     setShowLoadPanel(false);
     const scenarioUrl = scenario.data?.propertyUrl ?? '';
     const shouldActivate =
@@ -2766,7 +1753,7 @@ export default function App() {
     openPreviewForUrl(inputs.propertyUrl, { force: true });
   };
 
-  const handleRenameScenario = async (id) => {
+  const handleRenameScenario = (id) => {
     if (typeof window === 'undefined') return;
     const scenario = savedScenarios.find((item) => item.id === id);
     if (!scenario) return;
@@ -2774,171 +1761,46 @@ export default function App() {
     if (nextName === null) return;
     const trimmed = nextName.trim();
     if (trimmed === '') return;
-    if (remoteAvailable) {
-      setSyncStatus('updating');
-      setSyncError('');
-      try {
-        const response = await apiFetch(`/scenarios/${id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ name: trimmed }),
-        });
-        const payload = await response.json();
-        integrateScenario(payload, { select: selectedScenarioId === id });
-      } catch (error) {
-        if (error?.status === 401) {
-          setAuthStatus('unauthorized');
-          setAuthError('Session expired. Sign in again to rename scenarios.');
-        }
-        setSyncError(
-          error instanceof Error ? error.message : 'Unable to rename scenario on the remote service'
-        );
-        setSyncStatus('idle');
-        return;
-      }
-      setSyncStatus('idle');
-      return;
-    }
     setSavedScenarios((prev) =>
-      sortScenarios(prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item)))
+      prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item))
     );
   };
 
-  const handleUpdateScenario = async (id) => {
+  const handleUpdateScenario = (id) => {
     const scenario = savedScenarios.find((item) => item.id === id);
     if (!scenario) return;
     const snapshot = buildScenarioSnapshot();
     const updatedAt = new Date().toISOString();
-    if (remoteAvailable) {
-      setSyncStatus('updating');
-      setSyncError('');
-      try {
-        const response = await apiFetch(`/scenarios/${id}`, {
-          method: 'PUT',
-          body: JSON.stringify({
-            name: scenario.name,
-            data: snapshot.data,
-            preview: snapshot.preview,
-            cashflowColumns: snapshot.cashflowColumns,
-          }),
-        });
-        const payload = await response.json();
-        integrateScenario(payload, { select: selectedScenarioId === id });
-      } catch (error) {
-        if (error?.status === 401) {
-          setAuthStatus('unauthorized');
-          setAuthError('Session expired. Sign in again to update scenarios.');
-        }
-        setSyncError(
-          error instanceof Error ? error.message : 'Unable to update scenario on the remote service'
-        );
-        setSyncStatus('idle');
-        return;
-      }
-      setSyncStatus('idle');
-      return;
-    }
-    integrateScenario(
-      {
-        ...scenario,
-        data: snapshot.data,
-        preview: snapshot.preview,
-        cashflowColumns: snapshot.cashflowColumns,
-        savedAt: updatedAt,
-      },
-      { select: selectedScenarioId === id }
+    setSavedScenarios((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              data: snapshot.data,
+              preview: snapshot.preview,
+              savedAt: updatedAt,
+            }
+          : item
+      )
     );
   };
 
-  const handleDeleteScenario = async (id) => {
+  const handleDeleteScenario = (id) => {
     if (typeof window !== 'undefined') {
       const confirmDelete = window.confirm('Delete this saved scenario?');
       if (!confirmDelete) return;
     }
-    if (remoteAvailable) {
-      setSyncStatus('deleting');
-      setSyncError('');
-      try {
-        await apiFetch(`/scenarios/${id}`, { method: 'DELETE' });
-        removeScenarioById(id);
-      } catch (error) {
-        if (error?.status === 401) {
-          setAuthStatus('unauthorized');
-          setAuthError('Session expired. Sign in again to delete scenarios.');
-        }
-        setSyncError(
-          error instanceof Error ? error.message : 'Unable to delete scenario on the remote service'
-        );
-        setSyncStatus('idle');
-        return;
+    setSavedScenarios((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      if (selectedScenarioId === id) {
+        setSelectedScenarioId(next[0]?.id ?? '');
       }
-      setSyncStatus('idle');
-      return;
-    }
-    removeScenarioById(id);
+      return next;
+    });
   };
 
   return (
     <div ref={pageRef} data-export-root className="min-h-screen bg-slate-50 text-slate-900">
-      {shouldShowAuthOverlay ? (
-        <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 backdrop-blur-sm">
-          <form
-            onSubmit={handleAuthSubmit}
-            className="w-full max-w-sm space-y-4 rounded-2xl bg-white p-6 shadow-xl"
-          >
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">Sign in to scenario vault</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Use username{' '}
-                <code className="rounded bg-slate-100 px-1 py-0.5 text-xs font-semibold text-slate-700">pi</code>{' '}
-                and password{' '}
-                <code className="rounded bg-slate-100 px-1 py-0.5 text-xs font-semibold text-slate-700">
-                  jmaq2460
-                </code>{' '}
-                to access saved scenarios.
-              </p>
-            </div>
-            <div className="space-y-3">
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Username
-                <input
-                  type="text"
-                  value={loginForm.username}
-                  onChange={(event) => handleAuthInputChange('username', event.target.value)}
-                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                  autoFocus
-                  disabled={verifyingAuth}
-                  autoComplete="username"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Password
-                <input
-                  type="password"
-                  value={loginForm.password}
-                  onChange={(event) => handleAuthInputChange('password', event.target.value)}
-                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                  disabled={verifyingAuth}
-                  autoComplete="current-password"
-                />
-              </label>
-            </div>
-            {authError ? (
-              <div className="text-sm text-rose-600" role="alert">
-                {authError}
-              </div>
-            ) : null}
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="submit"
-                className="inline-flex items-center rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={verifyingAuth}
-              >
-                {verifyingAuth ? 'Signing in…' : 'Sign in'}
-              </button>
-            </div>
-          </form>
-        </div>
-      ) : null}
       <div className="mx-auto max-w-6xl px-4">
         <div className="sticky top-0 z-30 -mx-4 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-slate-50/80 print:relative print:mx-0 print:border-0 print:bg-white">
           <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -3063,7 +1925,7 @@ export default function App() {
                         className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
                         disabled={!hasPropertyUrl || previewLoading}
                       >
-                        {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
+                        {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Preview'}
                       </button>
                     </div>
                   </div>
@@ -3280,16 +2142,14 @@ export default function App() {
               </SummaryCard>
 
               <SummaryCard title="Key ratios" tooltip={SECTION_DESCRIPTIONS.keyRatios}>
-                <Line label="Cap rate" value={formatPercent(equity.cap)} tooltip={KEY_RATIO_TOOLTIPS.cap} />
-                <Line label="Yield on cost" value={formatPercent(equity.yoc)} tooltip={KEY_RATIO_TOOLTIPS.yoc} />
-                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} tooltip={KEY_RATIO_TOOLTIPS.coc} />
-                <Line label="IRR" value={formatPercent(equity.irr)} tooltip={KEY_RATIO_TOOLTIPS.irr} />
+                <Line label="Cap rate" value={formatPercent(equity.cap)} />
+                <Line label="Yield on cost" value={formatPercent(equity.yoc)} />
+                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} />
                 <Line
                   label="DSCR"
                   value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
-                  tooltip={KEY_RATIO_TOOLTIPS.dscr}
                 />
-                <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} tooltip={KEY_RATIO_TOOLTIPS.mortgage} />
+                <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} />
               </SummaryCard>
             </div>
 
@@ -3314,26 +2174,16 @@ export default function App() {
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 className="mb-2">
                 <SectionTitle
                   label="Wealth trajectory vs Index Fund"
                   tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
                   className="text-sm font-semibold text-slate-700"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowChartModal(true)}
-                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                >
-                  Expand chart
-                </button>
-              </div>
-              <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
-                <span>Showing years {chartRange.start} – {chartRange.end}</span>
-              </div>
+              </h3>
               <div className="h-72 w-full">
                 <ResponsiveContainer>
-                  <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                  <AreaChart data={equity.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                       dataKey="year"
@@ -3352,7 +2202,6 @@ export default function App() {
                           {...props}
                           activeSeries={activeSeries}
                           onToggle={toggleSeries}
-                          excludedKeys={reinvestActive ? [] : ['investedRent']}
                         />
                       )}
                     />
@@ -3364,15 +2213,6 @@ export default function App() {
                       fill="rgba(249,115,22,0.2)"
                       strokeWidth={2}
                       hide={!activeSeries.indexFund}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="cashflow"
-                      name="Cashflow"
-                      stroke="#facc15"
-                      fill="rgba(250,204,21,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.cashflow}
                     />
                     <Area
                       type="monotone"
@@ -3410,113 +2250,12 @@ export default function App() {
                       strokeWidth={2}
                       hide={!activeSeries.propertyNetAfterTax}
                     />
-                    <Area
-                      type="monotone"
-                      dataKey="investedRent"
-                      name="Invested rent"
-                      stroke="#0d9488"
-                      fill="rgba(13,148,136,0.15)"
-                      strokeWidth={2}
-                      strokeDasharray="5 3"
-                      hide={!activeSeries.investedRent || !reinvestActive}
-                    />
-                </AreaChart>
-              </ResponsiveContainer>
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
             </div>
-          </div>
 
-          <div className="rounded-2xl bg-white p-3 shadow-sm">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <SectionTitle
-                label="Key ratios over time"
-                tooltip={SECTION_DESCRIPTIONS.keyRatios}
-                className="text-sm font-semibold text-slate-700"
-              />
-              <button
-                type="button"
-                onClick={() => setShowRatioChartModal(true)}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Expand chart
-              </button>
-            </div>
-            <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
-              <span>Showing years {chartRange.start} – {chartRange.end}</span>
-            </div>
-            <div className="h-64 w-full">
-              <ResponsiveContainer>
-                <LineChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 10, fill: '#475569' }} />
-                  <YAxis tickFormatter={(v) => formatPercent(v)} tick={{ fontSize: 10, fill: '#475569' }} width={80} />
-                  <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
-                  <Legend
-                    content={(props) => (
-                      <ChartLegend
-                        {...props}
-                        activeSeries={activeSeries}
-                        onToggle={toggleSeries}
-                        excludedKeys={[
-                          'indexFund',
-                          'cashflow',
-                          'propertyValue',
-                          'propertyGross',
-                          'propertyNet',
-                          'propertyNetAfterTax',
-                          'investedRent',
-                          'indexFund1_5x',
-                          'indexFund2x',
-                          'indexFund4x',
-                        ]}
-                      />
-                    )}
-                  />
-                  <RechartsLine
-                    type="monotone"
-                    dataKey="capRate"
-                    name={SERIES_LABELS.capRate}
-                    stroke={SERIES_COLORS.capRate}
-                    strokeWidth={2}
-                    strokeDasharray="4 4"
-                    dot={false}
-                    hide={!activeSeries.capRate}
-                  />
-                  <RechartsLine
-                    type="monotone"
-                    dataKey="yieldRate"
-                    name={SERIES_LABELS.yieldRate}
-                    stroke={SERIES_COLORS.yieldRate}
-                    strokeWidth={2}
-                    strokeDasharray="4 2"
-                    dot={false}
-                    hide={!activeSeries.yieldRate}
-                  />
-                  <RechartsLine
-                    type="monotone"
-                    dataKey="cashOnCash"
-                    name={SERIES_LABELS.cashOnCash}
-                    stroke={SERIES_COLORS.cashOnCash}
-                    strokeWidth={2}
-                    strokeDasharray="2 2"
-                    dot={false}
-                    hide={!activeSeries.cashOnCash}
-                  />
-                  <RechartsLine
-                    type="monotone"
-                    dataKey="irrSeries"
-                    name={SERIES_LABELS.irrSeries}
-                    stroke={SERIES_COLORS.irrSeries}
-                    strokeWidth={2}
-                    strokeDasharray="6 3"
-                    dot={false}
-                    hide={!activeSeries.irrSeries}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="space-y-3 md:order-2 md:col-span-1">
                 <SummaryCard
                   title={`Exit comparison (Year ${inputs.exitYear})`}
@@ -3630,25 +2369,18 @@ export default function App() {
               Save your current inputs and reload any previous scenario to compare different deals quickly.
             </p>
             {remoteEnabled ? (
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <p
-                  className={scenarioStatusClass}
-                  role={
-                    scenarioStatus.tone === 'error' || scenarioStatus.tone === 'warn' ? 'alert' : undefined
-                  }
-                >
-                  {scenarioStatus.message}
-                </p>
-                {scenarioStatus.retry ? (
-                  <button
-                    type="button"
-                    onClick={handleRetryConnection}
-                    className="inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-                  >
-                    Retry
-                  </button>
-                ) : null}
-              </div>
+              <p
+                className={`text-xs ${syncError ? 'text-rose-600' : 'text-slate-500'}`}
+                role={syncError ? 'alert' : undefined}
+              >
+                {syncStatus === 'loading'
+                  ? 'Loading remote scenarios…'
+                  : syncStatus === 'syncing'
+                  ? 'Syncing scenarios with the remote service…'
+                  : syncError
+                  ? `Remote sync issue: ${syncError}`
+                  : 'Remote sync active.'}
+              </p>
             ) : (
               <p className="text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
             )}
@@ -3792,7 +2524,7 @@ export default function App() {
                     className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
                     disabled={!hasPropertyUrl || previewLoading}
                   >
-                    {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
+                    {previewLoading ? 'Loading…' : previewActive ? 'Reload preview' : 'Preview'}
                   </button>
                   <button
                     type="button"
@@ -3865,581 +2597,6 @@ export default function App() {
         onClear={handleClearChat}
       />
     </div>
-
-    {showChartModal && (
-      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
-        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
-            <h2 className="text-base font-semibold text-slate-800">Wealth trajectory explorer</h2>
-            <button
-              type="button"
-              onClick={() => setShowChartModal(false)}
-              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-            >
-              Close
-            </button>
-          </div>
-          <div ref={chartModalContentRef} className="flex flex-1 flex-col overflow-hidden md:flex-row">
-            <div className="flex-1 overflow-hidden p-5">
-              <div className="flex h-full flex-col">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <SectionTitle
-                    label="Wealth trajectory vs Index Fund"
-                    tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
-                    className="text-base font-semibold text-slate-700"
-                  />
-                  <div className="text-[11px] text-slate-500">Years {chartRange.start} – {chartRange.end}</div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
-                  <label className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-500">Start year</span>
-                    <input
-                      type="number"
-                      value={chartRange.start}
-                      min={0}
-                      max={chartRange.end}
-                      onChange={(event) => handleChartRangeChange('start', Number(event.target.value))}
-                      className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                    />
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-500">End year</span>
-                    <input
-                      type="number"
-                      value={chartRange.end}
-                      min={chartRange.start}
-                      max={maxChartYear}
-                      onChange={(event) => handleChartRangeChange('end', Number(event.target.value))}
-                      className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setChartRange({ start: 0, end: maxChartYear });
-                      setChartRangeTouched(false);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                  >
-                    Reset range
-                  </button>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
-                  {[
-                    { key: 'indexFund1_5x', label: 'Index fund 1.5×' },
-                    { key: 'indexFund2x', label: 'Index fund 2×' },
-                    { key: 'indexFund4x', label: 'Index fund 4×' },
-                    { key: 'investedRent', label: 'Invested rent' },
-                  ].map((option) => {
-                    const checked = activeSeries[option.key] !== false;
-                    const disabled = option.key === 'investedRent' && !reinvestActive;
-                    return (
-                      <label
-                        key={option.key}
-                        className={`flex items-center gap-2 ${disabled ? 'text-slate-400' : ''}`}
-                        title={
-                          disabled
-                            ? 'Enable reinvest after-tax cash flow to view invested rent performance.'
-                            : undefined
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={disabled}
-                          onChange={(event) =>
-                            setActiveSeries((prev) => ({
-                              ...prev,
-                              [option.key]: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
-                  <span className="font-semibold text-slate-500">Overlay ratios</span>
-                  {[
-                    { key: 'capRate', label: 'Cap rate' },
-                    { key: 'yieldRate', label: 'Yield rate' },
-                    { key: 'cashOnCash', label: 'Cash on cash' },
-                    { key: 'irrSeries', label: 'IRR' },
-                  ].map((option) => {
-                    const checked = activeSeries[option.key] !== false;
-                    return (
-                      <label key={option.key} className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) =>
-                            setActiveSeries((prev) => ({
-                              ...prev,
-                              [option.key]: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-                <div className="mt-4 flex-1">
-                  <div className="flex h-full flex-col">
-                    <div
-                      ref={chartAreaRef}
-                      className="relative flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]"
-                    >
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart
-                          data={filteredChartData}
-                          margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
-                          onClick={handleChartPointClick}
-                          onMouseMove={handleChartHover}
-                          onMouseLeave={handleChartMouseLeave}
-                        >
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 11, fill: '#475569' }} />
-                          <YAxis
-                            yAxisId="currency"
-                            tickFormatter={(v) => currency(v)}
-                            tick={{ fontSize: 11, fill: '#475569' }}
-                            width={110}
-                          />
-                          <YAxis
-                            yAxisId="percent"
-                            orientation="right"
-                            tickFormatter={(v) => formatPercent(v)}
-                            tick={{ fontSize: 11, fill: '#475569' }}
-                            width={70}
-                          />
-                          <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={activeSeries}
-                                onToggle={toggleSeries}
-                                excludedKeys={[
-                                  'indexFund1_5x',
-                                  'indexFund2x',
-                                  'indexFund4x',
-                                  'investedRent',
-                                  'capRate',
-                                  'yieldRate',
-                                  'cashOnCash',
-                                  'irrSeries',
-                                ]}
-                              />
-                            )}
-                          />
-                          {chartFocus ? (
-                            <ReferenceLine
-                              x={chartFocus.year}
-                              stroke="#334155"
-                              strokeDasharray="4 4"
-                              strokeWidth={1}
-                            />
-                          ) : null}
-                          {chartFocus && chartFocus.data
-                            ? EXPANDED_SERIES_ORDER.filter(
-                                (key) => activeSeries[key] !== false && Number.isFinite(chartFocus.data?.[key])
-                              ).map((key) => (
-                                <ReferenceDot
-                                  key={`dot-${key}`}
-                                  x={chartFocus.year}
-                                  y={chartFocus.data[key]}
-                                  yAxisId={PERCENT_SERIES_KEYS.has(key) ? 'percent' : 'currency'}
-                                  r={4}
-                                  fill="#ffffff"
-                                  stroke={SERIES_COLORS[key] ?? '#334155'}
-                                  strokeWidth={2}
-                                />
-                              ))
-                            : null}
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund"
-                            name="Index fund"
-                            stroke="#f97316"
-                            fill="rgba(249,115,22,0.2)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            hide={!activeSeries.indexFund}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="cashflow"
-                            name="Cashflow"
-                            stroke="#facc15"
-                            fill="rgba(250,204,21,0.2)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            hide={!activeSeries.cashflow}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="propertyValue"
-                            name="Property value"
-                            stroke="#0ea5e9"
-                            fill="rgba(14,165,233,0.18)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            hide={!activeSeries.propertyValue}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="propertyGross"
-                            name="Property gross"
-                            stroke="#2563eb"
-                            fill="rgba(37,99,235,0.2)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            hide={!activeSeries.propertyGross}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="propertyNet"
-                            name="Property net"
-                            stroke="#16a34a"
-                            fill="rgba(22,163,74,0.25)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            hide={!activeSeries.propertyNet}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="propertyNetAfterTax"
-                            name={propertyNetAfterTaxLabel}
-                            stroke="#9333ea"
-                            fill="rgba(147,51,234,0.2)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            hide={!activeSeries.propertyNetAfterTax}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="investedRent"
-                            name="Invested rent"
-                            stroke="#0d9488"
-                            fill="rgba(13,148,136,0.15)"
-                            strokeWidth={2}
-                            strokeDasharray="5 3"
-                            yAxisId="currency"
-                            hide={!activeSeries.investedRent}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund1_5x"
-                            name="Index fund 1.5×"
-                            stroke="#fb7185"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="6 3"
-                            yAxisId="currency"
-                            hide={!activeSeries.indexFund1_5x}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund2x"
-                            name="Index fund 2×"
-                            stroke="#ec4899"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="4 2"
-                            yAxisId="currency"
-                            hide={!activeSeries.indexFund2x}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund4x"
-                            name="Index fund 4×"
-                            stroke="#c026d3"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="2 2"
-                            yAxisId="currency"
-                            hide={!activeSeries.indexFund4x}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="capRate"
-                            name="Cap rate"
-                            stroke={SERIES_COLORS.capRate}
-                            strokeWidth={2}
-                            dot={false}
-                            yAxisId="percent"
-                            hide={!activeSeries.capRate}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="yieldRate"
-                            name="Yield rate"
-                            stroke={SERIES_COLORS.yieldRate}
-                            strokeWidth={2}
-                            strokeDasharray="4 2"
-                            dot={false}
-                            yAxisId="percent"
-                            hide={!activeSeries.yieldRate}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="cashOnCash"
-                            name="Cash on cash"
-                            stroke={SERIES_COLORS.cashOnCash}
-                            strokeWidth={2}
-                            strokeDasharray="2 2"
-                            dot={false}
-                            yAxisId="percent"
-                            hide={!activeSeries.cashOnCash}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="irrSeries"
-                            name="IRR"
-                            stroke={SERIES_COLORS.irrSeries}
-                            strokeWidth={2}
-                            strokeDasharray="6 3"
-                            dot={false}
-                            yAxisId="percent"
-                            hide={!activeSeries.irrSeries}
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                      {chartFocus && chartFocus.data ? (
-                        <WealthChartOverlay
-                          overlayRef={chartOverlayRef}
-                          focusLocked={chartFocusLocked}
-                          year={chartFocus.year}
-                          point={chartFocus.data}
-                          propertyNetAfterTaxLabel={propertyNetAfterTaxLabel}
-                          rentalTaxLabel={rentalTaxLabel}
-                          rentalTaxCumulativeLabel={rentalTaxCumulativeLabel}
-                          activeSeries={activeSeries}
-                          expandedMetrics={expandedMetricDetails}
-                          onToggleMetric={toggleMetricDetail}
-                          onClear={clearChartFocus}
-                        />
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="w-full border-t border-slate-200 bg-slate-50 p-5 text-xs text-slate-700 md:w-96 md:border-l md:border-t-0 md:text-[11px]">
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700">Exit & growth assumptions</h3>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    {smallInput('exitYear', 'Exit year', 1)}
-                    {pctInput('annualAppreciation', 'Appreciation %')}
-                    {pctInput('rentGrowth', 'Rent growth %')}
-                    {pctInput('indexFundGrowth', 'Index fund growth %')}
-                    {pctInput('sellingCostsPct', 'Selling costs %')}
-                    {pctInput('discountRate', 'Discount rate %', 0.001)}
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700">Rental cashflow inputs</h3>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
-                    {pctInput('vacancyPct', 'Vacancy %')}
-                    {pctInput('mgmtPct', 'Management %')}
-                    {pctInput('repairsPct', 'Repairs/CapEx %')}
-                    {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
-                    {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
-                  </div>
-                  <div className="mt-3 rounded-xl border border-slate-200 p-3">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(inputs.reinvestIncome)}
-                        onChange={(e) =>
-                          setInputs((prev) => ({
-                            ...prev,
-                            reinvestIncome: e.target.checked,
-                          }))
-                        }
-                      />
-                      <span>Reinvest after-tax cash flow into index fund</span>
-                    </label>
-                    {inputs.reinvestIncome && (
-                      <div className="mt-2 grid grid-cols-1 gap-2">
-                        {pctInput('reinvestPct', 'Reinvest % of after-tax cash flow')}
-                        <p className="text-[11px] text-slate-500">
-                          Only positive after-tax cash flows are reinvested and compound alongside the index fund baseline.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    )}
-
-    {showRatioChartModal && (
-      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
-        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
-            <h2 className="text-base font-semibold text-slate-800">Key ratio explorer</h2>
-            <button
-              type="button"
-              onClick={() => setShowRatioChartModal(false)}
-              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-            >
-              Close
-            </button>
-          </div>
-          <div className="flex flex-1 flex-col gap-4 overflow-hidden p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <SectionTitle
-                label="Key ratios over time"
-                tooltip={SECTION_DESCRIPTIONS.keyRatios}
-                className="text-base font-semibold text-slate-700"
-              />
-              <div className="text-[11px] text-slate-500">Years {chartRange.start} – {chartRange.end}</div>
-            </div>
-            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
-              <label className="flex items-center gap-2">
-                <span className="text-[11px] text-slate-500">Start year</span>
-                <input
-                  type="number"
-                  value={chartRange.start}
-                  min={0}
-                  max={chartRange.end}
-                  onChange={(event) => handleChartRangeChange('start', Number(event.target.value))}
-                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                />
-              </label>
-              <label className="flex items-center gap-2">
-                <span className="text-[11px] text-slate-500">End year</span>
-                <input
-                  type="number"
-                  value={chartRange.end}
-                  min={chartRange.start}
-                  max={maxChartYear}
-                  onChange={(event) => handleChartRangeChange('end', Number(event.target.value))}
-                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setChartRange({ start: 0, end: maxChartYear });
-                  setChartRangeTouched(false);
-                }}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Reset range
-              </button>
-            </div>
-            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
-              {[
-                { key: 'capRate', label: 'Cap rate' },
-                { key: 'yieldRate', label: 'Yield rate' },
-                { key: 'cashOnCash', label: 'Cash on cash' },
-                { key: 'irrSeries', label: 'IRR' },
-              ].map((option) => {
-                const checked = activeSeries[option.key] !== false;
-                return (
-                  <label key={option.key} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(event) =>
-                        setActiveSeries((prev) => ({
-                          ...prev,
-                          [option.key]: event.target.checked,
-                        }))
-                      }
-                    />
-                    <span>{option.label}</span>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="flex-1">
-              <div className="flex h-full flex-col">
-                <div className="flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={filteredChartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 11, fill: '#475569' }} />
-                      <YAxis tickFormatter={(v) => formatPercent(v)} tick={{ fontSize: 11, fill: '#475569' }} width={90} />
-                      <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
-                      <Legend
-                        content={(props) => (
-                          <ChartLegend
-                            {...props}
-                            activeSeries={activeSeries}
-                            onToggle={toggleSeries}
-                            excludedKeys={[
-                              'indexFund',
-                              'cashflow',
-                              'propertyValue',
-                              'propertyGross',
-                              'propertyNet',
-                              'propertyNetAfterTax',
-                              'investedRent',
-                              'indexFund1_5x',
-                              'indexFund2x',
-                              'indexFund4x',
-                            ]}
-                          />
-                        )}
-                      />
-                      <RechartsLine
-                        type="monotone"
-                        dataKey="capRate"
-                        name={SERIES_LABELS.capRate}
-                        stroke={SERIES_COLORS.capRate}
-                        strokeWidth={2}
-                        strokeDasharray="4 4"
-                        dot={false}
-                        hide={!activeSeries.capRate}
-                      />
-                      <RechartsLine
-                        type="monotone"
-                        dataKey="yieldRate"
-                        name={SERIES_LABELS.yieldRate}
-                        stroke={SERIES_COLORS.yieldRate}
-                        strokeWidth={2}
-                        strokeDasharray="4 2"
-                        dot={false}
-                        hide={!activeSeries.yieldRate}
-                      />
-                      <RechartsLine
-                        type="monotone"
-                        dataKey="cashOnCash"
-                        name={SERIES_LABELS.cashOnCash}
-                        stroke={SERIES_COLORS.cashOnCash}
-                        strokeWidth={2}
-                        strokeDasharray="2 2"
-                        dot={false}
-                        hide={!activeSeries.cashOnCash}
-                      />
-                      <RechartsLine
-                        type="monotone"
-                        dataKey="irrSeries"
-                        name={SERIES_LABELS.irrSeries}
-                        stroke={SERIES_COLORS.irrSeries}
-                        strokeWidth={2}
-                        strokeDasharray="6 3"
-                        dot={false}
-                        hide={!activeSeries.irrSeries}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    )}
 
     {showTableModal && (
         <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
@@ -4631,242 +2788,6 @@ function CashflowTable({
   );
 }
 
-function WealthChartOverlay({
-  overlayRef,
-  focusLocked,
-  year,
-  point,
-  propertyNetAfterTaxLabel,
-  rentalTaxLabel,
-  rentalTaxCumulativeLabel,
-  activeSeries,
-  expandedMetrics,
-  onToggleMetric,
-  onClear,
-}) {
-  if (!point || typeof year !== 'number') {
-    return null;
-  }
-
-  const meta = point.meta ?? {};
-  const metrics = EXPANDED_SERIES_ORDER.map((key) => {
-    if (activeSeries?.[key] === false) {
-      return null;
-    }
-    if (key === 'investedRent' && meta.shouldReinvest === false) {
-      return null;
-    }
-    const value = point[key];
-    if (!Number.isFinite(value)) {
-      return null;
-    }
-    const label = key === 'propertyNetAfterTax' ? propertyNetAfterTaxLabel : SERIES_LABELS[key] ?? key;
-    return { key, label, value };
-  }).filter(Boolean);
-
-  if (metrics.length === 0) {
-    return null;
-  }
-
-  const overlayClasses = [
-    'absolute right-4 top-4 z-20 w-full max-w-sm rounded-2xl border border-slate-200 p-4 shadow-lg transition',
-    focusLocked ? 'pointer-events-auto bg-white/95' : 'pointer-events-none bg-white/70',
-  ];
-
-  return (
-    <div ref={overlayRef} className={`${overlayClasses.join(' ')} backdrop-blur`}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Selected year</div>
-          <div className="text-lg font-semibold text-slate-800">Year {year}</div>
-        </div>
-        <button
-          type="button"
-          onClick={onClear}
-          className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2 py-0.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-        >
-          Clear
-        </button>
-      </div>
-      <div className="mt-3 space-y-2">
-        {metrics.map((metric) => {
-          const isExpanded = expandedMetrics?.[metric.key];
-          const isPercentMetric = PERCENT_SERIES_KEYS.has(metric.key);
-          const formattedMetricValue = isPercentMetric ? formatPercent(metric.value) : currency(metric.value);
-          const breakdown = getOverlayBreakdown(metric.key, {
-            point,
-            meta,
-            propertyNetAfterTaxLabel,
-            rentalTaxLabel,
-            rentalTaxCumulativeLabel,
-          });
-          return (
-            <div key={metric.key} className="overflow-hidden rounded-xl border border-slate-200">
-              <button
-                type="button"
-                onClick={() => onToggleMetric?.(metric.key)}
-                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-              >
-                <span className="flex items-center gap-2">
-                  <span
-                    className="h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: SERIES_COLORS[metric.key] ?? '#64748b' }}
-                  />
-                  <span>{metric.label}</span>
-                </span>
-                <span className="text-right text-sm font-semibold text-slate-800">{formattedMetricValue}</span>
-              </button>
-              {isExpanded && breakdown.length > 0 ? (
-                <div className="space-y-1 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-                  {breakdown.map((detail) => (
-                    <div key={`${metric.key}-${detail.label}`} className="flex items-center justify-between gap-3">
-                      <span>{detail.label}</span>
-                      <span className="font-semibold text-slate-700">
-                        {detail.type === 'text'
-                          ? detail.value
-                          : detail.type === 'percent'
-                          ? formatPercent(detail.value)
-                          : typeof detail.value === 'number'
-                          ? currency(detail.value)
-                          : detail.value}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, rentalTaxLabel, rentalTaxCumulativeLabel }) {
-  const breakdowns = [];
-  switch (key) {
-    case 'indexFund': {
-      const basis = Number(meta.indexBasis) || 0;
-      const value = Number(meta.indexFundValue) || Number(point.indexFund) || 0;
-      breakdowns.push({ label: 'Initial capital invested', value: basis });
-      breakdowns.push({ label: 'Market growth to date', value: value - basis });
-      break;
-    }
-    case 'cashflow': {
-      const yearly = meta.yearly ?? {};
-      breakdowns.push({ label: 'Gross rent (year)', value: yearly.gross || 0 });
-      breakdowns.push({ label: 'Operating expenses (year)', value: -(yearly.operatingExpenses || 0) });
-      breakdowns.push({ label: 'NOI (year)', value: yearly.noi || 0 });
-      breakdowns.push({ label: 'Debt service (year)', value: -(yearly.debtService || 0) });
-      breakdowns.push({ label: `${rentalTaxLabel} (year)`, value: -(yearly.tax || 0) });
-      breakdowns.push({ label: 'After-tax cash flow (year)', value: yearly.cashAfterTax || 0 });
-      breakdowns.push({ label: 'Reinvested this year', value: -(yearly.reinvestContribution || 0) });
-      breakdowns.push({ label: 'After-tax cash retained (year)', value: yearly.cashAfterTaxRetained || 0 });
-      breakdowns.push({ label: 'Cumulative after-tax cash', value: meta.cumulativeCashAfterTax || 0 });
-      breakdowns.push({ label: 'Cumulative after-tax cash retained', value: meta.cumulativeCashAfterTaxKept || 0 });
-      breakdowns.push({ label: 'Total taxes paid to date', value: meta.cumulativePropertyTax || 0 });
-      break;
-    }
-    case 'propertyValue': {
-      breakdowns.push({ label: 'Estimated market value', value: meta.propertyValue || 0 });
-      breakdowns.push({ label: 'Original purchase price', value: meta.purchasePrice || 0 });
-      break;
-    }
-    case 'propertyGross': {
-      breakdowns.push({ label: 'Property market value', value: meta.propertyValue || 0 });
-      breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxKept || 0 });
-      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
-      break;
-    }
-    case 'propertyNet': {
-      breakdowns.push({ label: 'Sale price (est.)', value: meta.saleValue || 0 });
-      breakdowns.push({ label: 'Selling costs', value: -(meta.saleCosts || 0) });
-      breakdowns.push({ label: 'Remaining loan balance', value: -(meta.remainingLoan || 0) });
-      breakdowns.push({ label: 'Net sale proceeds', value: meta.netSaleIfSold || 0 });
-      breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxNet || 0 });
-      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
-      break;
-    }
-    case 'propertyNetAfterTax': {
-      breakdowns.push({ label: 'Net sale proceeds after debt & costs', value: meta.netSaleIfSold || 0 });
-      breakdowns.push({ label: `${propertyNetAfterTaxLabel} cash retained`, value: meta.cumulativeCashAfterTaxNet || 0 });
-      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
-      breakdowns.push({ label: rentalTaxCumulativeLabel, value: meta.cumulativePropertyTax || 0 });
-      break;
-    }
-    case 'investedRent': {
-      if (!meta.shouldReinvest) {
-        breakdowns.push({
-          label: 'Reinvestment disabled',
-          value: 'Enable reinvest after-tax cash flow to see this projection.',
-          type: 'text',
-        });
-        break;
-      }
-      breakdowns.push({ label: 'Reinvest rate', value: `${((meta.reinvestShare || 0) * 100).toFixed(1)}%`, type: 'text' });
-      breakdowns.push({ label: 'Contribution this year', value: meta.yearly?.reinvestContribution || 0 });
-      breakdowns.push({ label: 'Growth this year', value: meta.yearly?.investedRentGrowth || 0 });
-      breakdowns.push({ label: 'Total reinvested contributions', value: meta.investedRentContributions || 0 });
-      breakdowns.push({ label: 'Market growth to date', value: meta.investedRentGrowth || 0 });
-      break;
-    }
-    case 'indexFund1_5x': {
-      const baseline = meta.indexFundValue || point.indexFund || 0;
-      breakdowns.push({ label: 'Baseline index value', value: baseline });
-      breakdowns.push({ label: 'Multiplier', value: '1.5×', type: 'text' });
-      breakdowns.push({ label: 'Outperformance vs baseline', value: (point.indexFund1_5x || 0) - baseline });
-      break;
-    }
-    case 'indexFund2x': {
-      const baseline = meta.indexFundValue || point.indexFund || 0;
-      breakdowns.push({ label: 'Baseline index value', value: baseline });
-      breakdowns.push({ label: 'Multiplier', value: '2×', type: 'text' });
-      breakdowns.push({ label: 'Outperformance vs baseline', value: (point.indexFund2x || 0) - baseline });
-      break;
-    }
-    case 'indexFund4x': {
-      const baseline = meta.indexFundValue || point.indexFund || 0;
-      breakdowns.push({ label: 'Baseline index value', value: baseline });
-      breakdowns.push({ label: 'Multiplier', value: '4×', type: 'text' });
-      breakdowns.push({ label: 'Outperformance vs baseline', value: (point.indexFund4x || 0) - baseline });
-      break;
-    }
-    case 'capRate': {
-      breakdowns.push({ label: 'Net operating income (year)', value: meta.yearly?.noi || 0 });
-      breakdowns.push({ label: 'Estimated property value', value: meta.propertyValue || 0 });
-      breakdowns.push({ label: 'Cap rate', value: point.capRate || 0, type: 'percent' });
-      break;
-    }
-    case 'yieldRate': {
-      breakdowns.push({ label: 'Net operating income (year)', value: meta.yearly?.noi || 0 });
-      breakdowns.push({ label: 'Total project cost', value: meta.projectCost || 0 });
-      breakdowns.push({ label: 'Yield rate', value: point.yieldRate || 0, type: 'percent' });
-      break;
-    }
-    case 'cashOnCash': {
-      breakdowns.push({ label: 'Cash flow (pre-tax, year)', value: meta.yearly?.cashPreTax || 0 });
-      breakdowns.push({ label: 'Cash invested', value: meta.cashInvested || 0 });
-      breakdowns.push({ label: 'Cash-on-cash', value: point.cashOnCash || 0, type: 'percent' });
-      break;
-    }
-    case 'irrSeries': {
-      const holdYears = Number(point?.year) || 0;
-      const initialInvested = -(meta.initialOutlay || 0);
-      breakdowns.push({ label: 'Initial cash invested', value: initialInvested });
-      breakdowns.push({ label: 'Cumulative cash flow (pre-tax)', value: meta.cumulativeCashPreTax || 0 });
-      breakdowns.push({ label: 'Net sale if sold this year', value: meta.netSaleIfSold || 0 });
-      if (holdYears > 0) {
-        breakdowns.push({ label: 'Years held', value: `${holdYears} ${holdYears === 1 ? 'year' : 'years'}`, type: 'text' });
-      }
-      breakdowns.push({ label: 'IRR if sold this year', value: point.irrSeries || 0, type: 'percent' });
-      break;
-    }
-    default:
-      break;
-  }
-  return breakdowns;
-}
-
 function ChatBubble({
   open,
   onToggle,
@@ -4966,18 +2887,14 @@ function ChatBubble({
   );
 }
 
-function ChartLegend({ payload = [], activeSeries, onToggle, excludedKeys = [] }) {
+function ChartLegend({ payload = [], activeSeries, onToggle }) {
   if (!Array.isArray(payload) || payload.length === 0) {
     return null;
   }
-  const excluded = Array.isArray(excludedKeys) ? new Set(excludedKeys) : new Set();
   return (
     <div className="flex flex-wrap gap-3 text-[11px] font-medium text-slate-600">
       {payload.map((entry) => {
         const key = entry.dataKey ?? entry.value;
-        if (excluded.has(key)) {
-          return null;
-        }
         const isActive = activeSeries?.[key] !== false;
         return (
           <button
