@@ -107,6 +107,7 @@ const ROI_HEATMAP_YIELD_OPTIONS = [0.04, 0.05, 0.06, 0.07, 0.08];
 const HEATMAP_COLOR_START = [248, 113, 113];
 const HEATMAP_COLOR_END = [34, 197, 94];
 const HEATMAP_COLOR_NEUTRAL = [148, 163, 184];
+const LEVERAGE_LTV_OPTIONS = [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9];
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -386,6 +387,10 @@ const SECTION_DESCRIPTIONS = {
     'Stress-tests total ROI or IRR outcomes across a grid of rental yields and capital growth rates.',
   equityGrowth:
     'Shows how property equity builds relative to the outstanding loan balance across the investment horizon.',
+  interestSplit:
+    'Highlights how each year’s mortgage payment splits between interest and principal to visualise amortisation.',
+  leverage:
+    'Stress-tests IRR and total ROI outcomes across different loan-to-value ratios to gauge the impact of leverage.',
 };
 
 const KEY_RATIO_TOOLTIPS = {
@@ -858,6 +863,7 @@ function calculateEquity(rawInputs) {
 
   const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
   const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
+  const annualPrincipal = Array.from({ length: inputs.exitYear }, () => 0);
   const monthlyRate = inputs.interestRate / 12;
   let balance = loan;
   const totalMonths = inputs.exitYear * 12;
@@ -890,6 +896,7 @@ function calculateEquity(rawInputs) {
 
     annualInterest[yearIndex] += interestPayment;
     annualDebtService[yearIndex] += payment;
+    annualPrincipal[yearIndex] += principalPaid;
   }
 
   const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
@@ -1003,6 +1010,8 @@ function calculateEquity(rawInputs) {
         tax: 0,
         reinvestContribution: 0,
         investedRentGrowth: 0,
+        interest: 0,
+        principal: 0,
       },
     },
   });
@@ -1021,6 +1030,7 @@ function calculateEquity(rawInputs) {
     cumulativeCashPreTax += cash;
 
     const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
+    const principalPaid = annualPrincipal[y - 1] ?? (inputs.loanType === 'interest_only' ? 0 : debtService - interestPaid);
     const taxableProfit = noi - interestPaid;
     let propertyTax = 0;
     if (isCompanyBuyer) {
@@ -1164,6 +1174,8 @@ function calculateEquity(rawInputs) {
           tax: propertyTax,
           reinvestContribution,
           investedRentGrowth: reinvestGrowthThisYear,
+          interest: interestPaid,
+          principal: principalPaid,
         },
       },
     });
@@ -1237,6 +1249,8 @@ function calculateEquity(rawInputs) {
     annualCashflowsPreTax,
     annualCashflowsAfterTax,
     annualDebtService,
+    annualInterest,
+    annualPrincipal,
     irr: irrValue,
   };
 }
@@ -1287,6 +1301,8 @@ export default function App() {
     cashflowBars: true,
     roiHeatmap: true,
     equityGrowth: true,
+    interestSplit: true,
+    leverage: true,
   });
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1314,11 +1330,11 @@ export default function App() {
     indexFund1_5x: false,
     indexFund2x: false,
     indexFund4x: false,
-    propertyValue: true,
-    propertyGross: true,
-    propertyNet: true,
+    propertyValue: false,
+    propertyGross: false,
+    propertyNet: false,
     propertyNetAfterTax: true,
-    cashflow: true,
+    cashflow: false,
     investedRent: false,
     capRate: false,
     yieldRate: false,
@@ -1732,6 +1748,26 @@ export default function App() {
       .filter(Boolean);
   }, [equity.chart]);
 
+  const interestSplitChartData = useMemo(() => {
+    const payments = Array.isArray(equity.annualDebtService) ? equity.annualDebtService : [];
+    const interest = Array.isArray(equity.annualInterest) ? equity.annualInterest : [];
+    const principal = Array.isArray(equity.annualPrincipal) ? equity.annualPrincipal : [];
+    const years = Math.max(exitYearCount, payments.length, interest.length, principal.length);
+    if (years === 0) {
+      return [];
+    }
+    return Array.from({ length: years }, (_, index) => {
+      const payment = Number(payments[index]) || 0;
+      const interestPaid = Number(interest[index]) || 0;
+      const principalPaid = Number(principal[index]) || Math.max(0, payment - interestPaid);
+      return {
+        year: index + 1,
+        interestPaid,
+        principalPaid,
+      };
+    });
+  }, [equity.annualDebtService, equity.annualInterest, equity.annualPrincipal, exitYearCount]);
+
   const equityGrowthChartData = useMemo(() => {
     if (!Array.isArray(equity.chart)) {
       return [];
@@ -1799,6 +1835,34 @@ export default function App() {
     }
     return { rows, roiRange: [roiMin, roiMax], irrRange: [irrMin, irrMax] };
   }, [inputs]);
+
+  const leverageChartData = useMemo(() => {
+    const price = Number(inputs.purchasePrice) || 0;
+    if (!Number.isFinite(price) || price <= 0) {
+      return [];
+    }
+    return LEVERAGE_LTV_OPTIONS.map((ltv) => {
+      const depositPct = clamp(1 - ltv, 0, 1);
+      const metrics = calculateEquity({
+        ...inputs,
+        depositPct,
+      });
+      const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
+      const irrValue = Number(metrics.irr) || 0;
+      return {
+        ltv,
+        roi: Number.isFinite(roiValue) ? roiValue : 0,
+        irr: Number.isFinite(irrValue) ? irrValue : 0,
+      };
+    });
+  }, [inputs]);
+
+  const hasInterestSplitData = interestSplitChartData.some(
+    (point) => Math.abs(point.interestPaid) > 1e-2 || Math.abs(point.principalPaid) > 1e-2
+  );
+  const hasLeverageData = leverageChartData.some(
+    (point) => Number.isFinite(point.irr) || Number.isFinite(point.roi)
+  );
 
   useEffect(() => {
     setRateChartSettings((prev) => {
@@ -3261,8 +3325,10 @@ export default function App() {
         </div>
 
         <main className="py-6">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <section className="md:col-span-1">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3 md:items-start">
+            <section className="md:col-span-1 md:self-start">
+              <div className="md:sticky md:top-28">
+                <div className="md:max-h-[calc(100vh-8rem)] md:overflow-y-auto md:pr-2 md:pb-4">
             <div className="rounded-2xl bg-white p-3 shadow-sm">
               <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
 
@@ -3498,9 +3564,11 @@ export default function App() {
               </CollapsibleSection>
 
             </div>
-          </section>
+          </div>
+        </div>
+      </section>
 
-          <section className="space-y-3 md:col-span-2">
+      <section className="space-y-3 md:col-span-2">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
               <SummaryCard title="Cash needed" tooltip={SECTION_DESCRIPTIONS.cashNeeded}>
                 <Line label="Deposit" value={currency(equity.deposit)} />
@@ -3559,6 +3627,141 @@ export default function App() {
             </div>
 
             
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('interestSplit')}
+                    aria-expanded={!collapsedSections.interestSplit}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.interestSplit ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.interestSplit ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Interest vs principal split"
+                    tooltip={SECTION_DESCRIPTIONS.interestSplit}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+              </div>
+              {!collapsedSections.interestSplit ? (
+                <div className="h-72 w-full">
+                  {hasInterestSplitData ? (
+                    <ResponsiveContainer>
+                      <AreaChart data={interestSplitChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
+                        <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
+                        <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                        <Legend />
+                        <Area
+                          type="monotone"
+                          dataKey="interestPaid"
+                          name="Interest"
+                          stackId="payments"
+                          stroke="#f97316"
+                          fill="rgba(249,115,22,0.25)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="principalPaid"
+                          name="Principal"
+                          stackId="payments"
+                          stroke="#22c55e"
+                          fill="rgba(34,197,94,0.3)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+                      Adjust the mortgage assumptions to model interest and principal payments.
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('leverage')}
+                    aria-expanded={!collapsedSections.leverage}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.leverage ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.leverage ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Leverage multiplier"
+                    tooltip={SECTION_DESCRIPTIONS.leverage}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+              </div>
+              {!collapsedSections.leverage ? (
+                <>
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    Each point recalculates the deal using the same assumptions but with a different LTV. ROI reflects net wealth at exit versus cash invested.
+                  </p>
+                  <div className="h-72 w-full">
+                    {hasLeverageData ? (
+                      <ResponsiveContainer>
+                        <LineChart data={leverageChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis
+                            dataKey="ltv"
+                            tickFormatter={(value) => formatPercent(value)}
+                            tick={{ fontSize: 11, fill: '#475569' }}
+                          />
+                          <YAxis
+                            tickFormatter={(value) => formatPercent(value)}
+                            tick={{ fontSize: 11, fill: '#475569' }}
+                            width={90}
+                          />
+                          <Tooltip
+                            formatter={(value, key) => [formatPercent(value), key === 'irr' ? 'IRR' : 'Total ROI']}
+                            labelFormatter={(label) => `LTV ${formatPercent(label)}`}
+                          />
+                          <Legend />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="irr"
+                            name="IRR"
+                            stroke={SERIES_COLORS.irrSeries}
+                            strokeWidth={2}
+                            dot={{ r: 3 }}
+                            isAnimationActive={false}
+                          />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="roi"
+                            name="Total ROI"
+                            stroke="#0ea5e9"
+                            strokeWidth={2}
+                            strokeDasharray="4 2"
+                            dot={{ r: 3 }}
+                            isAnimationActive={false}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+                        Enter a purchase price and rent to explore leverage outcomes.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
@@ -4843,6 +5046,40 @@ export default function App() {
                     {pctInput('indexFundGrowth', 'Index fund growth %')}
                     {pctInput('sellingCostsPct', 'Selling costs %')}
                     {pctInput('discountRate', 'Discount rate %', 0.001)}
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Financing levers</h3>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {moneyInput('purchasePrice', 'Purchase price (£)')}
+                    {pctInput('depositPct', 'Deposit %')}
+                    {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
+                    {smallInput('mortgageYears', 'Mortgage term (years)')}
+                    {pctInput('closingCostsPct', 'Closing costs %')}
+                  </div>
+                  <div className="mt-3 rounded-xl border border-slate-200 p-3">
+                    <div className="text-xs font-semibold text-slate-700">Loan type</div>
+                    <div className="mt-2 flex flex-wrap gap-4 text-xs">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="loanTypeExpanded"
+                          checked={inputs.loanType === 'repayment'}
+                          onChange={() => setInputs((prev) => ({ ...prev, loanType: 'repayment' }))}
+                        />
+                        <span>Capital repayment</span>
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="loanTypeExpanded"
+                          checked={inputs.loanType === 'interest_only'}
+                          onChange={() => setInputs((prev) => ({ ...prev, loanType: 'interest_only' }))}
+                        />
+                        <span>Interest-only</span>
+                      </label>
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-500">Switching loan type updates debt service and equity projections instantly.</p>
                   </div>
                 </div>
                 <div>
