@@ -8,6 +8,8 @@ import {
   Tooltip,
   Legend,
   CartesianGrid,
+  ReferenceLine,
+  ReferenceDot,
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -54,6 +56,45 @@ const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
 const SCENARIO_USERNAME = 'pi';
 const SCENARIO_PASSWORD = 'jmaq2460';
+
+const SERIES_COLORS = {
+  indexFund: '#f97316',
+  cashflow: '#facc15',
+  propertyValue: '#0ea5e9',
+  propertyGross: '#2563eb',
+  propertyNet: '#16a34a',
+  propertyNetAfterTax: '#9333ea',
+  investedRent: '#0d9488',
+  indexFund1_5x: '#fb7185',
+  indexFund2x: '#ec4899',
+  indexFund4x: '#c026d3',
+};
+
+const SERIES_LABELS = {
+  indexFund: 'Index fund',
+  cashflow: 'Cashflow',
+  propertyValue: 'Property value',
+  propertyGross: 'Property gross',
+  propertyNet: 'Property net',
+  propertyNetAfterTax: 'Property net after tax',
+  investedRent: 'Invested rent',
+  indexFund1_5x: 'Index fund 1.5×',
+  indexFund2x: 'Index fund 2×',
+  indexFund4x: 'Index fund 4×',
+};
+
+const EXPANDED_SERIES_ORDER = [
+  'indexFund',
+  'cashflow',
+  'propertyValue',
+  'propertyGross',
+  'propertyNet',
+  'propertyNetAfterTax',
+  'investedRent',
+  'indexFund1_5x',
+  'indexFund2x',
+  'indexFund4x',
+];
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
@@ -822,12 +863,14 @@ function calculateEquity(rawInputs) {
   let cumulativeCashPreTax = 0;
   let cumulativeCashAfterTax = 0;
   let cumulativeReinvested = 0;
+  let cumulativePropertyTax = 0;
   let exitCumCash = 0;
   let exitCumCashAfterTax = 0;
   let exitNetSaleProceeds = 0;
   let indexVal = cashIn;
   let reinvestFundValue = 0;
   let investedRentValue = 0;
+  const indexBasis = cashIn;
   const reinvestShare = inputs.reinvestIncome
     ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
     : 0;
@@ -841,6 +884,9 @@ function calculateEquity(rawInputs) {
   const annualCashflowsAfterTax = [];
   const initialNetEquity =
     inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
+  const initialSaleValue = inputs.purchasePrice;
+  const initialSaleCosts = initialSaleValue * inputs.sellingCostsPct;
+  const initialNetSaleProceeds = initialSaleValue - initialSaleCosts - loan;
   chart.push({
     year: 0,
     indexFund: indexVal,
@@ -854,6 +900,43 @@ function calculateEquity(rawInputs) {
     reinvestFund: 0,
     cashflow: 0,
     investedRent: 0,
+    meta: {
+      propertyValue: initialSaleValue,
+      saleValue: initialSaleValue,
+      saleCosts: initialSaleCosts,
+      remainingLoan: loan,
+      netSaleIfSold: initialNetSaleProceeds,
+      cumulativeCashPreTax: 0,
+      cumulativeCashPreTaxNet: 0,
+      cumulativeCashAfterTax: 0,
+      cumulativeCashAfterTaxNet: 0,
+      cumulativeCashAfterTaxKept: 0,
+      cumulativeCashPreTaxKept: 0,
+      cumulativePropertyTax: 0,
+      reinvestFundValue: 0,
+      cumulativeReinvested: 0,
+      reinvestFundGrowth: 0,
+      investedRentValue: 0,
+      investedRentContributions: 0,
+      investedRentGrowth: 0,
+      indexFundValue: indexVal,
+      indexBasis,
+      reinvestShare,
+      shouldReinvest,
+      purchasePrice: inputs.purchasePrice,
+      yearly: {
+        gross: 0,
+        operatingExpenses: 0,
+        noi: 0,
+        debtService: 0,
+        cashPreTax: 0,
+        cashAfterTax: 0,
+        cashAfterTaxRetained: 0,
+        tax: 0,
+        reinvestContribution: 0,
+        investedRentGrowth: 0,
+      },
+    },
   });
 
   const propertyTaxes = [];
@@ -881,13 +964,18 @@ function calculateEquity(rawInputs) {
       propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
     }
     propertyTaxes.push(propertyTax);
+    cumulativePropertyTax += propertyTax;
     const afterTaxCash = cash - propertyTax;
     cumulativeCashAfterTax += afterTaxCash;
     const investableCash = Math.max(0, afterTaxCash);
     const reinvestContribution = shouldReinvest ? investableCash * reinvestShare : 0;
-    investedRentValue = investedRentValue * (1 + indexGrowth) + investableCash;
+    const priorReinvestFund = reinvestFundValue;
+    const reinvestGrowthThisYear = shouldReinvest ? priorReinvestFund * indexGrowth : 0;
     cumulativeReinvested += reinvestContribution;
-    reinvestFundValue = shouldReinvest ? reinvestFundValue * (1 + indexGrowth) + reinvestContribution : 0;
+    reinvestFundValue = shouldReinvest
+      ? priorReinvestFund + reinvestGrowthThisYear + reinvestContribution
+      : 0;
+    investedRentValue = reinvestFundValue;
 
     annualGrossRents.push(gross);
     annualOperatingExpenses.push(varOpex + fixed);
@@ -931,6 +1019,15 @@ function calculateEquity(rawInputs) {
     }
 
     indexVal = indexVal * (1 + indexGrowth);
+    const cumulativeCashAfterTaxKept = shouldReinvest
+      ? cumulativeCashAfterTax - cumulativeReinvested
+      : cumulativeCashAfterTax;
+    const cumulativeCashPreTaxKept = shouldReinvest
+      ? cumulativeCashPreTax - cumulativeReinvested
+      : cumulativeCashPreTax;
+    const reinvestFundGrowth = Math.max(0, reinvestFundValue - cumulativeReinvested);
+    const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
+
     chart.push({
       year: y,
       indexFund: indexVal,
@@ -944,6 +1041,43 @@ function calculateEquity(rawInputs) {
       reinvestFund: reinvestFundValue,
       cashflow: cumulativeCashAfterTax,
       investedRent: investedRentValue,
+      meta: {
+        propertyValue: vt,
+        saleValue: vt,
+        saleCosts: saleCostsEstimate,
+        remainingLoan: remainingLoanYear,
+        netSaleIfSold,
+        cumulativeCashPreTax,
+        cumulativeCashPreTaxNet,
+        cumulativeCashAfterTax,
+        cumulativeCashAfterTaxNet,
+        cumulativeCashAfterTaxKept,
+        cumulativeCashPreTaxKept,
+        cumulativePropertyTax,
+        reinvestFundValue,
+        cumulativeReinvested,
+        reinvestFundGrowth,
+        investedRentValue,
+        investedRentContributions: cumulativeReinvested,
+        investedRentGrowth,
+        indexFundValue: indexVal,
+        indexBasis,
+        reinvestShare,
+        shouldReinvest,
+        purchasePrice: inputs.purchasePrice,
+        yearly: {
+          gross,
+          operatingExpenses: varOpex + fixed,
+          noi,
+          debtService,
+          cashPreTax: cash,
+          cashAfterTax,
+          cashAfterTaxRetained: shouldReinvest ? afterTaxCash - reinvestContribution : afterTaxCash,
+          tax: propertyTax,
+          reinvestContribution,
+          investedRentGrowth: reinvestGrowthThisYear,
+        },
+      },
     });
 
     rent *= 1 + inputs.rentGrowth;
@@ -1003,7 +1137,7 @@ function calculateEquity(rawInputs) {
     totalPropertyTax,
     totalReinvested: cumulativeReinvested,
     reinvestFundValue,
-    investedRentValue,
+    investedRentValue: reinvestFundValue,
     propertyTaxes,
     propertyNetWealthAfterTax,
     wealthDeltaAfterTax,
@@ -1097,6 +1231,10 @@ export default function App() {
   const [showChartModal, setShowChartModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
+  const [chartFocus, setChartFocus] = useState(null);
+  const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
+  const chartAreaRef = useRef(null);
+  const chartOverlayRef = useRef(null);
   const [performanceYear, setPerformanceYear] = useState(1);
   const [sensitivityPct, setSensitivityPct] = useState(0.1);
   const [shareNotice, setShareNotice] = useState('');
@@ -1397,6 +1535,51 @@ export default function App() {
     });
   }, [equity.chart, chartRange]);
 
+  useEffect(() => {
+    if (!showChartModal) {
+      setChartFocus(null);
+      setExpandedMetricDetails({});
+    }
+  }, [showChartModal]);
+
+  useEffect(() => {
+    setChartFocus((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const yearValue = Number(prev.year);
+      const match = filteredChartData.find((point) => Number(point?.year) === yearValue);
+      if (!match) {
+        return null;
+      }
+      if (prev.data === match) {
+        return prev;
+      }
+      return { year: yearValue, data: match };
+    });
+  }, [filteredChartData]);
+
+  useEffect(() => {
+    if (!showChartModal || !chartFocus) {
+      return undefined;
+    }
+    const handleDocumentClick = (event) => {
+      const target = event.target;
+      if (chartAreaRef.current && chartAreaRef.current.contains(target)) {
+        return;
+      }
+      if (chartOverlayRef.current && chartOverlayRef.current.contains(target)) {
+        return;
+      }
+      setChartFocus(null);
+      setExpandedMetricDetails({});
+    };
+    document.addEventListener('mousedown', handleDocumentClick);
+    return () => {
+      document.removeEventListener('mousedown', handleDocumentClick);
+    };
+  }, [showChartModal, chartFocus]);
+
   const handleChartRangeChange = useCallback(
     (key, value) => {
       setChartRangeTouched(true);
@@ -1423,6 +1606,38 @@ export default function App() {
     },
     [maxChartYear]
   );
+
+  const handleChartPointClick = useCallback(
+    (event) => {
+      if (!event) {
+        return;
+      }
+      const { activeLabel } = event;
+      const activeYear = Number(activeLabel);
+      if (!Number.isFinite(activeYear)) {
+        return;
+      }
+      const match = filteredChartData.find((point) => Number(point?.year) === activeYear);
+      if (!match) {
+        return;
+      }
+      setChartFocus({ year: activeYear, data: match });
+      setExpandedMetricDetails({});
+    },
+    [filteredChartData]
+  );
+
+  const toggleMetricDetail = useCallback((key) => {
+    setExpandedMetricDetails((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }, []);
+
+  const clearChartFocus = useCallback(() => {
+    setChartFocus(null);
+    setExpandedMetricDetails({});
+  }, []);
 
   const isCompanyBuyer = inputs.buyerType === 'company';
   const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
@@ -3527,9 +3742,16 @@ export default function App() {
                 </div>
                 <div className="mt-4 flex-1">
                   <div className="flex h-full flex-col">
-                    <div className="flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]">
+                    <div
+                      ref={chartAreaRef}
+                      className="relative flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]"
+                    >
                       <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={filteredChartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                        <AreaChart
+                          data={filteredChartData}
+                          margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
+                          onClick={handleChartPointClick}
+                        >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 11, fill: '#475569' }} />
                           <YAxis
@@ -3537,7 +3759,6 @@ export default function App() {
                             tick={{ fontSize: 11, fill: '#475569' }}
                             width={110}
                           />
-                          <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                           <Legend
                             content={(props) => (
                               <ChartLegend
@@ -3553,6 +3774,29 @@ export default function App() {
                               />
                             )}
                           />
+                          {chartFocus ? (
+                            <ReferenceLine
+                              x={chartFocus.year}
+                              stroke="#334155"
+                              strokeDasharray="4 4"
+                              strokeWidth={1}
+                            />
+                          ) : null}
+                          {chartFocus && chartFocus.data
+                            ? EXPANDED_SERIES_ORDER.filter(
+                                (key) => activeSeries[key] !== false && Number.isFinite(chartFocus.data?.[key])
+                              ).map((key) => (
+                                <ReferenceDot
+                                  key={`dot-${key}`}
+                                  x={chartFocus.year}
+                                  y={chartFocus.data[key]}
+                                  r={4}
+                                  fill="#ffffff"
+                                  stroke={SERIES_COLORS[key] ?? '#334155'}
+                                  strokeWidth={2}
+                                />
+                              ))
+                            : null}
                           <Area
                             type="monotone"
                             dataKey="indexFund"
@@ -3649,6 +3893,20 @@ export default function App() {
                           />
                         </AreaChart>
                       </ResponsiveContainer>
+                      {chartFocus && chartFocus.data ? (
+                        <WealthChartOverlay
+                          overlayRef={chartOverlayRef}
+                          year={chartFocus.year}
+                          point={chartFocus.data}
+                          propertyNetAfterTaxLabel={propertyNetAfterTaxLabel}
+                          rentalTaxLabel={rentalTaxLabel}
+                          rentalTaxCumulativeLabel={rentalTaxCumulativeLabel}
+                          activeSeries={activeSeries}
+                          expandedMetrics={expandedMetricDetails}
+                          onToggleMetric={toggleMetricDetail}
+                          onClear={clearChartFocus}
+                        />
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -3896,6 +4154,194 @@ function CashflowTable({
       </div>
     </div>
   );
+}
+
+function WealthChartOverlay({
+  overlayRef,
+  year,
+  point,
+  propertyNetAfterTaxLabel,
+  rentalTaxLabel,
+  rentalTaxCumulativeLabel,
+  activeSeries,
+  expandedMetrics,
+  onToggleMetric,
+  onClear,
+}) {
+  if (!point || typeof year !== 'number') {
+    return null;
+  }
+
+  const meta = point.meta ?? {};
+  const metrics = EXPANDED_SERIES_ORDER.map((key) => {
+    if (activeSeries?.[key] === false) {
+      return null;
+    }
+    const value = point[key];
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    const label = key === 'propertyNetAfterTax' ? propertyNetAfterTaxLabel : SERIES_LABELS[key] ?? key;
+    return { key, label, value };
+  }).filter(Boolean);
+
+  if (metrics.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      ref={overlayRef}
+      className="pointer-events-auto absolute right-4 top-4 z-20 w-full max-w-sm rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-lg backdrop-blur"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Selected year</div>
+          <div className="text-lg font-semibold text-slate-800">Year {year}</div>
+        </div>
+        <button
+          type="button"
+          onClick={onClear}
+          className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2 py-0.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+        >
+          Clear
+        </button>
+      </div>
+      <div className="mt-3 space-y-2">
+        {metrics.map((metric) => {
+          const isExpanded = expandedMetrics?.[metric.key];
+          const breakdown = getOverlayBreakdown(metric.key, {
+            point,
+            meta,
+            propertyNetAfterTaxLabel,
+            rentalTaxLabel,
+            rentalTaxCumulativeLabel,
+          });
+          return (
+            <div key={metric.key} className="overflow-hidden rounded-xl border border-slate-200">
+              <button
+                type="button"
+                onClick={() => onToggleMetric?.(metric.key)}
+                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <span className="flex items-center gap-2">
+                  <span
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: SERIES_COLORS[metric.key] ?? '#64748b' }}
+                  />
+                  <span>{metric.label}</span>
+                </span>
+                <span className="text-right text-sm font-semibold text-slate-800">{currency(metric.value)}</span>
+              </button>
+              {isExpanded && breakdown.length > 0 ? (
+                <div className="space-y-1 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+                  {breakdown.map((detail) => (
+                    <div key={`${metric.key}-${detail.label}`} className="flex items-center justify-between gap-3">
+                      <span>{detail.label}</span>
+                      <span className="font-semibold text-slate-700">
+                        {detail.type === 'text'
+                          ? detail.value
+                          : typeof detail.value === 'number'
+                          ? currency(detail.value)
+                          : detail.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, rentalTaxLabel, rentalTaxCumulativeLabel }) {
+  const breakdowns = [];
+  switch (key) {
+    case 'indexFund': {
+      const basis = Number(meta.indexBasis) || 0;
+      const value = Number(meta.indexFundValue) || Number(point.indexFund) || 0;
+      breakdowns.push({ label: 'Initial capital invested', value: basis });
+      breakdowns.push({ label: 'Market growth to date', value: value - basis });
+      break;
+    }
+    case 'cashflow': {
+      const yearly = meta.yearly ?? {};
+      breakdowns.push({ label: 'Gross rent (year)', value: yearly.gross || 0 });
+      breakdowns.push({ label: 'Operating expenses (year)', value: -(yearly.operatingExpenses || 0) });
+      breakdowns.push({ label: 'NOI (year)', value: yearly.noi || 0 });
+      breakdowns.push({ label: 'Debt service (year)', value: -(yearly.debtService || 0) });
+      breakdowns.push({ label: `${rentalTaxLabel} (year)`, value: -(yearly.tax || 0) });
+      breakdowns.push({ label: 'After-tax cash flow (year)', value: yearly.cashAfterTax || 0 });
+      breakdowns.push({ label: 'Reinvested this year', value: -(yearly.reinvestContribution || 0) });
+      breakdowns.push({ label: 'After-tax cash retained (year)', value: yearly.cashAfterTaxRetained || 0 });
+      breakdowns.push({ label: 'Cumulative after-tax cash', value: meta.cumulativeCashAfterTax || 0 });
+      breakdowns.push({ label: 'Cumulative after-tax cash retained', value: meta.cumulativeCashAfterTaxKept || 0 });
+      breakdowns.push({ label: 'Total taxes paid to date', value: meta.cumulativePropertyTax || 0 });
+      break;
+    }
+    case 'propertyValue': {
+      breakdowns.push({ label: 'Estimated market value', value: meta.propertyValue || 0 });
+      breakdowns.push({ label: 'Original purchase price', value: meta.purchasePrice || 0 });
+      break;
+    }
+    case 'propertyGross': {
+      breakdowns.push({ label: 'Property market value', value: meta.propertyValue || 0 });
+      breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxKept || 0 });
+      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+      break;
+    }
+    case 'propertyNet': {
+      breakdowns.push({ label: 'Sale price (est.)', value: meta.saleValue || 0 });
+      breakdowns.push({ label: 'Selling costs', value: -(meta.saleCosts || 0) });
+      breakdowns.push({ label: 'Remaining loan balance', value: -(meta.remainingLoan || 0) });
+      breakdowns.push({ label: 'Net sale proceeds', value: meta.netSaleIfSold || 0 });
+      breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxNet || 0 });
+      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+      break;
+    }
+    case 'propertyNetAfterTax': {
+      breakdowns.push({ label: 'Net sale proceeds after debt & costs', value: meta.netSaleIfSold || 0 });
+      breakdowns.push({ label: `${propertyNetAfterTaxLabel} cash retained`, value: meta.cumulativeCashAfterTaxNet || 0 });
+      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+      breakdowns.push({ label: rentalTaxCumulativeLabel, value: meta.cumulativePropertyTax || 0 });
+      break;
+    }
+    case 'investedRent': {
+      breakdowns.push({ label: 'Reinvest rate', value: `${((meta.reinvestShare || 0) * 100).toFixed(1)}%`, type: 'text' });
+      breakdowns.push({ label: 'Contribution this year', value: meta.yearly?.reinvestContribution || 0 });
+      breakdowns.push({ label: 'Growth this year', value: meta.yearly?.investedRentGrowth || 0 });
+      breakdowns.push({ label: 'Total reinvested contributions', value: meta.investedRentContributions || 0 });
+      breakdowns.push({ label: 'Market growth to date', value: meta.investedRentGrowth || 0 });
+      break;
+    }
+    case 'indexFund1_5x': {
+      const baseline = meta.indexFundValue || point.indexFund || 0;
+      breakdowns.push({ label: 'Baseline index value', value: baseline });
+      breakdowns.push({ label: 'Multiplier', value: '1.5×', type: 'text' });
+      breakdowns.push({ label: 'Outperformance vs baseline', value: (point.indexFund1_5x || 0) - baseline });
+      break;
+    }
+    case 'indexFund2x': {
+      const baseline = meta.indexFundValue || point.indexFund || 0;
+      breakdowns.push({ label: 'Baseline index value', value: baseline });
+      breakdowns.push({ label: 'Multiplier', value: '2×', type: 'text' });
+      breakdowns.push({ label: 'Outperformance vs baseline', value: (point.indexFund2x || 0) - baseline });
+      break;
+    }
+    case 'indexFund4x': {
+      const baseline = meta.indexFundValue || point.indexFund || 0;
+      breakdowns.push({ label: 'Baseline index value', value: baseline });
+      breakdowns.push({ label: 'Multiplier', value: '4×', type: 'text' });
+      breakdowns.push({ label: 'Outperformance vs baseline', value: (point.indexFund4x || 0) - baseline });
+      break;
+    }
+    default:
+      break;
+  }
+  return breakdowns;
 }
 
 function ChatBubble({
