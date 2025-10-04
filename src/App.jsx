@@ -1923,6 +1923,21 @@ export default function App() {
     });
   }, [inputs]);
 
+  const leverageEfficiencyData = useMemo(
+    () =>
+      leverageChartData.map((point) => {
+        const efficiencyValue =
+          Number.isFinite(point.irr) && Number.isFinite(point.propertyNetAfterTax)
+            ? point.irr * point.propertyNetAfterTax
+            : 0;
+        return {
+          ...point,
+          efficiency: efficiencyValue,
+        };
+      }),
+    [leverageChartData]
+  );
+
   const hasInterestSplitData = interestSplitChartData.some(
     (point) => Math.abs(point.interestPaid) > 1e-2 || Math.abs(point.principalPaid) > 1e-2
   );
@@ -4229,84 +4244,112 @@ export default function App() {
                     </p>
                     <div className="h-72 w-full">
                       {hasLeverageData ? (
-                        <ResponsiveContainer>
-                          <LineChart data={leverageChartData} margin={{ top: 10, right: 80, left: 0, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis
-                              dataKey="ltv"
-                              tickFormatter={(value) => formatPercent(value)}
-                              tick={{ fontSize: 11, fill: '#475569' }}
-                              domain={[0.1, 0.95]}
-                              type="number"
-                              ticks={LEVERAGE_LTV_OPTIONS}
-                            />
-                            <YAxis
-                              yAxisId="left"
-                              tickFormatter={(value) => formatPercent(value)}
-                              tick={{ fontSize: 11, fill: '#475569' }}
-                              width={90}
-                            />
-                            <YAxis
-                              yAxisId="right"
-                              orientation="right"
-                              tickFormatter={(value) => currency(value)}
-                              tick={{ fontSize: 11, fill: '#475569' }}
-                              width={120}
-                            />
-                            <Tooltip
-                              formatter={(value, name, { dataKey }) => {
-                                if (dataKey === 'propertyNetAfterTax') {
-                                  return [currency(value), name];
-                                }
-                                return [formatPercent(value), name];
-                              }}
-                              labelFormatter={(label) => `LTV ${formatPercent(label)}`}
-                            />
-                            <Legend
-                              content={(props) => (
-                                <ChartLegend
-                                  {...props}
-                                  activeSeries={leverageSeriesActive}
-                                  onToggle={toggleLeverageSeries}
-                                />
-                              )}
-                            />
-                            <RechartsLine
-                              type="monotone"
-                              dataKey="irr"
-                              name="IRR"
-                              yAxisId="left"
-                              stroke={SERIES_COLORS.irrSeries}
-                              strokeWidth={2}
-                              dot={{ r: 3 }}
-                              isAnimationActive={false}
-                              hide={!leverageSeriesActive.irr}
-                            />
-                            <RechartsLine
-                              type="monotone"
-                              dataKey="roi"
-                              name="Total ROI"
-                              yAxisId="left"
-                              stroke="#0ea5e9"
-                              strokeWidth={2}
-                              strokeDasharray="4 2"
-                              dot={{ r: 3 }}
-                              isAnimationActive={false}
-                              hide={!leverageSeriesActive.roi}
-                            />
-                            <RechartsLine
-                              type="monotone"
-                              dataKey="propertyNetAfterTax"
-                              name={propertyNetAfterTaxLabel}
-                              yAxisId="right"
-                              stroke={SERIES_COLORS.propertyNetAfterTax}
-                              strokeWidth={2}
-                              dot={{ r: 3 }}
-                              isAnimationActive={false}
-                              hide={!leverageSeriesActive.propertyNetAfterTax}
-                            />
-                          </LineChart>
-                        </ResponsiveContainer>
+                        <>
+                          <ResponsiveContainer>
+                            <LineChart data={leverageChartData} margin={{ top: 10, right: 80, left: 0, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis
+                                dataKey="ltv"
+                                tickFormatter={(value) => formatPercent(value)}
+                                tick={{ fontSize: 11, fill: '#475569' }}
+                                domain={[0.1, 0.95]}
+                                type="number"
+                                ticks={LEVERAGE_LTV_OPTIONS}
+                              />
+                              <YAxis
+                                yAxisId="left"
+                                tickFormatter={(value) => formatPercent(value)}
+                                tick={{ fontSize: 11, fill: '#475569' }}
+                                width={90}
+                              />
+                              <YAxis
+                                yAxisId="right"
+                                orientation="right"
+                                tickFormatter={(value) => currency(value)}
+                                tick={{ fontSize: 11, fill: '#475569' }}
+                                width={120}
+                              />
+                              <Tooltip
+                                formatter={(value, name, { dataKey }) => {
+                                  if (dataKey === 'propertyNetAfterTax') {
+                                    return [currency(value), name];
+                                  }
+                                  return [formatPercent(value), name];
+                                }}
+                                labelFormatter={(label) => `LTV ${formatPercent(label)}`}
+                              />
+                              <Legend
+                                content={(props) => (
+                                  <ChartLegend
+                                    {...props}
+                                    activeSeries={leverageSeriesActive}
+                                    onToggle={toggleLeverageSeries}
+                                  />
+                                )}
+                              />
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="irr"
+                                name="IRR"
+                                yAxisId="left"
+                                stroke={SERIES_COLORS.irrSeries}
+                                strokeWidth={2}
+                                dot={{ r: 3 }}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.irr}
+                              />
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="roi"
+                                name="Total ROI"
+                                yAxisId="left"
+                                stroke="#0ea5e9"
+                                strokeWidth={2}
+                                strokeDasharray="4 2"
+                                dot={{ r: 3 }}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.roi}
+                              />
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="propertyNetAfterTax"
+                                name={propertyNetAfterTaxLabel}
+                                yAxisId="right"
+                                stroke={SERIES_COLORS.propertyNetAfterTax}
+                                strokeWidth={2}
+                                dot={{ r: 3 }}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.propertyNetAfterTax}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                          {leverageEfficiencyData.length > 0 ? (
+                            <div className="mt-4 overflow-x-auto">
+                              <table className="min-w-full table-fixed border-separate border-spacing-1 text-[11px] text-slate-600">
+                                <thead>
+                                  <tr>
+                                    <th className="px-2 py-1 text-left font-semibold text-slate-500">LTV</th>
+                                    <th className="px-2 py-1 text-right font-semibold text-slate-500">IRR</th>
+                                    <th className="px-2 py-1 text-right font-semibold text-slate-500">Total ROI</th>
+                                    <th className="px-2 py-1 text-right font-semibold text-slate-500">{propertyNetAfterTaxLabel}</th>
+                                    <th className="px-2 py-1 text-right font-semibold text-slate-500">IRR × Profit</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {leverageEfficiencyData.map((row) => (
+                                    <tr key={row.ltv} className="odd:bg-slate-50">
+                                      <td className="px-2 py-1 text-left font-semibold text-slate-600">{formatPercent(row.ltv)}</td>
+                                      <td className="px-2 py-1 text-right text-slate-700">{formatPercent(row.irr)}</td>
+                                      <td className="px-2 py-1 text-right text-slate-700">{formatPercent(row.roi)}</td>
+                                      <td className="px-2 py-1 text-right text-slate-700">{currency(row.propertyNetAfterTax)}</td>
+                                      <td className="px-2 py-1 text-right text-slate-700">{currency(row.efficiency)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : null}
+                        </>
                       ) : (
                         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
                           Enter a purchase price and rent to explore leverage outcomes.
