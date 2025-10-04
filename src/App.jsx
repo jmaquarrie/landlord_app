@@ -4,7 +4,7 @@ import {
   AreaChart,
   Area,
   LineChart,
-  BarChart,
+  ComposedChart,
   Bar,
   XAxis,
   YAxis,
@@ -38,7 +38,7 @@ const CHAT_API_URL =
     ? VITE_CHAT_API_URL.replace(/\/$/, '')
     : '';
 const GOOGLE_API_KEY = 'AIzaSyB9K7pla_JX_vy-d5zGXikxD9sJ1pglH94';
-const GOOGLE_DEFAULT_MODEL = 'gemini-flash-latest';
+const GOOGLE_DEFAULT_MODEL = 'gemini-2.5-flash';
 const GOOGLE_MODEL =
   typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
     ? VITE_GOOGLE_MODEL.trim()
@@ -1783,17 +1783,21 @@ export default function App() {
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
   const appreciationPower = Math.pow(appreciationFactor, exitYears);
   const appreciationPowerDisplay = appreciationPower.toFixed(4);
-  const predictedRentYield = useMemo(() => {
+  const baselineRentYield = useMemo(() => {
+    const yocValue = Number(equity.yoc);
+    if (Number.isFinite(yocValue) && yocValue > 0) {
+      return yocValue;
+    }
     const price = Number(inputs.purchasePrice) || 0;
     const rent = Number(inputs.monthlyRent) || 0;
     if (!Number.isFinite(price) || price <= 0) {
       return 0;
     }
     return (rent * 12) / price;
-  }, [inputs.purchasePrice, inputs.monthlyRent]);
+  }, [equity.yoc, inputs.purchasePrice, inputs.monthlyRent]);
   const roiHeatmapYieldOptions = useMemo(
-    () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(predictedRentYield + offset, 0)),
-    [predictedRentYield]
+    () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(baselineRentYield + offset, 0)),
+    [baselineRentYield]
   );
   const roiHeatmapGrowthOptions = useMemo(
     () => ROI_HEATMAP_OFFSETS.map((offset) => appreciationRate + offset),
@@ -2534,7 +2538,6 @@ export default function App() {
             temperature: 0.3,
             topP: 0.8,
             topK: 40,
-            maxOutputTokens: 1024,
           },
         }),
       },
@@ -4021,7 +4024,7 @@ export default function App() {
                     <div className="h-72 w-full">
                       {annualCashflowChartData.length > 0 ? (
                         <ResponsiveContainer>
-                          <BarChart data={annualCashflowChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <ComposedChart data={annualCashflowChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
                             <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={90} />
@@ -4057,14 +4060,17 @@ export default function App() {
                               isAnimationActive={false}
                               hide={!cashflowSeriesActive.mortgagePayments}
                             />
-                            <Bar
+                            <Area
+                              type="monotone"
                               dataKey="netCashflow"
                               name="After-tax cash flow"
-                              fill={CASHFLOW_BAR_COLORS.netCashflow}
+                              stroke={CASHFLOW_BAR_COLORS.netCashflow}
+                              fill="rgba(16,185,129,0.25)"
+                              strokeWidth={2}
                               isAnimationActive={false}
                               hide={!cashflowSeriesActive.netCashflow}
                             />
-                          </BarChart>
+                          </ComposedChart>
                         </ResponsiveContainer>
                       ) : (
                         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
