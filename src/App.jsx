@@ -899,7 +899,7 @@ function calculateEquity(rawInputs) {
     propertyNetAfterTax: initialNetEquity,
     reinvestFund: 0,
     cashflow: 0,
-    investedRent: 0,
+    investedRent: shouldReinvest ? 0 : null,
     meta: {
       propertyValue: initialSaleValue,
       saleValue: initialSaleValue,
@@ -975,7 +975,7 @@ function calculateEquity(rawInputs) {
     reinvestFundValue = shouldReinvest
       ? priorReinvestFund + reinvestGrowthThisYear + reinvestContribution
       : 0;
-    investedRentValue = reinvestFundValue;
+    investedRentValue = shouldReinvest ? reinvestFundValue : 0;
 
     annualGrossRents.push(gross);
     annualOperatingExpenses.push(varOpex + fixed);
@@ -1040,7 +1040,7 @@ function calculateEquity(rawInputs) {
       propertyNetAfterTax: propertyNetAfterTaxValue,
       reinvestFund: reinvestFundValue,
       cashflow: cumulativeCashAfterTax,
-      investedRent: investedRentValue,
+      investedRent: shouldReinvest ? investedRentValue : null,
       meta: {
         propertyValue: vt,
         saleValue: vt,
@@ -1071,7 +1071,7 @@ function calculateEquity(rawInputs) {
           noi,
           debtService,
           cashPreTax: cash,
-          cashAfterTax,
+          cashAfterTax: afterTaxCash,
           cashAfterTaxRetained: shouldReinvest ? afterTaxCash - reinvestContribution : afterTaxCash,
           tax: propertyTax,
           reinvestContribution,
@@ -1235,6 +1235,7 @@ export default function App() {
   const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
   const chartAreaRef = useRef(null);
   const chartOverlayRef = useRef(null);
+  const chartModalContentRef = useRef(null);
   const [performanceYear, setPerformanceYear] = useState(1);
   const [sensitivityPct, setSensitivityPct] = useState(0.1);
   const [shareNotice, setShareNotice] = useState('');
@@ -1571,6 +1572,9 @@ export default function App() {
       if (chartOverlayRef.current && chartOverlayRef.current.contains(target)) {
         return;
       }
+      if (chartModalContentRef.current && chartModalContentRef.current.contains(target)) {
+        return;
+      }
       setChartFocus(null);
       setExpandedMetricDetails({});
     };
@@ -1792,6 +1796,18 @@ export default function App() {
   const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
   const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
   const reinvestActive = Boolean(inputs.reinvestIncome) && reinvestRate > 0 && reinvestFundValue > 0;
+
+  useEffect(() => {
+    if (reinvestActive) {
+      return;
+    }
+    setActiveSeries((prev) => {
+      if (prev.investedRent === false) {
+        return prev;
+      }
+      return { ...prev, investedRent: false };
+    });
+  }, [reinvestActive]);
   const reinvestRateLabel = formatPercent(reinvestRate);
 
   const exitCumCashPreTaxNet = exitCumCash - reinvestFundValue;
@@ -3245,6 +3261,7 @@ export default function App() {
                           {...props}
                           activeSeries={activeSeries}
                           onToggle={toggleSeries}
+                          excludedKeys={reinvestActive ? [] : ['investedRent']}
                         />
                       )}
                     />
@@ -3301,6 +3318,16 @@ export default function App() {
                       fill="rgba(147,51,234,0.2)"
                       strokeWidth={2}
                       hide={!activeSeries.propertyNetAfterTax}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="investedRent"
+                      name="Invested rent"
+                      stroke="#0d9488"
+                      fill="rgba(13,148,136,0.15)"
+                      strokeWidth={2}
+                      strokeDasharray="5 3"
+                      hide={!activeSeries.investedRent || !reinvestActive}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -3670,7 +3697,7 @@ export default function App() {
               Close
             </button>
           </div>
-          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+          <div ref={chartModalContentRef} className="flex flex-1 flex-col overflow-hidden md:flex-row">
             <div className="flex-1 overflow-hidden p-5">
               <div className="flex h-full flex-col">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3723,11 +3750,21 @@ export default function App() {
                     { key: 'investedRent', label: 'Invested rent' },
                   ].map((option) => {
                     const checked = activeSeries[option.key] !== false;
+                    const disabled = option.key === 'investedRent' && !reinvestActive;
                     return (
-                      <label key={option.key} className="flex items-center gap-2">
+                      <label
+                        key={option.key}
+                        className={`flex items-center gap-2 ${disabled ? 'text-slate-400' : ''}`}
+                        title={
+                          disabled
+                            ? 'Enable reinvest after-tax cash flow to view invested rent performance.'
+                            : undefined
+                        }
+                      >
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={disabled}
                           onChange={(event) =>
                             setActiveSeries((prev) => ({
                               ...prev,
@@ -4177,6 +4214,9 @@ function WealthChartOverlay({
     if (activeSeries?.[key] === false) {
       return null;
     }
+    if (key === 'investedRent' && meta.shouldReinvest === false) {
+      return null;
+    }
     const value = point[key];
     if (!Number.isFinite(value)) {
       return null;
@@ -4310,6 +4350,14 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       break;
     }
     case 'investedRent': {
+      if (!meta.shouldReinvest) {
+        breakdowns.push({
+          label: 'Reinvestment disabled',
+          value: 'Enable reinvest after-tax cash flow to see this projection.',
+          type: 'text',
+        });
+        break;
+      }
       breakdowns.push({ label: 'Reinvest rate', value: `${((meta.reinvestShare || 0) * 100).toFixed(1)}%`, type: 'text' });
       breakdowns.push({ label: 'Contribution this year', value: meta.yearly?.reinvestContribution || 0 });
       breakdowns.push({ label: 'Growth this year', value: meta.yearly?.investedRentGrowth || 0 });
