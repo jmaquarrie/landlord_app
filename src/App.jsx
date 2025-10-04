@@ -106,7 +106,9 @@ const ROI_HEATMAP_OFFSETS = [-0.02, -0.01, 0, 0.01, 0.02];
 const HEATMAP_COLOR_START = [248, 113, 113];
 const HEATMAP_COLOR_END = [34, 197, 94];
 const HEATMAP_COLOR_NEUTRAL = [148, 163, 184];
-const LEVERAGE_LTV_OPTIONS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95];
+const LEVERAGE_LTV_OPTIONS = Array.from({ length: 18 }, (_, index) =>
+  Number((0.1 + index * 0.05).toFixed(2))
+);
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -1345,6 +1347,7 @@ export default function App() {
   const [leverageSeriesActive, setLeverageSeriesActive] = useState({
     irr: true,
     roi: true,
+    propertyNetAfterTax: true,
   });
   const [roiHeatmapMetric, setRoiHeatmapMetric] = useState('irr');
   const [showChartModal, setShowChartModal] = useState(false);
@@ -1882,10 +1885,14 @@ export default function App() {
       });
       const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
       const irrValue = Number(metrics.irr) || 0;
+      const propertyNetAfterTaxValue = Number.isFinite(metrics.propertyNetWealthAfterTax)
+        ? metrics.propertyNetWealthAfterTax
+        : 0;
       return {
         ltv,
         roi: Number.isFinite(roiValue) ? roiValue : 0,
         irr: Number.isFinite(irrValue) ? irrValue : 0,
+        propertyNetAfterTax: propertyNetAfterTaxValue,
       };
     });
   }, [inputs]);
@@ -4197,7 +4204,7 @@ export default function App() {
                     <div className="h-72 w-full">
                       {hasLeverageData ? (
                         <ResponsiveContainer>
-                          <LineChart data={leverageChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <LineChart data={leverageChartData} margin={{ top: 10, right: 80, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis
                               dataKey="ltv"
@@ -4205,14 +4212,28 @@ export default function App() {
                               tick={{ fontSize: 11, fill: '#475569' }}
                               domain={[0.1, 0.95]}
                               type="number"
+                              ticks={LEVERAGE_LTV_OPTIONS}
                             />
                             <YAxis
+                              yAxisId="left"
                               tickFormatter={(value) => formatPercent(value)}
                               tick={{ fontSize: 11, fill: '#475569' }}
                               width={90}
                             />
+                            <YAxis
+                              yAxisId="right"
+                              orientation="right"
+                              tickFormatter={(value) => currency(value)}
+                              tick={{ fontSize: 11, fill: '#475569' }}
+                              width={120}
+                            />
                             <Tooltip
-                              formatter={(value, name) => [formatPercent(value), name]}
+                              formatter={(value, name, { dataKey }) => {
+                                if (dataKey === 'propertyNetAfterTax') {
+                                  return [currency(value), name];
+                                }
+                                return [formatPercent(value), name];
+                              }}
                               labelFormatter={(label) => `LTV ${formatPercent(label)}`}
                             />
                             <Legend
@@ -4228,6 +4249,7 @@ export default function App() {
                               type="monotone"
                               dataKey="irr"
                               name="IRR"
+                              yAxisId="left"
                               stroke={SERIES_COLORS.irrSeries}
                               strokeWidth={2}
                               dot={{ r: 3 }}
@@ -4238,12 +4260,24 @@ export default function App() {
                               type="monotone"
                               dataKey="roi"
                               name="Total ROI"
+                              yAxisId="left"
                               stroke="#0ea5e9"
                               strokeWidth={2}
                               strokeDasharray="4 2"
                               dot={{ r: 3 }}
                               isAnimationActive={false}
                               hide={!leverageSeriesActive.roi}
+                            />
+                            <RechartsLine
+                              type="monotone"
+                              dataKey="propertyNetAfterTax"
+                              name={propertyNetAfterTaxLabel}
+                              yAxisId="right"
+                              stroke={SERIES_COLORS.propertyNetAfterTax}
+                              strokeWidth={2}
+                              dot={{ r: 3 }}
+                              isAnimationActive={false}
+                              hide={!leverageSeriesActive.propertyNetAfterTax}
                             />
                           </LineChart>
                         </ResponsiveContainer>
