@@ -1775,6 +1775,31 @@ export default function App() {
     });
   }, [equity.chart]);
 
+
+  const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
+  const appreciationRate = Number(inputs.annualAppreciation) || 0;
+  const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
+  const appreciationFactor = 1 + appreciationRate;
+  const appreciationFactorDisplay = appreciationFactor.toFixed(4);
+  const appreciationPower = Math.pow(appreciationFactor, exitYears);
+  const appreciationPowerDisplay = appreciationPower.toFixed(4);
+  const predictedRentYield = useMemo(() => {
+    const price = Number(inputs.purchasePrice) || 0;
+    const rent = Number(inputs.monthlyRent) || 0;
+    if (!Number.isFinite(price) || price <= 0) {
+      return 0;
+    }
+    return (rent * 12) / price;
+  }, [inputs.purchasePrice, inputs.monthlyRent]);
+  const roiHeatmapYieldOptions = useMemo(
+    () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(predictedRentYield + offset, 0)),
+    [predictedRentYield]
+  );
+  const roiHeatmapGrowthOptions = useMemo(
+    () => ROI_HEATMAP_OFFSETS.map((offset) => appreciationRate + offset),
+    [appreciationRate]
+  );
+
   const roiHeatmapData = useMemo(() => {
     const purchasePrice = Number(inputs.purchasePrice) || 0;
     if (!Number.isFinite(purchasePrice) || purchasePrice <= 0) {
@@ -2046,29 +2071,6 @@ export default function App() {
   const propertyNetAfterTaxLabel = isCompanyBuyer
     ? 'Property net after corporation tax'
     : 'Property net after tax';
-  const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
-  const appreciationRate = Number(inputs.annualAppreciation) || 0;
-  const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
-  const appreciationFactor = 1 + appreciationRate;
-  const appreciationFactorDisplay = appreciationFactor.toFixed(4);
-  const appreciationPower = Math.pow(appreciationFactor, exitYears);
-  const appreciationPowerDisplay = appreciationPower.toFixed(4);
-  const predictedRentYield = useMemo(() => {
-    const price = Number(inputs.purchasePrice) || 0;
-    const rent = Number(inputs.monthlyRent) || 0;
-    if (!Number.isFinite(price) || price <= 0) {
-      return 0;
-    }
-    return (rent * 12) / price;
-  }, [inputs.purchasePrice, inputs.monthlyRent]);
-  const roiHeatmapYieldOptions = useMemo(
-    () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(predictedRentYield + offset, 0)),
-    [predictedRentYield]
-  );
-  const roiHeatmapGrowthOptions = useMemo(
-    () => ROI_HEATMAP_OFFSETS.map((offset) => appreciationRate + offset),
-    [appreciationRate]
-  );
   const verifyingAuth = authStatus === 'verifying';
   const shouldShowAuthOverlay = remoteEnabled && (authStatus === 'unauthorized' || verifyingAuth);
   const scenarioStatus = (() => {
