@@ -3,6 +3,7 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
+  LineChart,
   XAxis,
   YAxis,
   Tooltip,
@@ -1277,6 +1278,7 @@ export default function App() {
     irrSeries: false,
   });
   const [showChartModal, setShowChartModal] = useState(false);
+  const [showRatioChartModal, setShowRatioChartModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
   const [chartFocus, setChartFocus] = useState(null);
@@ -3418,12 +3420,103 @@ export default function App() {
                       strokeDasharray="5 3"
                       hide={!activeSeries.investedRent || !reinvestActive}
                     />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+                </AreaChart>
+              </ResponsiveContainer>
             </div>
+          </div>
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="rounded-2xl bg-white p-3 shadow-sm">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <SectionTitle
+                label="Key ratios over time"
+                tooltip={SECTION_DESCRIPTIONS.keyRatios}
+                className="text-sm font-semibold text-slate-700"
+              />
+              <button
+                type="button"
+                onClick={() => setShowRatioChartModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Expand chart
+              </button>
+            </div>
+            <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
+              <span>Showing years {chartRange.start} – {chartRange.end}</span>
+            </div>
+            <div className="h-64 w-full">
+              <ResponsiveContainer>
+                <LineChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 10, fill: '#475569' }} />
+                  <YAxis tickFormatter={(v) => formatPercent(v)} tick={{ fontSize: 10, fill: '#475569' }} width={80} />
+                  <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
+                  <Legend
+                    content={(props) => (
+                      <ChartLegend
+                        {...props}
+                        activeSeries={activeSeries}
+                        onToggle={toggleSeries}
+                        excludedKeys={[
+                          'indexFund',
+                          'cashflow',
+                          'propertyValue',
+                          'propertyGross',
+                          'propertyNet',
+                          'propertyNetAfterTax',
+                          'investedRent',
+                          'indexFund1_5x',
+                          'indexFund2x',
+                          'indexFund4x',
+                        ]}
+                      />
+                    )}
+                  />
+                  <RechartsLine
+                    type="monotone"
+                    dataKey="capRate"
+                    name={SERIES_LABELS.capRate}
+                    stroke={SERIES_COLORS.capRate}
+                    strokeWidth={2}
+                    strokeDasharray="4 4"
+                    dot={false}
+                    hide={!activeSeries.capRate}
+                  />
+                  <RechartsLine
+                    type="monotone"
+                    dataKey="yieldRate"
+                    name={SERIES_LABELS.yieldRate}
+                    stroke={SERIES_COLORS.yieldRate}
+                    strokeWidth={2}
+                    strokeDasharray="4 2"
+                    dot={false}
+                    hide={!activeSeries.yieldRate}
+                  />
+                  <RechartsLine
+                    type="monotone"
+                    dataKey="cashOnCash"
+                    name={SERIES_LABELS.cashOnCash}
+                    stroke={SERIES_COLORS.cashOnCash}
+                    strokeWidth={2}
+                    strokeDasharray="2 2"
+                    dot={false}
+                    hide={!activeSeries.cashOnCash}
+                  />
+                  <RechartsLine
+                    type="monotone"
+                    dataKey="irrSeries"
+                    name={SERIES_LABELS.irrSeries}
+                    stroke={SERIES_COLORS.irrSeries}
+                    strokeWidth={2}
+                    strokeDasharray="6 3"
+                    dot={false}
+                    hide={!activeSeries.irrSeries}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="space-y-3 md:order-2 md:col-span-1">
                 <SummaryCard
                   title={`Exit comparison (Year ${inputs.exitYear})`}
@@ -4178,6 +4271,167 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showRatioChartModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Key ratio explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowRatioChartModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col gap-4 overflow-hidden p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <SectionTitle
+                label="Key ratios over time"
+                tooltip={SECTION_DESCRIPTIONS.keyRatios}
+                className="text-base font-semibold text-slate-700"
+              />
+              <div className="text-[11px] text-slate-500">Years {chartRange.start} – {chartRange.end}</div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+              <label className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-500">Start year</span>
+                <input
+                  type="number"
+                  value={chartRange.start}
+                  min={0}
+                  max={chartRange.end}
+                  onChange={(event) => handleChartRangeChange('start', Number(event.target.value))}
+                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                />
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-500">End year</span>
+                <input
+                  type="number"
+                  value={chartRange.end}
+                  min={chartRange.start}
+                  max={maxChartYear}
+                  onChange={(event) => handleChartRangeChange('end', Number(event.target.value))}
+                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setChartRange({ start: 0, end: maxChartYear });
+                  setChartRangeTouched(false);
+                }}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Reset range
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
+              {[
+                { key: 'capRate', label: 'Cap rate' },
+                { key: 'yieldRate', label: 'Yield rate' },
+                { key: 'cashOnCash', label: 'Cash on cash' },
+                { key: 'irrSeries', label: 'IRR' },
+              ].map((option) => {
+                const checked = activeSeries[option.key] !== false;
+                return (
+                  <label key={option.key} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) =>
+                        setActiveSeries((prev) => ({
+                          ...prev,
+                          [option.key]: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>{option.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="flex-1">
+              <div className="flex h-full flex-col">
+                <div className="flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={filteredChartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 11, fill: '#475569' }} />
+                      <YAxis tickFormatter={(v) => formatPercent(v)} tick={{ fontSize: 11, fill: '#475569' }} width={90} />
+                      <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
+                      <Legend
+                        content={(props) => (
+                          <ChartLegend
+                            {...props}
+                            activeSeries={activeSeries}
+                            onToggle={toggleSeries}
+                            excludedKeys={[
+                              'indexFund',
+                              'cashflow',
+                              'propertyValue',
+                              'propertyGross',
+                              'propertyNet',
+                              'propertyNetAfterTax',
+                              'investedRent',
+                              'indexFund1_5x',
+                              'indexFund2x',
+                              'indexFund4x',
+                            ]}
+                          />
+                        )}
+                      />
+                      <RechartsLine
+                        type="monotone"
+                        dataKey="capRate"
+                        name={SERIES_LABELS.capRate}
+                        stroke={SERIES_COLORS.capRate}
+                        strokeWidth={2}
+                        strokeDasharray="4 4"
+                        dot={false}
+                        hide={!activeSeries.capRate}
+                      />
+                      <RechartsLine
+                        type="monotone"
+                        dataKey="yieldRate"
+                        name={SERIES_LABELS.yieldRate}
+                        stroke={SERIES_COLORS.yieldRate}
+                        strokeWidth={2}
+                        strokeDasharray="4 2"
+                        dot={false}
+                        hide={!activeSeries.yieldRate}
+                      />
+                      <RechartsLine
+                        type="monotone"
+                        dataKey="cashOnCash"
+                        name={SERIES_LABELS.cashOnCash}
+                        stroke={SERIES_COLORS.cashOnCash}
+                        strokeWidth={2}
+                        strokeDasharray="2 2"
+                        dot={false}
+                        hide={!activeSeries.cashOnCash}
+                      />
+                      <RechartsLine
+                        type="monotone"
+                        dataKey="irrSeries"
+                        name={SERIES_LABELS.irrSeries}
+                        stroke={SERIES_COLORS.irrSeries}
+                        strokeWidth={2}
+                        strokeDasharray="6 3"
+                        dot={false}
+                        hide={!activeSeries.irrSeries}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
             </div>
