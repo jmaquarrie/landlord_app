@@ -723,6 +723,7 @@ export default function App() {
     purchaseCosts: false,
     rentalCashflow: false,
     cashflowDetail: false,
+    wealthTrajectory: false,
   });
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(DEFAULT_CASHFLOW_COLUMNS);
   const [chatMessages, setChatMessages] = useState([]);
@@ -2173,14 +2174,13 @@ export default function App() {
               </SummaryCard>
             </div>
 
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h3 className="mb-2">
-                <SectionTitle
-                  label="Wealth trajectory vs Index Fund"
-                  tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
-                  className="text-sm font-semibold text-slate-700"
-                />
-              </h3>
+            <CollapsibleSection
+              title="Wealth trajectory vs Index Fund"
+              tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
+              collapsed={collapsedSections.wealthTrajectory}
+              onToggle={() => toggleSection('wealthTrajectory')}
+              className="rounded-2xl bg-white p-3 shadow-sm"
+            >
               <div className="h-72 w-full">
                 <ResponsiveContainer>
                   <AreaChart data={equity.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
@@ -2253,7 +2253,7 @@ export default function App() {
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
-            </div>
+            </CollapsibleSection>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="space-y-3 md:order-2 md:col-span-1">
@@ -2985,13 +2985,24 @@ function SensitivityRow({ label, value }) {
   );
 }
 
-function CollapsibleSection({ title, collapsed, onToggle, children, className }) {
+function CollapsibleSection({ title, tooltip, collapsed, onToggle, children, className }) {
   const containerClassName = [
     'relative mb-3',
     className ?? 'rounded-xl border border-slate-200 p-3',
   ]
     .filter(Boolean)
     .join(' ');
+
+  const titleNode =
+    typeof title === 'string'
+      ? (
+          <SectionTitle
+            label={title}
+            tooltip={tooltip}
+            className="text-xs font-semibold text-slate-700"
+          />
+        )
+      : title;
 
   return (
     <div className={containerClassName}>
@@ -3004,7 +3015,7 @@ function CollapsibleSection({ title, collapsed, onToggle, children, className })
         {collapsed ? '+' : '−'}
       </button>
       <div className="pl-6">
-        <div className="text-xs font-semibold text-slate-700">{title}</div>
+        <div className="text-xs font-semibold text-slate-700">{titleNode}</div>
         {!collapsed ? <div className="mt-2">{children}</div> : null}
       </div>
     </div>
