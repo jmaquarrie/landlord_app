@@ -1790,21 +1790,22 @@ export default function App() {
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
   const appreciationPower = Math.pow(appreciationFactor, exitYears);
   const appreciationPowerDisplay = appreciationPower.toFixed(4);
-  const baselineRentYield = useMemo(() => {
+  const { baselineHeatmapYield, heatmapYieldMode } = useMemo(() => {
     const yocValue = Number(equity.yoc);
-    if (Number.isFinite(yocValue) && yocValue > 0) {
-      return yocValue;
+    const projectCost = Number(equity.projectCost);
+    if (Number.isFinite(yocValue) && yocValue > 0 && Number.isFinite(projectCost) && projectCost > 0) {
+      return { baselineHeatmapYield: yocValue, heatmapYieldMode: 'yoc' };
     }
     const price = Number(inputs.purchasePrice) || 0;
     const rent = Number(inputs.monthlyRent) || 0;
     if (!Number.isFinite(price) || price <= 0) {
-      return 0;
+      return { baselineHeatmapYield: 0, heatmapYieldMode: 'gross' };
     }
-    return (rent * 12) / price;
-  }, [equity.yoc, inputs.purchasePrice, inputs.monthlyRent]);
+    return { baselineHeatmapYield: (rent * 12) / price, heatmapYieldMode: 'gross' };
+  }, [equity.projectCost, equity.yoc, inputs.monthlyRent, inputs.purchasePrice]);
   const roiHeatmapYieldOptions = useMemo(
-    () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(baselineRentYield + offset, 0)),
-    [baselineRentYield]
+    () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(baselineHeatmapYield + offset, 0)),
+    [baselineHeatmapYield]
   );
   const roiHeatmapGrowthOptions = useMemo(
     () => ROI_HEATMAP_OFFSETS.map((offset) => appreciationRate + offset),
@@ -1818,6 +1819,19 @@ export default function App() {
     }
     const rows = [];
     const actualMonthlyRent = Number(inputs.monthlyRent) || 0;
+    const projectCost = Number(equity.projectCost);
+    const closingCosts = Number(equity.closing);
+    const fallbackProjectCost =
+      purchasePrice +
+      (Number.isFinite(closingCosts) ? closingCosts : purchasePrice * (Number(inputs.closingCostsPct) || 0)) +
+      (Number(inputs.renovationCost) || 0);
+    const heatmapProjectCost = Number.isFinite(projectCost) && projectCost > 0 ? projectCost : fallbackProjectCost;
+    const vacancyPct = Number(inputs.vacancyPct) || 0;
+    const mgmtPct = Number(inputs.mgmtPct) || 0;
+    const repairsPct = Number(inputs.repairsPct) || 0;
+    const fixedOpexAnnual = (Number(inputs.insurancePerYear) || 0) + (Number(inputs.otherOpexPerYear) || 0);
+    const rentEffectDenominator = 12 * ((1 - vacancyPct) - (mgmtPct + repairsPct));
+    const usesYieldOnCost = heatmapYieldMode === 'yoc';
     let roiMin = Infinity;
     let roiMax = -Infinity;
     let irrMin = Infinity;
@@ -1825,18 +1839,17 @@ export default function App() {
     roiHeatmapGrowthOptions.forEach((growthRate, rowIndex) => {
       const cells = [];
       roiHeatmapYieldOptions.forEach((yieldRate, columnIndex) => {
-        const offset = ROI_HEATMAP_OFFSETS[columnIndex] ?? 0;
-        const adjustedYield = Math.max(baselineRentYield + offset, 0);
-        let monthlyRent;
-        let cellYield;
-        if (Math.abs(offset) < 1e-8) {
-          monthlyRent = actualMonthlyRent;
-          cellYield = purchasePrice > 0 ? (monthlyRent * 12) / purchasePrice : 0;
-        } else {
-          const annualRent = purchasePrice * adjustedYield;
-          monthlyRent = Math.max(0, roundTo(annualRent / 12, 2));
-          cellYield = adjustedYield;
+        const targetYield = Math.max(yieldRate, 0);
+        let monthlyRent = actualMonthlyRent;
+        if (Math.abs(targetYield - baselineHeatmapYield) > 1e-8) {
+          if (usesYieldOnCost && heatmapProjectCost > 0 && rentEffectDenominator > 0) {
+            const targetNoi = targetYield * heatmapProjectCost;
+            monthlyRent = (targetNoi + fixedOpexAnnual) / rentEffectDenominator;
+          } else if (purchasePrice > 0) {
+            monthlyRent = (targetYield * purchasePrice) / 12;
+          }
         }
+        monthlyRent = Math.max(0, roundTo(monthlyRent, 2));
         const metrics = calculateEquity({
           ...inputs,
           annualAppreciation: growthRate,
@@ -1844,6 +1857,11 @@ export default function App() {
         });
         const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
         const irrValue = Number(metrics.irr) || 0;
+        const computedYield = usesYieldOnCost
+          ? Number(metrics.yoc) || targetYield
+          : purchasePrice > 0
+          ? (monthlyRent * 12) / purchasePrice
+          : targetYield;
         if (Number.isFinite(roiValue)) {
           roiMin = Math.min(roiMin, roiValue);
           roiMax = Math.max(roiMax, roiValue);
@@ -1853,7 +1871,7 @@ export default function App() {
           irrMax = Math.max(irrMax, irrValue);
         }
         cells.push({
-          yieldRate: cellYield,
+          yieldRate: computedYield,
           columnIndex,
           roi: Number.isFinite(roiValue) ? roiValue : 0,
           irr: irrValue,
@@ -1870,7 +1888,15 @@ export default function App() {
       irrMax = 0;
     }
     return { rows, roiRange: [roiMin, roiMax], irrRange: [irrMin, irrMax] };
-  }, [inputs, roiHeatmapGrowthOptions, roiHeatmapYieldOptions]);
+  }, [
+    baselineHeatmapYield,
+    equity.closing,
+    equity.projectCost,
+    heatmapYieldMode,
+    inputs,
+    roiHeatmapGrowthOptions,
+    roiHeatmapYieldOptions,
+  ]);
 
   const leverageChartData = useMemo(() => {
     const price = Number(inputs.purchasePrice) || 0;
