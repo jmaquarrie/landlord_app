@@ -215,7 +215,12 @@ const roundTo = (value, decimals = 2) => {
   return Math.round((value + Number.EPSILON) * factor) / factor;
 };
 
-const formatPercent = (value) => `${roundTo(value * 100, 2).toFixed(2)}%`;
+const formatPercent = (value) => {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return `${roundTo(value * 100, 2).toFixed(2)}%`;
+};
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -269,7 +274,7 @@ const SECTION_DESCRIPTIONS = {
   performance:
     'Shows rent, operating expenses, debt service, taxes, and cash flow for the selected hold year so you can compare annual performance.',
   keyRatios:
-    'Highlights core deal ratios such as cap rate, yield on cost, cash-on-cash return, DSCR, and the monthly mortgage payment.',
+    'Highlights core deal ratios such as cap rate, yield on cost, cash-on-cash return, DSCR, monthly mortgage payment, and IRR across the modeled hold period.',
   exit:
     'Projects future value, remaining loan balance, selling costs, and estimated equity at the chosen exit year.',
   npv:
@@ -280,6 +285,15 @@ const SECTION_DESCRIPTIONS = {
     'Compares exit-year totals for the property and the index fund, including after-tax wealth and cumulative rental tax.',
   sensitivity:
     'Adjust the rent sensitivity to see how Year 1 after-tax cash flow shifts when rents move up or down.',
+};
+
+const KEY_RATIO_TOOLTIPS = {
+  cap: 'First-year net operating income divided by the purchase price.',
+  yoc: 'First-year net operating income divided by total project cost (price + closing + renovation).',
+  coc: 'Year 1 after-debt cash flow divided by total cash invested.',
+  dscr: 'Debt service coverage ratio: Year 1 NOI divided by annual debt service.',
+  mortgage: 'Estimated monthly mortgage payment for the modeled loan.',
+  irr: 'Internal rate of return based on annual cash flows and sale proceeds through the modeled exit year.',
 };
 
 function personalAllowance(income) {
@@ -332,6 +346,59 @@ function remainingBalance({ principal, annualRate, years, monthsPaid }) {
 
 function npv(rate, cashflows) {
   return cashflows.reduce((acc, cf, t) => acc + cf / Math.pow(1 + rate, t), 0);
+}
+
+function irr(cashflows) {
+  if (!Array.isArray(cashflows) || cashflows.length < 2) {
+    return null;
+  }
+  const hasPositive = cashflows.some((value) => Number.isFinite(value) && value > 0);
+  const hasNegative = cashflows.some((value) => Number.isFinite(value) && value < 0);
+  if (!hasPositive || !hasNegative) {
+    return null;
+  }
+  const npvAt = (rate) => {
+    if (rate <= -0.9999) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return cashflows.reduce((acc, cf, index) => acc + cf / Math.pow(1 + rate, index), 0);
+  };
+
+  let low = -0.9999;
+  let high = 1;
+  let lowVal = npvAt(low);
+  let highVal = npvAt(high);
+
+  let guard = 0;
+  while (lowVal * highVal > 0 && guard < 50) {
+    high *= 2;
+    highVal = npvAt(high);
+    guard += 1;
+    if (!Number.isFinite(highVal)) {
+      break;
+    }
+  }
+
+  if (lowVal * highVal > 0) {
+    return null;
+  }
+
+  for (let iteration = 0; iteration < 100; iteration += 1) {
+    const mid = (low + high) / 2;
+    const midVal = npvAt(mid);
+    if (Math.abs(midVal) < 1e-6) {
+      return mid;
+    }
+    if (lowVal * midVal < 0) {
+      high = mid;
+      highVal = midVal;
+    } else {
+      low = mid;
+      lowVal = midVal;
+    }
+  }
+
+  return (low + high) / 2;
 }
 
 function calcStampDuty(price, buyerType, propertiesOwned, firstTimeBuyer) {
@@ -775,11 +842,15 @@ function calculateEquity(rawInputs) {
   chart.push({
     year: 0,
     indexFund: indexVal,
+    indexFund1_5x: indexVal * 1.5,
+    indexFund2x: indexVal * 2,
+    indexFund4x: indexVal * 4,
     propertyValue: inputs.purchasePrice,
     propertyGross: inputs.purchasePrice,
     propertyNet: initialNetEquity,
     propertyNetAfterTax: initialNetEquity,
     reinvestFund: 0,
+    cashflow: 0,
   });
 
   const propertyTaxes = [];
@@ -859,11 +930,15 @@ function calculateEquity(rawInputs) {
     chart.push({
       year: y,
       indexFund: indexVal,
+      indexFund1_5x: indexVal * 1.5,
+      indexFund2x: indexVal * 2,
+      indexFund4x: indexVal * 4,
       propertyValue: vt,
       propertyGross: propertyGrossValue,
       propertyNet: propertyNetValue,
       propertyNetAfterTax: propertyNetAfterTaxValue,
       reinvestFund: reinvestFundValue,
+      cashflow: cumulativeCashAfterTax,
     });
 
     rent *= 1 + inputs.rentGrowth;
@@ -882,6 +957,7 @@ function calculateEquity(rawInputs) {
   const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
   const propertyTaxYear1 = propertyTaxes[0] ?? 0;
   const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
+  const irrValue = irr(cf);
 
   return {
     deposit,
@@ -933,6 +1009,7 @@ function calculateEquity(rawInputs) {
     annualCashflowsPreTax,
     annualCashflowsAfterTax,
     annualDebtService,
+    irr: irrValue,
   };
 }
 
@@ -1001,11 +1078,18 @@ export default function App() {
   const [chatError, setChatError] = useState('');
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
+    indexFund1_5x: false,
+    indexFund2x: false,
+    indexFund4x: false,
     propertyValue: true,
     propertyGross: true,
     propertyNet: true,
     propertyNetAfterTax: true,
+    cashflow: true,
   });
+  const [showChartModal, setShowChartModal] = useState(false);
+  const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
+  const [chartRangeTouched, setChartRangeTouched] = useState(false);
   const [performanceYear, setPerformanceYear] = useState(1);
   const [sensitivityPct, setSensitivityPct] = useState(0.1);
   const [shareNotice, setShareNotice] = useState('');
@@ -1260,6 +1344,78 @@ export default function App() {
   const selectedCashPreTax = equity.annualCashflowsPreTax[performanceYearIndex] ?? 0;
   const selectedCashAfterTax = equity.annualCashflowsAfterTax[performanceYearIndex] ?? 0;
   const selectedRentalTax = equity.propertyTaxes[performanceYearIndex] ?? 0;
+
+  const maxChartYear = useMemo(() => {
+    const data = Array.isArray(equity.chart) ? equity.chart : [];
+    if (data.length === 0) {
+      return 0;
+    }
+    const lastYear = Number(data[data.length - 1]?.year);
+    if (Number.isFinite(lastYear)) {
+      return Math.max(0, Math.round(lastYear));
+    }
+    return data.reduce((acc, point) => {
+      const year = Number(point?.year);
+      return Number.isFinite(year) ? Math.max(acc, Math.round(year)) : acc;
+    }, 0);
+  }, [equity.chart]);
+
+  useEffect(() => {
+    setChartRange((prev) => {
+      let safeStart = Math.max(0, Math.min(prev.start, maxChartYear));
+      let safeEnd = Math.max(safeStart, Math.min(prev.end, maxChartYear));
+      if (!chartRangeTouched) {
+        safeStart = 0;
+        safeEnd = maxChartYear;
+      } else if (maxChartYear > 0 && safeEnd === 0) {
+        safeEnd = maxChartYear;
+      }
+      if (safeStart === prev.start && safeEnd === prev.end) {
+        return prev;
+      }
+      return { start: safeStart, end: safeEnd };
+    });
+  }, [chartRangeTouched, maxChartYear]);
+
+  const filteredChartData = useMemo(() => {
+    const data = Array.isArray(equity.chart) ? equity.chart : [];
+    if (data.length === 0) {
+      return data;
+    }
+    const startYear = Math.max(0, Math.min(chartRange.start, chartRange.end));
+    const endYear = Math.max(startYear, chartRange.end);
+    return data.filter((point) => {
+      const year = Number(point?.year);
+      return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
+    });
+  }, [equity.chart, chartRange]);
+
+  const handleChartRangeChange = useCallback(
+    (key, value) => {
+      setChartRangeTouched(true);
+      setChartRange((prev) => {
+        const sanitized = Number.isFinite(value) ? Math.round(value) : 0;
+        const clamped = Math.max(0, Math.min(sanitized, maxChartYear));
+        if (key === 'start') {
+          const nextStart = clamped;
+          const nextEnd = Math.max(nextStart, Math.min(prev.end, maxChartYear));
+          if (nextStart === prev.start && nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: nextStart, end: nextEnd };
+        }
+        if (key === 'end') {
+          const nextEnd = Math.max(prev.start, clamped);
+          if (nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: prev.start, end: nextEnd };
+        }
+        return prev;
+      });
+    },
+    [maxChartYear]
+  );
 
   const isCompanyBuyer = inputs.buyerType === 'company';
   const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
@@ -2795,14 +2951,16 @@ export default function App() {
               </SummaryCard>
 
               <SummaryCard title="Key ratios" tooltip={SECTION_DESCRIPTIONS.keyRatios}>
-                <Line label="Cap rate" value={formatPercent(equity.cap)} />
-                <Line label="Yield on cost" value={formatPercent(equity.yoc)} />
-                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} />
+                <Line label="Cap rate" value={formatPercent(equity.cap)} tooltip={KEY_RATIO_TOOLTIPS.cap} />
+                <Line label="Yield on cost" value={formatPercent(equity.yoc)} tooltip={KEY_RATIO_TOOLTIPS.yoc} />
+                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} tooltip={KEY_RATIO_TOOLTIPS.coc} />
+                <Line label="IRR" value={formatPercent(equity.irr)} tooltip={KEY_RATIO_TOOLTIPS.irr} />
                 <Line
                   label="DSCR"
                   value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
+                  tooltip={KEY_RATIO_TOOLTIPS.dscr}
                 />
-                <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} />
+                <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} tooltip={KEY_RATIO_TOOLTIPS.mortgage} />
               </SummaryCard>
             </div>
 
@@ -2827,16 +2985,26 @@ export default function App() {
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h3 className="mb-2">
+              <div className="mb-2 flex items-center justify-between gap-3">
                 <SectionTitle
                   label="Wealth trajectory vs Index Fund"
                   tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
                   className="text-sm font-semibold text-slate-700"
                 />
-              </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowChartModal(true)}
+                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                >
+                  Expand chart
+                </button>
+              </div>
+              <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
+                <span>Showing years {chartRange.start} – {chartRange.end}</span>
+              </div>
               <div className="h-72 w-full">
                 <ResponsiveContainer>
-                  <AreaChart data={equity.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                  <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                       dataKey="year"
@@ -2866,6 +3034,36 @@ export default function App() {
                       fill="rgba(249,115,22,0.2)"
                       strokeWidth={2}
                       hide={!activeSeries.indexFund}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="indexFund1_5x"
+                      name="Index fund 1.5×"
+                      stroke="#fb7185"
+                      fillOpacity={0}
+                      strokeWidth={1.5}
+                      strokeDasharray="6 3"
+                      hide={!activeSeries.indexFund1_5x}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="indexFund2x"
+                      name="Index fund 2×"
+                      stroke="#ec4899"
+                      fillOpacity={0}
+                      strokeWidth={1.5}
+                      strokeDasharray="4 2"
+                      hide={!activeSeries.indexFund2x}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="indexFund4x"
+                      name="Index fund 4×"
+                      stroke="#c026d3"
+                      fillOpacity={0}
+                      strokeWidth={1.5}
+                      strokeDasharray="2 2"
+                      hide={!activeSeries.indexFund4x}
                     />
                     <Area
                       type="monotone"
@@ -2902,6 +3100,15 @@ export default function App() {
                       fill="rgba(147,51,234,0.2)"
                       strokeWidth={2}
                       hide={!activeSeries.propertyNetAfterTax}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="cashflow"
+                      name="Cashflow"
+                      stroke="#facc15"
+                      fill="rgba(250,204,21,0.2)"
+                      strokeWidth={2}
+                      hide={!activeSeries.cashflow}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -3257,6 +3464,227 @@ export default function App() {
         onClear={handleClearChat}
       />
     </div>
+
+    {showChartModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Wealth trajectory explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowChartModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+            <div className="flex-1 overflow-hidden p-5">
+              <div className="flex h-full flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionTitle
+                    label="Wealth trajectory vs Index Fund"
+                    tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
+                    className="text-base font-semibold text-slate-700"
+                  />
+                  <div className="text-[11px] text-slate-500">Years {chartRange.start} – {chartRange.end}</div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                  <label className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-500">Start year</span>
+                    <input
+                      type="number"
+                      value={chartRange.start}
+                      min={0}
+                      max={chartRange.end}
+                      onChange={(event) => handleChartRangeChange('start', Number(event.target.value))}
+                      className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-500">End year</span>
+                    <input
+                      type="number"
+                      value={chartRange.end}
+                      min={chartRange.start}
+                      max={maxChartYear}
+                      onChange={(event) => handleChartRangeChange('end', Number(event.target.value))}
+                      className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChartRange({ start: 0, end: maxChartYear });
+                      setChartRangeTouched(false);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Reset range
+                  </button>
+                </div>
+                <div className="mt-4 flex-1">
+                  <div className="flex h-full flex-col">
+                    <div className="flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={filteredChartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 11, fill: '#475569' }} />
+                          <YAxis
+                            tickFormatter={(v) => currency(v)}
+                            tick={{ fontSize: 11, fill: '#475569' }}
+                            width={110}
+                          />
+                          <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
+                          <Legend
+                            content={(props) => (
+                              <ChartLegend {...props} activeSeries={activeSeries} onToggle={toggleSeries} />
+                            )}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="indexFund"
+                            name="Index fund"
+                            stroke="#f97316"
+                            fill="rgba(249,115,22,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.indexFund}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="indexFund1_5x"
+                            name="Index fund 1.5×"
+                            stroke="#fb7185"
+                            fillOpacity={0}
+                            strokeWidth={1.5}
+                            strokeDasharray="6 3"
+                            hide={!activeSeries.indexFund1_5x}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="indexFund2x"
+                            name="Index fund 2×"
+                            stroke="#ec4899"
+                            fillOpacity={0}
+                            strokeWidth={1.5}
+                            strokeDasharray="4 2"
+                            hide={!activeSeries.indexFund2x}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="indexFund4x"
+                            name="Index fund 4×"
+                            stroke="#c026d3"
+                            fillOpacity={0}
+                            strokeWidth={1.5}
+                            strokeDasharray="2 2"
+                            hide={!activeSeries.indexFund4x}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="propertyValue"
+                            name="Property value"
+                            stroke="#0ea5e9"
+                            fill="rgba(14,165,233,0.18)"
+                            strokeWidth={2}
+                            hide={!activeSeries.propertyValue}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="propertyGross"
+                            name="Property gross"
+                            stroke="#2563eb"
+                            fill="rgba(37,99,235,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.propertyGross}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="propertyNet"
+                            name="Property net"
+                            stroke="#16a34a"
+                            fill="rgba(22,163,74,0.25)"
+                            strokeWidth={2}
+                            hide={!activeSeries.propertyNet}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="propertyNetAfterTax"
+                            name={propertyNetAfterTaxLabel}
+                            stroke="#9333ea"
+                            fill="rgba(147,51,234,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.propertyNetAfterTax}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="cashflow"
+                            name="Cashflow"
+                            stroke="#facc15"
+                            fill="rgba(250,204,21,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.cashflow}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="w-full border-t border-slate-200 bg-slate-50 p-5 text-xs text-slate-700 md:w-96 md:border-l md:border-t-0 md:text-[11px]">
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Exit & growth assumptions</h3>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {smallInput('exitYear', 'Exit year', 1)}
+                    {pctInput('annualAppreciation', 'Appreciation %')}
+                    {pctInput('rentGrowth', 'Rent growth %')}
+                    {pctInput('indexFundGrowth', 'Index fund growth %')}
+                    {pctInput('sellingCostsPct', 'Selling costs %')}
+                    {pctInput('discountRate', 'Discount rate %', 0.001)}
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Rental cashflow inputs</h3>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
+                    {pctInput('vacancyPct', 'Vacancy %')}
+                    {pctInput('mgmtPct', 'Management %')}
+                    {pctInput('repairsPct', 'Repairs/CapEx %')}
+                    {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
+                    {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
+                  </div>
+                  <div className="mt-3 rounded-xl border border-slate-200 p-3">
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(inputs.reinvestIncome)}
+                        onChange={(e) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            reinvestIncome: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Reinvest after-tax cash flow into index fund</span>
+                    </label>
+                    {inputs.reinvestIncome && (
+                      <div className="mt-2 grid grid-cols-1 gap-2">
+                        {pctInput('reinvestPct', 'Reinvest % of after-tax cash flow')}
+                        <p className="text-[11px] text-slate-500">
+                          Only positive after-tax cash flows are reinvested and compound alongside the index fund baseline.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
 
     {showTableModal && (
         <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
