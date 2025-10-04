@@ -253,14 +253,14 @@ const normalizeScenarioList = (list) =>
 const DEFAULT_INPUTS = {
   propertyAddress: '',
   propertyUrl: '',
-  purchasePrice: 250000,
+  purchasePrice: 70000,
   depositPct: 0.25,
   closingCostsPct: 0.01,
   renovationCost: 0,
   interestRate: 0.055,
   mortgageYears: 30,
   loanType: 'repayment',
-  monthlyRent: 1400,
+  monthlyRent: 800,
   vacancyPct: 0.05,
   mgmtPct: 0.1,
   repairsPct: 0.08,
@@ -268,7 +268,7 @@ const DEFAULT_INPUTS = {
   otherOpexPerYear: 300,
   annualAppreciation: 0.03,
   rentGrowth: 0.02,
-  exitYear: 10,
+  exitYear: 20,
   sellingCostsPct: 0.02,
   discountRate: 0.07,
   buyerType: 'individual',
@@ -1283,10 +1283,10 @@ export default function App() {
     rentalCashflow: false,
     cashflowDetail: false,
     wealthTrajectory: false,
-    rateTrends: false,
-    cashflowBars: false,
-    roiHeatmap: false,
-    equityGrowth: false,
+    rateTrends: true,
+    cashflowBars: true,
+    roiHeatmap: true,
+    equityGrowth: true,
   });
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -3558,137 +3558,7 @@ export default function App() {
               </SummaryCard>
             </div>
 
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => toggleSection('rateTrends')}
-                    aria-expanded={!collapsedSections.rateTrends}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                    aria-label={collapsedSections.rateTrends ? 'Show chart' : 'Hide chart'}
-                  >
-                    {collapsedSections.rateTrends ? '+' : '−'}
-                  </button>
-                  <SectionTitle
-                    label="Return ratios over time"
-                    tooltip={SECTION_DESCRIPTIONS.rateTrends}
-                    className="text-sm font-semibold text-slate-700"
-                  />
-                </div>
-                {!collapsedSections.rateTrends ? (
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRateChartRange({ start: 0, end: maxChartYear });
-                        setRateRangeTouched(false);
-                      }}
-                      className="hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
-                    >
-                      Reset range
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowRatesModal(true)}
-                      className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                    >
-                      Expand chart
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              {!collapsedSections.rateTrends ? (
-                <>
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
-                    <span>
-                      Years {rateChartRange.start} – {rateChartRange.end}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRateChartRange({ start: 0, end: maxChartYear });
-                        setRateRangeTouched(false);
-                      }}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 sm:hidden"
-                    >
-                      Reset range
-                    </button>
-                  </div>
-                  <div className="h-72 w-full">
-                    {rateChartDataWithMovingAverage.length > 0 ? (
-                      <ResponsiveContainer>
-                        <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis
-                            dataKey="year"
-                            tickFormatter={(t) => `Y${t}`}
-                            tick={{ fontSize: 10, fill: '#475569' }}
-                          />
-                          <YAxis
-                            yAxisId="percent"
-                            tickFormatter={(v) => formatPercent(v)}
-                            tick={{ fontSize: 10, fill: '#475569' }}
-                            width={70}
-                          />
-                          <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
-                          <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={rateSeriesActive}
-                                onToggle={toggleRateSeries}
-                                excludedKeys={RATE_SERIES_KEYS.map((key) => `${key}MA`)}
-                              />
-                            )}
-                          />
-                          {rateChartSettings.showZeroBaseline ? (
-                            <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
-                          ) : null}
-                          {RATE_SERIES_KEYS.map((key) => (
-                            <RechartsLine
-                              key={key}
-                              type="monotone"
-                              dataKey={key}
-                              name={SERIES_LABELS[key] ?? key}
-                              stroke={SERIES_COLORS[key]}
-                              strokeWidth={2}
-                              dot={false}
-                              yAxisId="percent"
-                              hide={!rateSeriesActive[key]}
-                            />
-                          ))}
-                          {rateChartSettings.showMovingAverage
-                            ? RATE_SERIES_KEYS.map((key) => (
-                                <RechartsLine
-                                  key={`${key}MA`}
-                                  type="monotone"
-                                  dataKey={`${key}MA`}
-                                  stroke={SERIES_COLORS[key]}
-                                  strokeWidth={1.5}
-                                  strokeDasharray="4 3"
-                                  dot={false}
-                                  yAxisId="percent"
-                                  hide={!rateSeriesActive[key]}
-                                  legendType="none"
-                                  isAnimationActive={false}
-                                  strokeOpacity={0.6}
-                                />
-                              ))
-                            : null}
-                        </LineChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-500">
-                        Not enough data to plot return ratios yet.
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="text-[11px] text-slate-500">Chart hidden. Select “+” to display it.</div>
-              )}
-            </div>
+            
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
@@ -3843,9 +3713,203 @@ export default function App() {
                     </ResponsiveContainer>
                   </div>
                 </>
-              ) : (
-                <div className="text-[11px] text-slate-500">Chart hidden. Select “+” to display it.</div>
-              )}
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('rateTrends')}
+                    aria-expanded={!collapsedSections.rateTrends}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.rateTrends ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.rateTrends ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Return ratios over time"
+                    tooltip={SECTION_DESCRIPTIONS.rateTrends}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+                {!collapsedSections.rateTrends ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRateChartRange({ start: 0, end: maxChartYear });
+                        setRateRangeTouched(false);
+                      }}
+                      className="hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                    >
+                      Reset range
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowRatesModal(true)}
+                      className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    >
+                      Expand chart
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              {!collapsedSections.rateTrends ? (
+                <>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
+                    <span>
+                      Years {rateChartRange.start} – {rateChartRange.end}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRateChartRange({ start: 0, end: maxChartYear });
+                        setRateRangeTouched(false);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 sm:hidden"
+                    >
+                      Reset range
+                    </button>
+                  </div>
+                  <div className="h-72 w-full">
+                    {rateChartDataWithMovingAverage.length > 0 ? (
+                      <ResponsiveContainer>
+                        <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis
+                            dataKey="year"
+                            tickFormatter={(t) => `Y${t}`}
+                            tick={{ fontSize: 10, fill: '#475569' }}
+                          />
+                          <YAxis
+                            yAxisId="percent"
+                            tickFormatter={(v) => formatPercent(v)}
+                            tick={{ fontSize: 10, fill: '#475569' }}
+                            width={70}
+                          />
+                          <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
+                          <Legend
+                            content={(props) => (
+                              <ChartLegend
+                                {...props}
+                                activeSeries={rateSeriesActive}
+                                onToggle={toggleRateSeries}
+                                excludedKeys={RATE_SERIES_KEYS.map((key) => `${key}MA`)}
+                              />
+                            )}
+                          />
+                          {rateChartSettings.showZeroBaseline ? (
+                            <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
+                          ) : null}
+                          {RATE_SERIES_KEYS.map((key) => (
+                            <RechartsLine
+                              key={key}
+                              type="monotone"
+                              dataKey={key}
+                              name={SERIES_LABELS[key] ?? key}
+                              stroke={SERIES_COLORS[key]}
+                              strokeWidth={2}
+                              dot={false}
+                              yAxisId="percent"
+                              hide={!rateSeriesActive[key]}
+                            />
+                          ))}
+                          {rateChartSettings.showMovingAverage
+                            ? RATE_SERIES_KEYS.map((key) => (
+                                <RechartsLine
+                                  key={`${key}MA`}
+                                  type="monotone"
+                                  dataKey={`${key}MA`}
+                                  stroke={SERIES_COLORS[key]}
+                                  strokeWidth={1.5}
+                                  strokeDasharray="4 3"
+                                  dot={false}
+                                  yAxisId="percent"
+                                  hide={!rateSeriesActive[key]}
+                                  legendType="none"
+                                  isAnimationActive={false}
+                                  strokeOpacity={0.6}
+                                />
+                              ))
+                            : null}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-500">
+                        Not enough data to plot return ratios yet.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('equityGrowth')}
+                    aria-expanded={!collapsedSections.equityGrowth}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.equityGrowth ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.equityGrowth ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Equity growth over time"
+                    tooltip={SECTION_DESCRIPTIONS.equityGrowth}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+              </div>
+              {!collapsedSections.equityGrowth ? (
+                <>
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    See how outstanding debt compares with the portion you own as the property appreciates and the mortgage is repaid.
+                  </p>
+                  <div className="h-72 w-full">
+                    {equityGrowthChartData.length > 0 ? (
+                      <ResponsiveContainer>
+                        <AreaChart data={equityGrowthChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
+                          <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={100} />
+                          <Tooltip
+                            formatter={(value, name) => currency(value)}
+                            labelFormatter={(label) => `Year ${label}`}
+                          />
+                          <Legend />
+                          <Area
+                            type="monotone"
+                            dataKey="loanBalance"
+                            name="Lender share"
+                            stackId="equity"
+                            stroke="#94a3b8"
+                            fill="rgba(148,163,184,0.4)"
+                            isAnimationActive={false}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="ownerEquity"
+                            name="Your equity"
+                            stackId="equity"
+                            stroke="#10b981"
+                            fill="rgba(16,185,129,0.35)"
+                            isAnimationActive={false}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
+                        Equity projections will appear once an exit year and loan details are provided.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : null}
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
@@ -3927,9 +3991,7 @@ export default function App() {
                     )}
                   </div>
                 </>
-              ) : (
-                <div className="text-[11px] text-slate-500">Chart hidden. Select “+” to display it.</div>
-              )}
+              ) : null}
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
@@ -4006,7 +4068,7 @@ export default function App() {
                                       <div
                                         className="rounded-lg px-2 py-3 text-center text-xs font-semibold text-slate-800"
                                         style={{ backgroundColor: background }}
-                                        title={`${formatPercent(cell.irr)} IRR | ${formatPercent(cell.roi)} total ROI`}
+                                        title={`If rent yield is ${formatPercent(cell.yieldRate)} and capital growth is ${formatPercent(row.growthRate)}, expect ${formatPercent(value)} ${roiHeatmapMetric === 'irr' ? 'IRR' : 'total ROI'} (IRR ${formatPercent(cell.irr)}, total ROI ${formatPercent(cell.roi)}).`}
                                       >
                                         {formatPercent(value)}
                                       </div>
@@ -4025,78 +4087,26 @@ export default function App() {
                     )}
                   </div>
                 </>
-              ) : (
-                <div className="text-[11px] text-slate-500">Heatmap hidden. Select “+” to display it.</div>
-              )}
+              ) : null}
             </div>
 
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => toggleSection('equityGrowth')}
-                    aria-expanded={!collapsedSections.equityGrowth}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                    aria-label={collapsedSections.equityGrowth ? 'Show chart' : 'Hide chart'}
-                  >
-                    {collapsedSections.equityGrowth ? '+' : '−'}
-                  </button>
-                  <SectionTitle
-                    label="Equity growth over time"
-                    tooltip={SECTION_DESCRIPTIONS.equityGrowth}
-                    className="text-sm font-semibold text-slate-700"
-                  />
-                </div>
-              </div>
-              {!collapsedSections.equityGrowth ? (
-                <>
-                  <p className="mb-2 text-[11px] text-slate-500">
-                    See how outstanding debt compares with the portion you own as the property appreciates and the mortgage is repaid.
-                  </p>
-                  <div className="h-72 w-full">
-                    {equityGrowthChartData.length > 0 ? (
-                      <ResponsiveContainer>
-                        <AreaChart data={equityGrowthChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
-                          <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={100} />
-                          <Tooltip
-                            formatter={(value, name) => currency(value)}
-                            labelFormatter={(label) => `Year ${label}`}
-                          />
-                          <Legend />
-                          <Area
-                            type="monotone"
-                            dataKey="loanBalance"
-                            name="Lender share"
-                            stackId="equity"
-                            stroke="#94a3b8"
-                            fill="rgba(148,163,184,0.4)"
-                            isAnimationActive={false}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="ownerEquity"
-                            name="Your equity"
-                            stackId="equity"
-                            stroke="#10b981"
-                            fill="rgba(16,185,129,0.35)"
-                            isAnimationActive={false}
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
-                        Equity projections will appear once an exit year and loan details are provided.
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="text-[11px] text-slate-500">Chart hidden. Select “+” to display it.</div>
-              )}
-            </div>
+
+
+
+
+
+
+
+
+
+
+            
+
+            
+
+            
+
+            
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="space-y-3 md:order-2 md:col-span-1">
