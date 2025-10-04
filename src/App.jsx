@@ -4209,6 +4209,7 @@ export default function App() {
                       {chartFocus && chartFocus.data ? (
                         <WealthChartOverlay
                           overlayRef={chartOverlayRef}
+                          focusLocked={chartFocusLocked}
                           year={chartFocus.year}
                           point={chartFocus.data}
                           propertyNetAfterTaxLabel={propertyNetAfterTaxLabel}
@@ -4632,6 +4633,7 @@ function CashflowTable({
 
 function WealthChartOverlay({
   overlayRef,
+  focusLocked,
   year,
   point,
   propertyNetAfterTaxLabel,
@@ -4666,11 +4668,13 @@ function WealthChartOverlay({
     return null;
   }
 
+  const overlayClasses = [
+    'absolute right-4 top-4 z-20 w-full max-w-sm rounded-2xl border border-slate-200 p-4 shadow-lg transition',
+    focusLocked ? 'pointer-events-auto bg-white/95' : 'pointer-events-none bg-white/70',
+  ];
+
   return (
-    <div
-      ref={overlayRef}
-      className="pointer-events-auto absolute right-4 top-4 z-20 w-full max-w-sm rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-lg backdrop-blur"
-    >
+    <div ref={overlayRef} className={`${overlayClasses.join(' ')} backdrop-blur`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Selected year</div>
