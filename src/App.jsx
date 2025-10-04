@@ -3965,6 +3965,7 @@ export default function App() {
                               stroke="#334155"
                               strokeDasharray="4 4"
                               strokeWidth={1}
+                              yAxisId="currency"
                             />
                           ) : null}
                           {chartFocus && chartFocus.data
