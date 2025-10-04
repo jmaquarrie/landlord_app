@@ -1342,6 +1342,10 @@ export default function App() {
     mortgagePayments: true,
     netCashflow: true,
   });
+  const [leverageSeriesActive, setLeverageSeriesActive] = useState({
+    irr: true,
+    roi: true,
+  });
   const [roiHeatmapMetric, setRoiHeatmapMetric] = useState('irr');
   const [showChartModal, setShowChartModal] = useState(false);
   const [showRatesModal, setShowRatesModal] = useState(false);
@@ -1810,6 +1814,7 @@ export default function App() {
       return { rows: [], roiRange: [0, 0], irrRange: [0, 0] };
     }
     const rows = [];
+    const actualMonthlyRent = Number(inputs.monthlyRent) || 0;
     let roiMin = Infinity;
     let roiMax = -Infinity;
     let irrMin = Infinity;
@@ -1817,8 +1822,18 @@ export default function App() {
     roiHeatmapGrowthOptions.forEach((growthRate, rowIndex) => {
       const cells = [];
       roiHeatmapYieldOptions.forEach((yieldRate, columnIndex) => {
-        const annualRent = purchasePrice * yieldRate;
-        const monthlyRent = Math.max(0, roundTo(annualRent / 12, 2));
+        const offset = ROI_HEATMAP_OFFSETS[columnIndex] ?? 0;
+        const adjustedYield = Math.max(baselineRentYield + offset, 0);
+        let monthlyRent;
+        let cellYield;
+        if (Math.abs(offset) < 1e-8) {
+          monthlyRent = actualMonthlyRent;
+          cellYield = purchasePrice > 0 ? (monthlyRent * 12) / purchasePrice : 0;
+        } else {
+          const annualRent = purchasePrice * adjustedYield;
+          monthlyRent = Math.max(0, roundTo(annualRent / 12, 2));
+          cellYield = adjustedYield;
+        }
         const metrics = calculateEquity({
           ...inputs,
           annualAppreciation: growthRate,
@@ -1835,7 +1850,7 @@ export default function App() {
           irrMax = Math.max(irrMax, irrValue);
         }
         cells.push({
-          yieldRate,
+          yieldRate: cellYield,
           columnIndex,
           roi: Number.isFinite(roiValue) ? roiValue : 0,
           irr: irrValue,
@@ -2800,6 +2815,13 @@ export default function App() {
 
   const toggleRateSeries = (key) => {
     setRateSeriesActive((prev) => ({
+      ...prev,
+      [key]: !(prev[key] !== false),
+    }));
+  };
+
+  const toggleLeverageSeries = (key) => {
+    setLeverageSeriesActive((prev) => ({
       ...prev,
       [key]: !(prev[key] !== false),
     }));
@@ -4190,10 +4212,18 @@ export default function App() {
                               width={90}
                             />
                             <Tooltip
-                              formatter={(value, key) => [formatPercent(value), key === 'irr' ? 'IRR' : 'Total ROI']}
+                              formatter={(value, name) => [formatPercent(value), name]}
                               labelFormatter={(label) => `LTV ${formatPercent(label)}`}
                             />
-                            <Legend />
+                            <Legend
+                              content={(props) => (
+                                <ChartLegend
+                                  {...props}
+                                  activeSeries={leverageSeriesActive}
+                                  onToggle={toggleLeverageSeries}
+                                />
+                              )}
+                            />
                             <RechartsLine
                               type="monotone"
                               dataKey="irr"
@@ -4202,6 +4232,7 @@ export default function App() {
                               strokeWidth={2}
                               dot={{ r: 3 }}
                               isAnimationActive={false}
+                              hide={!leverageSeriesActive.irr}
                             />
                             <RechartsLine
                               type="monotone"
@@ -4212,6 +4243,7 @@ export default function App() {
                               strokeDasharray="4 2"
                               dot={{ r: 3 }}
                               isAnimationActive={false}
+                              hide={!leverageSeriesActive.roi}
                             />
                           </LineChart>
                         </ResponsiveContainer>
