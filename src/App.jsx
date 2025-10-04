@@ -1348,6 +1348,7 @@ export default function App() {
     irr: true,
     roi: true,
     propertyNetAfterTax: true,
+    efficiency: true,
   });
   const [roiHeatmapMetric, setRoiHeatmapMetric] = useState('irr');
   const [showChartModal, setShowChartModal] = useState(false);
@@ -1914,29 +1915,19 @@ export default function App() {
       const propertyNetAfterTaxValue = Number.isFinite(metrics.propertyNetWealthAfterTax)
         ? metrics.propertyNetWealthAfterTax
         : 0;
+      const efficiencyValue =
+        Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue)
+          ? irrValue * propertyNetAfterTaxValue
+          : 0;
       return {
         ltv,
         roi: Number.isFinite(roiValue) ? roiValue : 0,
         irr: Number.isFinite(irrValue) ? irrValue : 0,
         propertyNetAfterTax: propertyNetAfterTaxValue,
+        efficiency: efficiencyValue,
       };
     });
   }, [inputs]);
-
-  const leverageEfficiencyData = useMemo(
-    () =>
-      leverageChartData.map((point) => {
-        const efficiencyValue =
-          Number.isFinite(point.irr) && Number.isFinite(point.propertyNetAfterTax)
-            ? point.irr * point.propertyNetAfterTax
-            : 0;
-        return {
-          ...point,
-          efficiency: efficiencyValue,
-        };
-      }),
-    [leverageChartData]
-  );
 
   const hasInterestSplitData = interestSplitChartData.some(
     (point) => Math.abs(point.interestPaid) > 1e-2 || Math.abs(point.principalPaid) > 1e-2
@@ -4271,7 +4262,7 @@ export default function App() {
                               />
                               <Tooltip
                                 formatter={(value, name, { dataKey }) => {
-                                  if (dataKey === 'propertyNetAfterTax') {
+                                  if (dataKey === 'propertyNetAfterTax' || dataKey === 'efficiency') {
                                     return [currency(value), name];
                                   }
                                   return [formatPercent(value), name];
@@ -4321,34 +4312,20 @@ export default function App() {
                                 isAnimationActive={false}
                                 hide={!leverageSeriesActive.propertyNetAfterTax}
                               />
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="efficiency"
+                                name="IRR × Profit"
+                                yAxisId="right"
+                                stroke="#8b5cf6"
+                                strokeWidth={2}
+                                strokeDasharray="6 3"
+                                dot={{ r: 3 }}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.efficiency}
+                              />
                             </LineChart>
                           </ResponsiveContainer>
-                          {leverageEfficiencyData.length > 0 ? (
-                            <div className="mt-4 overflow-x-auto">
-                              <table className="min-w-full table-fixed border-separate border-spacing-1 text-[11px] text-slate-600">
-                                <thead>
-                                  <tr>
-                                    <th className="px-2 py-1 text-left font-semibold text-slate-500">LTV</th>
-                                    <th className="px-2 py-1 text-right font-semibold text-slate-500">IRR</th>
-                                    <th className="px-2 py-1 text-right font-semibold text-slate-500">Total ROI</th>
-                                    <th className="px-2 py-1 text-right font-semibold text-slate-500">{propertyNetAfterTaxLabel}</th>
-                                    <th className="px-2 py-1 text-right font-semibold text-slate-500">IRR × Profit</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {leverageEfficiencyData.map((row) => (
-                                    <tr key={row.ltv} className="odd:bg-slate-50">
-                                      <td className="px-2 py-1 text-left font-semibold text-slate-600">{formatPercent(row.ltv)}</td>
-                                      <td className="px-2 py-1 text-right text-slate-700">{formatPercent(row.irr)}</td>
-                                      <td className="px-2 py-1 text-right text-slate-700">{formatPercent(row.roi)}</td>
-                                      <td className="px-2 py-1 text-right text-slate-700">{currency(row.propertyNetAfterTax)}</td>
-                                      <td className="px-2 py-1 text-right text-slate-700">{currency(row.efficiency)}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : null}
                         </>
                       ) : (
                         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
