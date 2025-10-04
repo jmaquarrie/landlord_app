@@ -10,6 +10,7 @@ import {
   CartesianGrid,
   ReferenceLine,
   ReferenceDot,
+  Line as RechartsLine,
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -68,6 +69,10 @@ const SERIES_COLORS = {
   indexFund1_5x: '#fb7185',
   indexFund2x: '#ec4899',
   indexFund4x: '#c026d3',
+  capRate: '#1e293b',
+  yieldRate: '#0369a1',
+  cashOnCash: '#0f766e',
+  irrSeries: '#7c3aed',
 };
 
 const SERIES_LABELS = {
@@ -81,6 +86,10 @@ const SERIES_LABELS = {
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
+  capRate: 'Cap rate',
+  yieldRate: 'Yield rate',
+  cashOnCash: 'Cash on cash',
+  irrSeries: 'IRR',
 };
 
 const EXPANDED_SERIES_ORDER = [
@@ -94,7 +103,13 @@ const EXPANDED_SERIES_ORDER = [
   'indexFund1_5x',
   'indexFund2x',
   'indexFund4x',
+  'capRate',
+  'yieldRate',
+  'cashOnCash',
+  'irrSeries',
 ];
+
+const PERCENT_SERIES_KEYS = new Set(['capRate', 'yieldRate', 'cashOnCash', 'irrSeries']);
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
@@ -843,6 +858,7 @@ function calculateEquity(rawInputs) {
 
   const cap = noiYear1 / inputs.purchasePrice;
   const cashIn = deposit + closing + inputs.renovationCost;
+  const projectCost = inputs.purchasePrice + closing + inputs.renovationCost;
   const coc = cashflowYear1 / cashIn;
   const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
 
@@ -858,6 +874,7 @@ function calculateEquity(rawInputs) {
   const cf = [];
   const initialOutlay = -cashIn;
   cf.push(initialOutlay);
+  const irrCashflows = [initialOutlay];
 
   let rent = inputs.monthlyRent * 12;
   let cumulativeCashPreTax = 0;
@@ -900,6 +917,10 @@ function calculateEquity(rawInputs) {
     reinvestFund: 0,
     cashflow: 0,
     investedRent: shouldReinvest ? 0 : null,
+    capRate: null,
+    yieldRate: null,
+    cashOnCash: null,
+    irrSeries: null,
     meta: {
       propertyValue: initialSaleValue,
       saleValue: initialSaleValue,
@@ -924,6 +945,9 @@ function calculateEquity(rawInputs) {
       reinvestShare,
       shouldReinvest,
       purchasePrice: inputs.purchasePrice,
+      projectCost,
+      cashInvested: cashIn,
+      initialOutlay,
       yearly: {
         gross: 0,
         operatingExpenses: 0,
@@ -949,6 +973,7 @@ function calculateEquity(rawInputs) {
     const noi = gross - (varOpex + fixed);
     const debtService = annualDebtService[y - 1] ?? 0;
     const cash = noi - debtService;
+    irrCashflows.push(cash);
     cumulativeCashPreTax += cash;
 
     const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
@@ -992,6 +1017,14 @@ function calculateEquity(rawInputs) {
     const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     const saleCostsEstimate = vt * inputs.sellingCostsPct;
     const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
+    const capRateYear = vt > 0 ? noi / vt : 0;
+    const yieldRateYear = projectCost > 0 ? noi / projectCost : 0;
+    const cashOnCashYear = cashIn > 0 ? cash / cashIn : 0;
+    const irrSequence = irrCashflows.slice();
+    if (irrSequence.length > 0) {
+      irrSequence[irrSequence.length - 1] += netSaleIfSold;
+    }
+    const irrToDate = irrSequence.length > 1 ? irr(irrSequence) : 0;
     const cumulativeCashPreTaxNet = shouldReinvest
       ? cumulativeCashPreTax - cumulativeReinvested
       : cumulativeCashPreTax;
@@ -1041,6 +1074,10 @@ function calculateEquity(rawInputs) {
       reinvestFund: reinvestFundValue,
       cashflow: cumulativeCashAfterTax,
       investedRent: shouldReinvest ? investedRentValue : null,
+      capRate: capRateYear,
+      yieldRate: yieldRateYear,
+      cashOnCash: cashOnCashYear,
+      irrSeries: irrToDate,
       meta: {
         propertyValue: vt,
         saleValue: vt,
@@ -1065,6 +1102,13 @@ function calculateEquity(rawInputs) {
         reinvestShare,
         shouldReinvest,
         purchasePrice: inputs.purchasePrice,
+        projectCost,
+        cashInvested: cashIn,
+        initialOutlay,
+        capRate: capRateYear,
+        yieldRate: yieldRateYear,
+        cashOnCash: cashOnCashYear,
+        irrSeries: irrToDate,
         yearly: {
           gross,
           operatingExpenses: varOpex + fixed,
@@ -1124,7 +1168,7 @@ function calculateEquity(rawInputs) {
     cf,
     chart,
     cashIn,
-    projectCost: inputs.purchasePrice + closing + inputs.renovationCost,
+    projectCost,
     yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
     indexValEnd: indexVal,
     exitCumCash,
@@ -1227,11 +1271,16 @@ export default function App() {
     propertyNetAfterTax: true,
     cashflow: true,
     investedRent: false,
+    capRate: false,
+    yieldRate: false,
+    cashOnCash: false,
+    irrSeries: false,
   });
   const [showChartModal, setShowChartModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
   const [chartFocus, setChartFocus] = useState(null);
+  const [chartFocusLocked, setChartFocusLocked] = useState(false);
   const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
   const chartAreaRef = useRef(null);
   const chartOverlayRef = useRef(null);
@@ -1540,6 +1589,7 @@ export default function App() {
     if (!showChartModal) {
       setChartFocus(null);
       setExpandedMetricDetails({});
+      setChartFocusLocked(false);
     }
   }, [showChartModal]);
 
@@ -1577,6 +1627,7 @@ export default function App() {
       }
       setChartFocus(null);
       setExpandedMetricDetails({});
+      setChartFocusLocked(false);
     };
     document.addEventListener('mousedown', handleDocumentClick);
     return () => {
@@ -1611,6 +1662,42 @@ export default function App() {
     [maxChartYear]
   );
 
+  const handleChartHover = useCallback(
+    (event) => {
+      if (chartFocusLocked) {
+        return;
+      }
+      if (!event || event.isTooltipActive === false) {
+        setChartFocus(null);
+        return;
+      }
+      const activeYear = Number(event.activeLabel);
+      if (!Number.isFinite(activeYear)) {
+        setChartFocus(null);
+        return;
+      }
+      const match = filteredChartData.find((point) => Number(point?.year) === activeYear);
+      if (!match) {
+        setChartFocus(null);
+        return;
+      }
+      setChartFocus((prev) => {
+        if (prev?.year === activeYear && prev.data === match) {
+          return prev;
+        }
+        return { year: activeYear, data: match };
+      });
+    },
+    [chartFocusLocked, filteredChartData]
+  );
+
+  const handleChartMouseLeave = useCallback(() => {
+    if (chartFocusLocked) {
+      return;
+    }
+    setChartFocus(null);
+  }, [chartFocusLocked]);
+
   const handleChartPointClick = useCallback(
     (event) => {
       if (!event) {
@@ -1625,6 +1712,7 @@ export default function App() {
       if (!match) {
         return;
       }
+      setChartFocusLocked(true);
       setChartFocus({ year: activeYear, data: match });
       setExpandedMetricDetails({});
     },
@@ -1641,6 +1729,7 @@ export default function App() {
   const clearChartFocus = useCallback(() => {
     setChartFocus(null);
     setExpandedMetricDetails({});
+    setChartFocusLocked(false);
   }, []);
 
   const isCompanyBuyer = inputs.buyerType === 'company';
@@ -3777,6 +3866,32 @@ export default function App() {
                     );
                   })}
                 </div>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
+                  <span className="font-semibold text-slate-500">Overlay ratios</span>
+                  {[
+                    { key: 'capRate', label: 'Cap rate' },
+                    { key: 'yieldRate', label: 'Yield rate' },
+                    { key: 'cashOnCash', label: 'Cash on cash' },
+                    { key: 'irrSeries', label: 'IRR' },
+                  ].map((option) => {
+                    const checked = activeSeries[option.key] !== false;
+                    return (
+                      <label key={option.key} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) =>
+                            setActiveSeries((prev) => ({
+                              ...prev,
+                              [option.key]: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
                 <div className="mt-4 flex-1">
                   <div className="flex h-full flex-col">
                     <div
@@ -3788,13 +3903,23 @@ export default function App() {
                           data={filteredChartData}
                           margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
                           onClick={handleChartPointClick}
+                          onMouseMove={handleChartHover}
+                          onMouseLeave={handleChartMouseLeave}
                         >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 11, fill: '#475569' }} />
                           <YAxis
+                            yAxisId="currency"
                             tickFormatter={(v) => currency(v)}
                             tick={{ fontSize: 11, fill: '#475569' }}
                             width={110}
+                          />
+                          <YAxis
+                            yAxisId="percent"
+                            orientation="right"
+                            tickFormatter={(v) => formatPercent(v)}
+                            tick={{ fontSize: 11, fill: '#475569' }}
+                            width={70}
                           />
                           <Legend
                             content={(props) => (
@@ -3807,6 +3932,10 @@ export default function App() {
                                   'indexFund2x',
                                   'indexFund4x',
                                   'investedRent',
+                                  'capRate',
+                                  'yieldRate',
+                                  'cashOnCash',
+                                  'irrSeries',
                                 ]}
                               />
                             )}
@@ -3827,6 +3956,7 @@ export default function App() {
                                   key={`dot-${key}`}
                                   x={chartFocus.year}
                                   y={chartFocus.data[key]}
+                                  yAxisId={PERCENT_SERIES_KEYS.has(key) ? 'percent' : 'currency'}
                                   r={4}
                                   fill="#ffffff"
                                   stroke={SERIES_COLORS[key] ?? '#334155'}
@@ -3841,6 +3971,7 @@ export default function App() {
                             stroke="#f97316"
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
+                            yAxisId="currency"
                             hide={!activeSeries.indexFund}
                           />
                           <Area
@@ -3850,6 +3981,7 @@ export default function App() {
                             stroke="#facc15"
                             fill="rgba(250,204,21,0.2)"
                             strokeWidth={2}
+                            yAxisId="currency"
                             hide={!activeSeries.cashflow}
                           />
                           <Area
@@ -3859,6 +3991,7 @@ export default function App() {
                             stroke="#0ea5e9"
                             fill="rgba(14,165,233,0.18)"
                             strokeWidth={2}
+                            yAxisId="currency"
                             hide={!activeSeries.propertyValue}
                           />
                           <Area
@@ -3868,6 +4001,7 @@ export default function App() {
                             stroke="#2563eb"
                             fill="rgba(37,99,235,0.2)"
                             strokeWidth={2}
+                            yAxisId="currency"
                             hide={!activeSeries.propertyGross}
                           />
                           <Area
@@ -3877,6 +4011,7 @@ export default function App() {
                             stroke="#16a34a"
                             fill="rgba(22,163,74,0.25)"
                             strokeWidth={2}
+                            yAxisId="currency"
                             hide={!activeSeries.propertyNet}
                           />
                           <Area
@@ -3886,6 +4021,7 @@ export default function App() {
                             stroke="#9333ea"
                             fill="rgba(147,51,234,0.2)"
                             strokeWidth={2}
+                            yAxisId="currency"
                             hide={!activeSeries.propertyNetAfterTax}
                           />
                           <Area
@@ -3896,6 +4032,7 @@ export default function App() {
                             fill="rgba(13,148,136,0.15)"
                             strokeWidth={2}
                             strokeDasharray="5 3"
+                            yAxisId="currency"
                             hide={!activeSeries.investedRent}
                           />
                           <Area
@@ -3906,6 +4043,7 @@ export default function App() {
                             fillOpacity={0}
                             strokeWidth={1.5}
                             strokeDasharray="6 3"
+                            yAxisId="currency"
                             hide={!activeSeries.indexFund1_5x}
                           />
                           <Area
@@ -3916,6 +4054,7 @@ export default function App() {
                             fillOpacity={0}
                             strokeWidth={1.5}
                             strokeDasharray="4 2"
+                            yAxisId="currency"
                             hide={!activeSeries.indexFund2x}
                           />
                           <Area
@@ -3926,7 +4065,51 @@ export default function App() {
                             fillOpacity={0}
                             strokeWidth={1.5}
                             strokeDasharray="2 2"
+                            yAxisId="currency"
                             hide={!activeSeries.indexFund4x}
+                          />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="capRate"
+                            name="Cap rate"
+                            stroke={SERIES_COLORS.capRate}
+                            strokeWidth={2}
+                            dot={false}
+                            yAxisId="percent"
+                            hide={!activeSeries.capRate}
+                          />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="yieldRate"
+                            name="Yield rate"
+                            stroke={SERIES_COLORS.yieldRate}
+                            strokeWidth={2}
+                            strokeDasharray="4 2"
+                            dot={false}
+                            yAxisId="percent"
+                            hide={!activeSeries.yieldRate}
+                          />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="cashOnCash"
+                            name="Cash on cash"
+                            stroke={SERIES_COLORS.cashOnCash}
+                            strokeWidth={2}
+                            strokeDasharray="2 2"
+                            dot={false}
+                            yAxisId="percent"
+                            hide={!activeSeries.cashOnCash}
+                          />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="irrSeries"
+                            name="IRR"
+                            stroke={SERIES_COLORS.irrSeries}
+                            strokeWidth={2}
+                            strokeDasharray="6 3"
+                            dot={false}
+                            yAxisId="percent"
+                            hide={!activeSeries.irrSeries}
                           />
                         </AreaChart>
                       </ResponsiveContainer>
@@ -4250,6 +4433,8 @@ function WealthChartOverlay({
       <div className="mt-3 space-y-2">
         {metrics.map((metric) => {
           const isExpanded = expandedMetrics?.[metric.key];
+          const isPercentMetric = PERCENT_SERIES_KEYS.has(metric.key);
+          const formattedMetricValue = isPercentMetric ? formatPercent(metric.value) : currency(metric.value);
           const breakdown = getOverlayBreakdown(metric.key, {
             point,
             meta,
@@ -4271,7 +4456,7 @@ function WealthChartOverlay({
                   />
                   <span>{metric.label}</span>
                 </span>
-                <span className="text-right text-sm font-semibold text-slate-800">{currency(metric.value)}</span>
+                <span className="text-right text-sm font-semibold text-slate-800">{formattedMetricValue}</span>
               </button>
               {isExpanded && breakdown.length > 0 ? (
                 <div className="space-y-1 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
@@ -4281,6 +4466,8 @@ function WealthChartOverlay({
                       <span className="font-semibold text-slate-700">
                         {detail.type === 'text'
                           ? detail.value
+                          : detail.type === 'percent'
+                          ? formatPercent(detail.value)
                           : typeof detail.value === 'number'
                           ? currency(detail.value)
                           : detail.value}
@@ -4384,6 +4571,36 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Baseline index value', value: baseline });
       breakdowns.push({ label: 'Multiplier', value: '4×', type: 'text' });
       breakdowns.push({ label: 'Outperformance vs baseline', value: (point.indexFund4x || 0) - baseline });
+      break;
+    }
+    case 'capRate': {
+      breakdowns.push({ label: 'Net operating income (year)', value: meta.yearly?.noi || 0 });
+      breakdowns.push({ label: 'Estimated property value', value: meta.propertyValue || 0 });
+      breakdowns.push({ label: 'Cap rate', value: point.capRate || 0, type: 'percent' });
+      break;
+    }
+    case 'yieldRate': {
+      breakdowns.push({ label: 'Net operating income (year)', value: meta.yearly?.noi || 0 });
+      breakdowns.push({ label: 'Total project cost', value: meta.projectCost || 0 });
+      breakdowns.push({ label: 'Yield rate', value: point.yieldRate || 0, type: 'percent' });
+      break;
+    }
+    case 'cashOnCash': {
+      breakdowns.push({ label: 'Cash flow (pre-tax, year)', value: meta.yearly?.cashPreTax || 0 });
+      breakdowns.push({ label: 'Cash invested', value: meta.cashInvested || 0 });
+      breakdowns.push({ label: 'Cash-on-cash', value: point.cashOnCash || 0, type: 'percent' });
+      break;
+    }
+    case 'irrSeries': {
+      const holdYears = Number(point?.year) || 0;
+      const initialInvested = -(meta.initialOutlay || 0);
+      breakdowns.push({ label: 'Initial cash invested', value: initialInvested });
+      breakdowns.push({ label: 'Cumulative cash flow (pre-tax)', value: meta.cumulativeCashPreTax || 0 });
+      breakdowns.push({ label: 'Net sale if sold this year', value: meta.netSaleIfSold || 0 });
+      if (holdYears > 0) {
+        breakdowns.push({ label: 'Years held', value: `${holdYears} ${holdYears === 1 ? 'year' : 'years'}`, type: 'text' });
+      }
+      breakdowns.push({ label: 'IRR if sold this year', value: point.irrSeries || 0, type: 'percent' });
       break;
     }
     default:
