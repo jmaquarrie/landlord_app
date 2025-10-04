@@ -102,12 +102,11 @@ const CASHFLOW_BAR_COLORS = {
   netCashflow: '#10b981',
 };
 
-const ROI_HEATMAP_GROWTH_OPTIONS = [-0.02, 0, 0.02, 0.04, 0.06];
-const ROI_HEATMAP_YIELD_OPTIONS = [0.04, 0.05, 0.06, 0.07, 0.08];
+const ROI_HEATMAP_OFFSETS = [-0.02, -0.01, 0, 0.01, 0.02];
 const HEATMAP_COLOR_START = [248, 113, 113];
 const HEATMAP_COLOR_END = [34, 197, 94];
 const HEATMAP_COLOR_NEUTRAL = [148, 163, 184];
-const LEVERAGE_LTV_OPTIONS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75];
+const LEVERAGE_LTV_OPTIONS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95];
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -120,13 +119,9 @@ const EXPANDED_SERIES_ORDER = [
   'indexFund1_5x',
   'indexFund2x',
   'indexFund4x',
-  'capRate',
-  'yieldRate',
-  'cashOnCash',
-  'irrSeries',
 ];
 
-const PERCENT_SERIES_KEYS = new Set(['capRate', 'yieldRate', 'cashOnCash', 'irrSeries']);
+const PERCENT_SERIES_KEYS = new Set();
 const RATE_SERIES_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
@@ -1334,10 +1329,6 @@ export default function App() {
     propertyNetAfterTax: true,
     cashflow: false,
     investedRent: false,
-    capRate: false,
-    yieldRate: false,
-    cashOnCash: false,
-    irrSeries: false,
   });
   const [rateSeriesActive, setRateSeriesActive] = useState({
     capRate: false,
@@ -1794,9 +1785,9 @@ export default function App() {
     let roiMax = -Infinity;
     let irrMin = Infinity;
     let irrMax = -Infinity;
-    ROI_HEATMAP_GROWTH_OPTIONS.forEach((growthRate) => {
+    roiHeatmapGrowthOptions.forEach((growthRate, rowIndex) => {
       const cells = [];
-      ROI_HEATMAP_YIELD_OPTIONS.forEach((yieldRate) => {
+      roiHeatmapYieldOptions.forEach((yieldRate, columnIndex) => {
         const annualRent = purchasePrice * yieldRate;
         const monthlyRent = Math.max(0, roundTo(annualRent / 12, 2));
         const metrics = calculateEquity({
@@ -1816,11 +1807,12 @@ export default function App() {
         }
         cells.push({
           yieldRate,
+          columnIndex,
           roi: Number.isFinite(roiValue) ? roiValue : 0,
           irr: irrValue,
         });
       });
-      rows.push({ growthRate, cells });
+      rows.push({ growthRate, rowIndex, cells });
     });
     if (roiMin === Infinity || roiMax === -Infinity) {
       roiMin = 0;
@@ -1831,7 +1823,7 @@ export default function App() {
       irrMax = 0;
     }
     return { rows, roiRange: [roiMin, roiMax], irrRange: [irrMin, irrMax] };
-  }, [inputs]);
+  }, [inputs, roiHeatmapGrowthOptions, roiHeatmapYieldOptions]);
 
   const leverageChartData = useMemo(() => {
     const price = Number(inputs.purchasePrice) || 0;
@@ -2054,7 +2046,6 @@ export default function App() {
   const propertyNetAfterTaxLabel = isCompanyBuyer
     ? 'Property net after corporation tax'
     : 'Property net after tax';
-  const afterTaxComparisonPrefix = isCompanyBuyer ? 'After corporation tax' : 'After income tax';
   const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const appreciationRate = Number(inputs.annualAppreciation) || 0;
   const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
@@ -2062,6 +2053,22 @@ export default function App() {
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
   const appreciationPower = Math.pow(appreciationFactor, exitYears);
   const appreciationPowerDisplay = appreciationPower.toFixed(4);
+  const predictedRentYield = useMemo(() => {
+    const price = Number(inputs.purchasePrice) || 0;
+    const rent = Number(inputs.monthlyRent) || 0;
+    if (!Number.isFinite(price) || price <= 0) {
+      return 0;
+    }
+    return (rent * 12) / price;
+  }, [inputs.purchasePrice, inputs.monthlyRent]);
+  const roiHeatmapYieldOptions = useMemo(
+    () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(predictedRentYield + offset, 0)),
+    [predictedRentYield]
+  );
+  const roiHeatmapGrowthOptions = useMemo(
+    () => ROI_HEATMAP_OFFSETS.map((offset) => appreciationRate + offset),
+    [appreciationRate]
+  );
   const verifyingAuth = authStatus === 'verifying';
   const shouldShowAuthOverlay = remoteEnabled && (authStatus === 'unauthorized' || verifyingAuth);
   const scenarioStatus = (() => {
@@ -3260,7 +3267,7 @@ export default function App() {
                 onClick={handleExportPdf}
                 className="no-print inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
               >
-                📄 Export PDF
+                📄 PDF
               </button>
               <button
                 type="button"
@@ -3597,9 +3604,13 @@ export default function App() {
 
             
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 md:items-stretch">
               <div className="md:col-span-1">
-                <SummaryCard title={`Exit comparison (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exitComparison}>
+                <SummaryCard
+                  title={`Exit comparison (Year ${inputs.exitYear})`}
+                  tooltip={SECTION_DESCRIPTIONS.exitComparison}
+                  className="h-full"
+                >
                   <Line label="Index fund value" value={currency(equity.indexValEnd)} tooltip={indexFundTooltip} />
                   <Line
                     label="Property gross"
@@ -3617,18 +3628,15 @@ export default function App() {
                     value={currency(equity.totalPropertyTax)}
                     tooltip={rentalTaxTooltip}
                   />
-                  <div className="mt-2 text-xs text-slate-600">
-                    {equity.propertyNetWealthAfterTax > equity.indexValEnd
-                      ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
-                      : equity.propertyNetWealthAfterTax < equity.indexValEnd
-                      ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
-                      : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
-                  </div>
                 </SummaryCard>
               </div>
 
               <div className="md:col-span-1">
-                <SummaryCard title={`Equity at exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
+                <SummaryCard
+                  title={`Equity at exit (Year ${inputs.exitYear})`}
+                  tooltip={SECTION_DESCRIPTIONS.exit}
+                  className="h-full"
+                >
                   <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
                   <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
                   <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
@@ -4165,7 +4173,7 @@ export default function App() {
                               dataKey="ltv"
                               tickFormatter={(value) => formatPercent(value)}
                               tick={{ fontSize: 11, fill: '#475569' }}
-                              domain={[0.1, 0.75]}
+                              domain={[0.1, 0.95]}
                               type="number"
                             />
                             <YAxis
@@ -4254,7 +4262,7 @@ export default function App() {
                 {!collapsedSections.roiHeatmap ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
-                      Each cell models the scenario with the specified rental yield and annual capital growth using today’s inputs.
+                      Each cell models the scenario with the specified rental yield and annual capital growth using today’s inputs. The centre row and column align with the current rent yield and appreciation assumptions, with ±1% and ±2% steps either side.
                     </p>
                     <div className="overflow-x-auto">
                       {roiHeatmapData.rows.length > 0 ? (
@@ -4262,8 +4270,11 @@ export default function App() {
                           <thead>
                             <tr>
                               <th className="w-32 px-2 py-1 text-left font-semibold text-slate-500">Capital growth</th>
-                              {ROI_HEATMAP_YIELD_OPTIONS.map((yieldRate) => (
-                                <th key={yieldRate} className="px-2 py-1 text-center font-semibold text-slate-500">
+                              {roiHeatmapYieldOptions.map((yieldRate, columnIndex) => (
+                                <th
+                                  key={`${yieldRate}-${columnIndex}`}
+                                  className="px-2 py-1 text-center font-semibold text-slate-500"
+                                >
                                   {formatPercent(yieldRate)} rent yield
                                 </th>
                               ))}
@@ -4274,7 +4285,7 @@ export default function App() {
                               const range = roiHeatmapMetric === 'irr' ? roiHeatmapData.irrRange : roiHeatmapData.roiRange;
                               const [minValue, maxValue] = range;
                               return (
-                                <tr key={row.growthRate}>
+                                <tr key={`${row.growthRate}-${row.rowIndex}`}>
                                   <th className="px-2 py-1 text-left font-semibold text-slate-500">
                                     {formatPercent(row.growthRate)} capital growth
                                   </th>
@@ -4282,7 +4293,7 @@ export default function App() {
                                     const value = roiHeatmapMetric === 'irr' ? cell.irr : cell.roi;
                                     const background = getHeatmapColor(value, minValue, maxValue);
                                     return (
-                                      <td key={cell.yieldRate} className="px-2 py-1">
+                                      <td key={`${cell.yieldRate}-${cell.columnIndex}`} className="px-2 py-1">
                                         <div
                                           className="rounded-lg px-2 py-3 text-center text-xs font-semibold text-slate-800"
                                           style={{ backgroundColor: background }}
@@ -4704,32 +4715,6 @@ export default function App() {
                     );
                   })}
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
-                  <span className="font-semibold text-slate-500">Overlay ratios</span>
-                  {[
-                    { key: 'capRate', label: 'Cap rate' },
-                    { key: 'yieldRate', label: 'Yield rate' },
-                    { key: 'cashOnCash', label: 'Cash on cash' },
-                    { key: 'irrSeries', label: 'IRR' },
-                  ].map((option) => {
-                    const checked = activeSeries[option.key] !== false;
-                    return (
-                      <label key={option.key} className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) =>
-                            setActiveSeries((prev) => ({
-                              ...prev,
-                              [option.key]: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
                 <div className="mt-4 flex-1">
                   <div className="flex h-full flex-col">
                     <div
@@ -4752,13 +4737,6 @@ export default function App() {
                             tick={{ fontSize: 11, fill: '#475569' }}
                             width={110}
                           />
-                          <YAxis
-                            yAxisId="percent"
-                            orientation="right"
-                            tickFormatter={(v) => formatPercent(v)}
-                            tick={{ fontSize: 11, fill: '#475569' }}
-                            width={70}
-                          />
                           <Legend
                             content={(props) => (
                               <ChartLegend
@@ -4770,10 +4748,6 @@ export default function App() {
                                   'indexFund2x',
                                   'indexFund4x',
                                   'investedRent',
-                                  'capRate',
-                                  'yieldRate',
-                                  'cashOnCash',
-                                  'irrSeries',
                                 ]}
                               />
                             )}
@@ -4916,53 +4890,6 @@ export default function App() {
                             yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.indexFund4x}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="capRate"
-                            name="Cap rate"
-                            stroke={SERIES_COLORS.capRate}
-                            strokeWidth={2}
-                            dot={false}
-                            yAxisId="percent"
-                            isAnimationActive={false}
-                            hide={!activeSeries.capRate}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="yieldRate"
-                            name="Yield rate"
-                            stroke={SERIES_COLORS.yieldRate}
-                            strokeWidth={2}
-                            strokeDasharray="4 2"
-                            dot={false}
-                            yAxisId="percent"
-                            isAnimationActive={false}
-                            hide={!activeSeries.yieldRate}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="cashOnCash"
-                            name="Cash on cash"
-                            stroke={SERIES_COLORS.cashOnCash}
-                            strokeWidth={2}
-                            strokeDasharray="2 2"
-                            dot={false}
-                            yAxisId="percent"
-                            isAnimationActive={false}
-                            hide={!activeSeries.cashOnCash}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="irrSeries"
-                            name="IRR"
-                            stroke={SERIES_COLORS.irrSeries}
-                            strokeWidth={2}
-                            strokeDasharray="6 3"
-                            dot={false}
-                            yAxisId="percent"
-                            isAnimationActive={false}
-                            hide={!activeSeries.irrSeries}
                           />
                         </AreaChart>
                       </ResponsiveContainer>
@@ -5887,14 +5814,16 @@ function SectionTitle({ label, tooltip, className }) {
   );
 }
 
-function SummaryCard({ title, children, tooltip }) {
+function SummaryCard({ title, children, tooltip, className }) {
   const titleNode =
     typeof title === 'string'
       ? <SectionTitle label={title} tooltip={tooltip} />
       : title;
 
+  const cardClassName = ['rounded-2xl bg-white p-3 shadow-sm', className].filter(Boolean).join(' ');
+
   return (
-    <div className="rounded-2xl bg-white p-3 shadow-sm">
+    <div className={cardClassName}>
       {titleNode ? <div className="mb-2">{titleNode}</div> : null}
       <div className="space-y-0.5">{children}</div>
     </div>
