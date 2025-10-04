@@ -10,6 +10,8 @@ import {
   CartesianGrid,
   ReferenceLine,
   ReferenceDot,
+  LineChart,
+  Line as RechartsLine,
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -82,6 +84,22 @@ const SERIES_LABELS = {
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
 };
+
+const RATIO_SERIES_COLORS = {
+  capRate: '#0ea5e9',
+  yieldOnCost: '#6366f1',
+  cashOnCash: '#16a34a',
+  cashOnCashAfterTax: '#9333ea',
+};
+
+const RATIO_SERIES_LABELS = {
+  capRate: 'Cap rate',
+  yieldOnCost: 'Yield on cost',
+  cashOnCash: 'Cash-on-cash (pre-tax)',
+  cashOnCashAfterTax: 'Cash-on-cash (after tax)',
+};
+
+const RATIO_SERIES_ORDER = ['capRate', 'yieldOnCost', 'cashOnCash', 'cashOnCashAfterTax'];
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -783,6 +801,8 @@ function calculateEquity(rawInputs) {
   const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
   const closing = otherClosing + stampDuty;
 
+  const projectCost = inputs.purchasePrice + closing + inputs.renovationCost;
+
   const loan = inputs.purchasePrice - deposit;
   const mortgageMonthly =
     inputs.loanType === 'interest_only'
@@ -882,6 +902,10 @@ function calculateEquity(rawInputs) {
   const annualNoiValues = [];
   const annualCashflowsPreTax = [];
   const annualCashflowsAfterTax = [];
+  const annualCapRates = [];
+  const annualYieldOnCost = [];
+  const annualCashOnCash = [];
+  const annualCashOnCashAfterTax = [];
   const initialNetEquity =
     inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
   const initialSaleValue = inputs.purchasePrice;
@@ -982,6 +1006,10 @@ function calculateEquity(rawInputs) {
     annualNoiValues.push(noi);
     annualCashflowsPreTax.push(cash);
     annualCashflowsAfterTax.push(afterTaxCash);
+    annualCapRates.push(inputs.purchasePrice === 0 ? 0 : noi / inputs.purchasePrice);
+    annualYieldOnCost.push(projectCost === 0 ? 0 : noi / projectCost);
+    annualCashOnCash.push(cashIn === 0 ? 0 : cash / cashIn);
+    annualCashOnCashAfterTax.push(cashIn === 0 ? 0 : afterTaxCash / cashIn);
 
     const monthsPaid = Math.min(y * 12, inputs.mortgageYears * 12);
     const remainingLoanYear =
@@ -1124,7 +1152,7 @@ function calculateEquity(rawInputs) {
     cf,
     chart,
     cashIn,
-    projectCost: inputs.purchasePrice + closing + inputs.renovationCost,
+    projectCost,
     yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
     indexValEnd: indexVal,
     exitCumCash,
@@ -1148,6 +1176,10 @@ function calculateEquity(rawInputs) {
     annualNoiValues,
     annualCashflowsPreTax,
     annualCashflowsAfterTax,
+    annualCapRates,
+    annualYieldOnCost,
+    annualCashOnCash,
+    annualCashOnCashAfterTax,
     annualDebtService,
     irr: irrValue,
   };
@@ -1231,6 +1263,15 @@ export default function App() {
   const [showChartModal, setShowChartModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
+  const [activeRatioSeries, setActiveRatioSeries] = useState({
+    capRate: true,
+    yieldOnCost: true,
+    cashOnCash: true,
+    cashOnCashAfterTax: false,
+  });
+  const [showRatioChartModal, setShowRatioChartModal] = useState(false);
+  const [ratioChartRange, setRatioChartRange] = useState({ start: 1, end: DEFAULT_INPUTS.exitYear });
+  const [ratioChartRangeTouched, setRatioChartRangeTouched] = useState(false);
   const [chartFocus, setChartFocus] = useState(null);
   const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
   const chartAreaRef = useRef(null);
@@ -1535,6 +1576,73 @@ export default function App() {
     });
   }, [equity.chart, chartRange]);
 
+  const ratioChartData = useMemo(() => {
+    const capRates = Array.isArray(equity.annualCapRates) ? equity.annualCapRates : [];
+    const yieldOnCost = Array.isArray(equity.annualYieldOnCost) ? equity.annualYieldOnCost : [];
+    const cashOnCash = Array.isArray(equity.annualCashOnCash) ? equity.annualCashOnCash : [];
+    const cashOnCashAfterTax = Array.isArray(equity.annualCashOnCashAfterTax)
+      ? equity.annualCashOnCashAfterTax
+      : [];
+    const years = Math.max(capRates.length, yieldOnCost.length, cashOnCash.length, cashOnCashAfterTax.length);
+    if (years === 0) {
+      return [];
+    }
+    return Array.from({ length: years }, (_, index) => ({
+      year: index + 1,
+      capRate: capRates[index] ?? 0,
+      yieldOnCost: yieldOnCost[index] ?? 0,
+      cashOnCash: cashOnCash[index] ?? 0,
+      cashOnCashAfterTax: cashOnCashAfterTax[index] ?? 0,
+    }));
+  }, [
+    equity.annualCapRates,
+    equity.annualYieldOnCost,
+    equity.annualCashOnCash,
+    equity.annualCashOnCashAfterTax,
+  ]);
+
+  const ratioMaxYear = ratioChartData.length > 0 ? ratioChartData[ratioChartData.length - 1].year : 0;
+
+  useEffect(() => {
+    setRatioChartRange((prev) => {
+      if (ratioMaxYear <= 0) {
+        const fallback = { start: 1, end: 1 };
+        if (prev.start === fallback.start && prev.end === fallback.end) {
+          return prev;
+        }
+        return fallback;
+      }
+      const safeStart = clamp(prev.start, 1, ratioMaxYear);
+      const safeEnd = clamp(prev.end, safeStart, ratioMaxYear);
+      let nextStart = safeStart;
+      let nextEnd = safeEnd;
+      if (!ratioChartRangeTouched) {
+        nextStart = 1;
+        nextEnd = ratioMaxYear;
+      }
+      if (nextStart === prev.start && nextEnd === prev.end) {
+        return prev;
+      }
+      return { start: nextStart, end: nextEnd };
+    });
+  }, [ratioMaxYear, ratioChartRangeTouched]);
+
+  const filteredRatioChartData = useMemo(() => {
+    if (ratioChartData.length === 0) {
+      return [];
+    }
+    const safeMax = ratioMaxYear > 0 ? ratioMaxYear : 1;
+    const start = clamp(ratioChartRange.start, 1, safeMax);
+    const end = clamp(ratioChartRange.end, start, safeMax);
+    return ratioChartData.filter((point) => point.year >= start && point.year <= end);
+  }, [ratioChartData, ratioChartRange, ratioMaxYear]);
+
+  useEffect(() => {
+    if (!showRatioChartModal) {
+      setRatioChartRangeTouched(false);
+    }
+  }, [showRatioChartModal]);
+
   useEffect(() => {
     if (!showChartModal) {
       setChartFocus(null);
@@ -1605,6 +1713,34 @@ export default function App() {
       });
     },
     [maxChartYear]
+  );
+
+  const handleRatioChartRangeChange = useCallback(
+    (key, value) => {
+      setRatioChartRangeTouched(true);
+      setRatioChartRange((prev) => {
+        const safeMax = ratioMaxYear > 0 ? ratioMaxYear : 1;
+        const sanitized = Number.isFinite(value) ? Math.round(value) : key === 'start' ? 1 : safeMax;
+        const clamped = clamp(sanitized, 1, safeMax);
+        if (key === 'start') {
+          const nextStart = clamped;
+          const nextEnd = Math.max(nextStart, Math.min(prev.end, safeMax));
+          if (nextStart === prev.start && nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: nextStart, end: nextEnd };
+        }
+        if (key === 'end') {
+          const nextEnd = Math.max(prev.start, clamped);
+          if (nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: prev.start, end: nextEnd };
+        }
+        return prev;
+      });
+    },
+    [ratioMaxYear]
   );
 
   const handleChartPointClick = useCallback(
@@ -2359,6 +2495,13 @@ export default function App() {
       [key]: !(prev[key] !== false),
     }));
   };
+
+  const toggleRatioSeries = useCallback((key) => {
+    setActiveRatioSeries((prev) => ({
+      ...prev,
+      [key]: !(prev[key] !== false),
+    }));
+  }, []);
 
   const pctInput = (k, label, step = 0.005) => (
     <div className="flex flex-col gap-1">
@@ -3304,10 +3447,79 @@ export default function App() {
                     />
                   </AreaChart>
                 </ResponsiveContainer>
-              </div>
             </div>
+          </div>
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="rounded-2xl bg-white p-3 shadow-sm">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <SectionTitle
+                label="Key ratios over time"
+                tooltip={SECTION_DESCRIPTIONS.keyRatios}
+                className="text-sm font-semibold text-slate-700"
+              />
+              <button
+                type="button"
+                onClick={() => setShowRatioChartModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Expand chart
+              </button>
+            </div>
+            <div className="mb-2 text-[11px] text-slate-500">
+              {ratioChartData.length > 0
+                ? `Showing years 1 – ${ratioChartData[ratioChartData.length - 1].year}`
+                : 'No annual key ratio data'}
+            </div>
+            <div className="h-72 w-full">
+              {ratioChartData.length > 0 ? (
+                <ResponsiveContainer>
+                  <LineChart data={ratioChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 10, fill: '#475569' }} />
+                    <YAxis
+                      tickFormatter={(value) => `${roundTo(value * 100, 1)}%`}
+                      tick={{ fontSize: 10, fill: '#475569' }}
+                      width={70}
+                    />
+                    <Tooltip
+                      formatter={(value, key) => [formatPercent(value), RATIO_SERIES_LABELS[key] ?? key]}
+                      labelFormatter={(label) => `Year ${label}`}
+                    />
+                    <Legend
+                      content={(props) => (
+                        <ChartLegend {...props} activeSeries={activeRatioSeries} onToggle={toggleRatioSeries} />
+                      )}
+                    />
+                    {RATIO_SERIES_ORDER.map((key) => {
+                      const stroke = RATIO_SERIES_COLORS[key] ?? '#334155';
+                      const strokeDasharray = key === 'cashOnCashAfterTax' ? '4 2' : undefined;
+                      const hidden = activeRatioSeries[key] === false;
+                      return (
+                        <RechartsLine
+                          key={key}
+                          type="monotone"
+                          dataKey={key}
+                          name={RATIO_SERIES_LABELS[key] ?? key}
+                          stroke={stroke}
+                          strokeWidth={2}
+                          strokeDasharray={strokeDasharray}
+                          dot={false}
+                          hide={hidden}
+                          activeDot={{ r: 4 }}
+                        />
+                      );
+                    })}
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex h-full items-center justify-center text-xs text-slate-500">
+                  No key ratio data available yet.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="space-y-3 md:order-2 md:col-span-1">
                 <SummaryCard
                   title={`Exit comparison (Year ${inputs.exitYear})`}
@@ -3959,6 +4171,139 @@ export default function App() {
                     )}
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showRatioChartModal && (
+      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+        <div className="max-h-[85vh] w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Key ratio explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowRatioChartModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex max-h-[calc(85vh-48px)] flex-col gap-4 overflow-y-auto px-5 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <SectionTitle
+                label="Key ratios over time"
+                tooltip={SECTION_DESCRIPTIONS.keyRatios}
+                className="text-base font-semibold text-slate-700"
+              />
+              <div className="text-[11px] text-slate-500">
+                Years {ratioChartRange.start} – {ratioChartRange.end}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+              <label className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-500">Start year</span>
+                <input
+                  type="number"
+                  value={ratioChartRange.start}
+                  min={1}
+                  max={Math.max(1, ratioChartRange.end)}
+                  onChange={(event) => handleRatioChartRangeChange('start', Number(event.target.value))}
+                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                />
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-500">End year</span>
+                <input
+                  type="number"
+                  value={ratioChartRange.end}
+                  min={ratioChartRange.start}
+                  max={Math.max(1, ratioMaxYear)}
+                  onChange={(event) => handleRatioChartRangeChange('end', Number(event.target.value))}
+                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  const fallbackMax = ratioMaxYear > 0 ? ratioMaxYear : 1;
+                  setRatioChartRange({ start: 1, end: fallbackMax });
+                  setRatioChartRangeTouched(false);
+                }}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Reset range
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-3 text-[11px] text-slate-600">
+              {RATIO_SERIES_ORDER.map((key) => {
+                const checked = activeRatioSeries[key] !== false;
+                return (
+                  <label key={key} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) =>
+                        setActiveRatioSeries((prev) => ({
+                          ...prev,
+                          [key]: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>{RATIO_SERIES_LABELS[key] ?? key}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="h-[360px] w-full">
+                {filteredRatioChartData.length > 0 ? (
+                  <ResponsiveContainer>
+                    <LineChart data={filteredRatioChartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 11, fill: '#475569' }} />
+                      <YAxis
+                        tickFormatter={(value) => `${roundTo(value * 100, 1)}%`}
+                        tick={{ fontSize: 11, fill: '#475569' }}
+                        width={90}
+                      />
+                      <Tooltip
+                        formatter={(value, key) => [formatPercent(value), RATIO_SERIES_LABELS[key] ?? key]}
+                        labelFormatter={(label) => `Year ${label}`}
+                      />
+                      <Legend
+                        content={(props) => (
+                          <ChartLegend {...props} activeSeries={activeRatioSeries} onToggle={toggleRatioSeries} />
+                        )}
+                      />
+                      {RATIO_SERIES_ORDER.map((key) => {
+                        const stroke = RATIO_SERIES_COLORS[key] ?? '#334155';
+                        const strokeDasharray = key === 'cashOnCashAfterTax' ? '4 2' : undefined;
+                        const hidden = activeRatioSeries[key] === false;
+                        return (
+                          <RechartsLine
+                            key={`modal-${key}`}
+                            type="monotone"
+                            dataKey={key}
+                            name={RATIO_SERIES_LABELS[key] ?? key}
+                            stroke={stroke}
+                            strokeWidth={2}
+                            strokeDasharray={strokeDasharray}
+                            dot={false}
+                            hide={hidden}
+                            activeDot={{ r: 4 }}
+                          />
+                        );
+                      })}
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-xs text-slate-500">
+                    No key ratio data available for the selected range.
+                  </div>
+                )}
               </div>
             </div>
           </div>
