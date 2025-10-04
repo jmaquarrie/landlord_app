@@ -1238,6 +1238,7 @@ export default function App() {
     purchaseCosts: false,
     rentalCashflow: false,
     cashflowDetail: false,
+    wealthTrajectory: false,
   });
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -3313,114 +3314,132 @@ export default function App() {
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-3">
-                <SectionTitle
-                  label="Wealth trajectory vs Index Fund"
-                  tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
-                  className="text-sm font-semibold text-slate-700"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowChartModal(true)}
-                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                >
-                  Expand chart
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('wealthTrajectory')}
+                    aria-expanded={!collapsedSections.wealthTrajectory}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    {collapsedSections.wealthTrajectory ? 'Show chart' : 'Hide chart'}
+                  </button>
+                  <SectionTitle
+                    label="Wealth trajectory vs Index Fund"
+                    tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+                {!collapsedSections.wealthTrajectory ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowChartModal(true)}
+                    className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Expand chart
+                  </button>
+                ) : null}
               </div>
-              <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
-                <span>Showing years {chartRange.start} – {chartRange.end}</span>
-              </div>
-              <div className="h-72 w-full">
-                <ResponsiveContainer>
-                  <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis
-                      dataKey="year"
-                      tickFormatter={(t) => `Y${t}`}
-                      tick={{ fontSize: 10, fill: '#475569' }}
-                    />
-                    <YAxis
-                      tickFormatter={(v) => currency(v)}
-                      tick={{ fontSize: 10, fill: '#475569' }}
-                      width={90}
-                    />
-                    <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
-                    <Legend
-                      content={(props) => (
-                        <ChartLegend
-                          {...props}
-                          activeSeries={activeSeries}
-                          onToggle={toggleSeries}
-                          excludedKeys={reinvestActive ? [] : ['investedRent']}
+              {!collapsedSections.wealthTrajectory ? (
+                <>
+                  <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
+                    <span>Showing years {chartRange.start} – {chartRange.end}</span>
+                  </div>
+                  <div className="h-72 w-full">
+                    <ResponsiveContainer>
+                      <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="year"
+                          tickFormatter={(t) => `Y${t}`}
+                          tick={{ fontSize: 10, fill: '#475569' }}
                         />
-                      )}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="indexFund"
-                      name="Index fund"
-                      stroke="#f97316"
-                      fill="rgba(249,115,22,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.indexFund}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="cashflow"
-                      name="Cashflow"
-                      stroke="#facc15"
-                      fill="rgba(250,204,21,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.cashflow}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyValue"
-                      name="Property value"
-                      stroke="#0ea5e9"
-                      fill="rgba(14,165,233,0.18)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyValue}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyGross"
-                      name="Property gross"
-                      stroke="#2563eb"
-                      fill="rgba(37,99,235,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyGross}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyNet"
-                      name="Property net"
-                      stroke="#16a34a"
-                      fill="rgba(22,163,74,0.25)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyNet}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyNetAfterTax"
-                      name={propertyNetAfterTaxLabel}
-                      stroke="#9333ea"
-                      fill="rgba(147,51,234,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyNetAfterTax}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="investedRent"
-                      name="Invested rent"
-                      stroke="#0d9488"
-                      fill="rgba(13,148,136,0.15)"
-                      strokeWidth={2}
-                      strokeDasharray="5 3"
-                      hide={!activeSeries.investedRent || !reinvestActive}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+                        <YAxis
+                          tickFormatter={(v) => currency(v)}
+                          tick={{ fontSize: 10, fill: '#475569' }}
+                          width={90}
+                        />
+                        <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
+                        <Legend
+                          content={(props) => (
+                            <ChartLegend
+                              {...props}
+                              activeSeries={activeSeries}
+                              onToggle={toggleSeries}
+                              excludedKeys={reinvestActive ? [] : ['investedRent']}
+                            />
+                          )}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="indexFund"
+                          name="Index fund"
+                          stroke="#f97316"
+                          fill="rgba(249,115,22,0.2)"
+                          strokeWidth={2}
+                          hide={!activeSeries.indexFund}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="cashflow"
+                          name="Cashflow"
+                          stroke="#facc15"
+                          fill="rgba(250,204,21,0.2)"
+                          strokeWidth={2}
+                          hide={!activeSeries.cashflow}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="propertyValue"
+                          name="Property value"
+                          stroke="#0ea5e9"
+                          fill="rgba(14,165,233,0.18)"
+                          strokeWidth={2}
+                          hide={!activeSeries.propertyValue}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="propertyGross"
+                          name="Property gross"
+                          stroke="#2563eb"
+                          fill="rgba(37,99,235,0.2)"
+                          strokeWidth={2}
+                          hide={!activeSeries.propertyGross}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="propertyNet"
+                          name="Property net"
+                          stroke="#16a34a"
+                          fill="rgba(22,163,74,0.25)"
+                          strokeWidth={2}
+                          hide={!activeSeries.propertyNet}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="propertyNetAfterTax"
+                          name={propertyNetAfterTaxLabel}
+                          stroke="#9333ea"
+                          fill="rgba(147,51,234,0.2)"
+                          strokeWidth={2}
+                          hide={!activeSeries.propertyNetAfterTax}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="investedRent"
+                          name="Invested rent"
+                          stroke="#0d9488"
+                          fill="rgba(13,148,136,0.15)"
+                          strokeWidth={2}
+                          strokeDasharray="5 3"
+                          hide={!activeSeries.investedRent || !reinvestActive}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-slate-500">Chart hidden. Select “Show chart” to display it.</div>
+              )}
             </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
