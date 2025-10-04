@@ -3537,7 +3537,7 @@ export default function App() {
             </section>
 
       <section className="md:col-span-2 md:self-stretch">
-        <div className="flex flex-col space-y-3 md:h-[calc(100vh-8rem)] md:min-h-[calc(100vh-8rem)] md:overflow-y-auto md:pr-2 md:pb-6">
+        <div className="flex flex-col space-y-3 md:pr-2 md:pb-6">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
               <SummaryCard title="Cash needed" tooltip={SECTION_DESCRIPTIONS.cashNeeded}>
                 <Line label="Deposit" value={currency(equity.deposit)} />
@@ -3597,40 +3597,6 @@ export default function App() {
 
             
 
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div
-                className={`flex items-center justify-between gap-3 ${
-                  collapsedSections.cashflowDetail ? '' : 'mb-2'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => toggleSection('cashflowDetail')}
-                    aria-expanded={!collapsedSections.cashflowDetail}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                    aria-label={collapsedSections.cashflowDetail ? 'Show cash flow table' : 'Hide cash flow table'}
-                  >
-                    {collapsedSections.cashflowDetail ? '+' : '−'}
-                  </button>
-                  <SectionTitle label="Annual cash flow detail" className="text-sm font-semibold text-slate-700" />
-                </div>
-              </div>
-              {!collapsedSections.cashflowDetail ? (
-                <>
-                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-                  <CashflowTable
-                    rows={cashflowTableRows}
-                    columns={selectedCashflowColumns}
-                    hiddenColumns={hiddenCashflowColumns}
-                    onRemoveColumn={handleRemoveCashflowColumn}
-                    onAddColumn={handleAddCashflowColumn}
-                    onExport={handleExportCashflowCsv}
-                  />
-                </>
-              ) : null}
-            </div>
-
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="order-1 md:order-1">
                 <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
@@ -3647,14 +3613,7 @@ export default function App() {
                 </SummaryCard>
               </div>
 
-              <div className="order-3 md:order-2">
-                <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`} tooltip={SECTION_DESCRIPTIONS.npv}>
-                  <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
-                  <Line label="NPV" value={currency(equity.npv)} bold />
-                </SummaryCard>
-              </div>
-
-              <div className="order-2 md:order-3 md:col-span-2">
+              <div className="order-2 md:order-2">
                 <SummaryCard title={`Exit comparison (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exitComparison}>
                   <Line label="Index fund value" value={currency(equity.indexValEnd)} tooltip={indexFundTooltip} />
                   <Line
@@ -3682,66 +3641,6 @@ export default function App() {
                   </div>
                 </SummaryCard>
               </div>
-            </div>
-
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => toggleSection('interestSplit')}
-                    aria-expanded={!collapsedSections.interestSplit}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                    aria-label={collapsedSections.interestSplit ? 'Show chart' : 'Hide chart'}
-                  >
-                    {collapsedSections.interestSplit ? '+' : '−'}
-                  </button>
-                  <SectionTitle
-                    label="Interest vs principal split"
-                    tooltip={SECTION_DESCRIPTIONS.interestSplit}
-                    className="text-sm font-semibold text-slate-700"
-                  />
-                </div>
-              </div>
-              {!collapsedSections.interestSplit ? (
-                <div className="h-72 w-full">
-                  {hasInterestSplitData ? (
-                    <ResponsiveContainer>
-                      <AreaChart data={interestSplitChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
-                        <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
-                        <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
-                        <Legend />
-                        <Area
-                          type="monotone"
-                          dataKey="interestPaid"
-                          name="Interest"
-                          stackId="payments"
-                          stroke="#f97316"
-                          fill="rgba(249,115,22,0.25)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="principalPaid"
-                          name="Principal"
-                          stackId="payments"
-                          stroke="#22c55e"
-                          fill="rgba(34,197,94,0.3)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
-                      Adjust the mortgage assumptions to model interest and principal payments.
-                    </div>
-                  )}
-                </div>
-              ) : null}
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
@@ -3877,6 +3776,66 @@ export default function App() {
                     </ResponsiveContainer>
                   </div>
                 </>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('interestSplit')}
+                    aria-expanded={!collapsedSections.interestSplit}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.interestSplit ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.interestSplit ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Interest vs principal split"
+                    tooltip={SECTION_DESCRIPTIONS.interestSplit}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+              </div>
+              {!collapsedSections.interestSplit ? (
+                <div className="h-72 w-full">
+                  {hasInterestSplitData ? (
+                    <ResponsiveContainer>
+                      <AreaChart data={interestSplitChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
+                        <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
+                        <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                        <Legend />
+                        <Area
+                          type="monotone"
+                          dataKey="interestPaid"
+                          name="Interest"
+                          stackId="payments"
+                          stroke="#f97316"
+                          fill="rgba(249,115,22,0.25)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="principalPaid"
+                          name="Principal"
+                          stackId="payments"
+                          stroke="#22c55e"
+                          fill="rgba(34,197,94,0.3)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+                      Adjust the mortgage assumptions to model interest and principal payments.
+                    </div>
+                  )}
+                </div>
               ) : null}
             </div>
 
@@ -4331,6 +4290,40 @@ export default function App() {
               ) : null}
             </div>
 
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div
+                className={`flex items-center justify-between gap-3 ${
+                  collapsedSections.cashflowDetail ? '' : 'mb-2'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('cashflowDetail')}
+                    aria-expanded={!collapsedSections.cashflowDetail}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.cashflowDetail ? 'Show cash flow table' : 'Hide cash flow table'}
+                  >
+                    {collapsedSections.cashflowDetail ? '+' : '−'}
+                  </button>
+                  <SectionTitle label="Annual cash flow detail" className="text-sm font-semibold text-slate-700" />
+                </div>
+              </div>
+              {!collapsedSections.cashflowDetail ? (
+                <>
+                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
+                  <CashflowTable
+                    rows={cashflowTableRows}
+                    columns={selectedCashflowColumns}
+                    hiddenColumns={hiddenCashflowColumns}
+                    onRemoveColumn={handleRemoveCashflowColumn}
+                    onAddColumn={handleAddCashflowColumn}
+                    onExport={handleExportCashflowCsv}
+                  />
+                </>
+              ) : null}
+            </div>
+
 
 
 
@@ -4498,6 +4491,7 @@ export default function App() {
               </div>
             ) : null}
           </div>
+
         </section>
 
         {showListingPreview ? (
@@ -4970,6 +4964,83 @@ export default function App() {
                 </div>
               </div>
             </div>
+            <aside className="w-full border-t border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-l md:border-t-0">
+              <div className="h-full overflow-y-auto p-5 space-y-6">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Deal levers</h3>
+                  <div className="mt-3 space-y-3">
+                    {moneyInput('purchasePrice', 'Purchase price (£)', 1000)}
+                    {pctInput('depositPct', 'Deposit %')}
+                    {smallInput('exitYear', 'Exit year', 1)}
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Loan profile</h3>
+                  <div className="mt-3 space-y-3">
+                    {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
+                    {smallInput('mortgageYears', 'Mortgage term (years)')}
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Loan type</div>
+                      <div className="mt-3 space-y-2 text-[11px] text-slate-600">
+                        <label className="flex items-center justify-between gap-3">
+                          <span className="text-slate-700">Capital repayment</span>
+                          <input
+                            type="radio"
+                            name="modal-loan-type"
+                            checked={inputs.loanType === 'repayment'}
+                            onChange={() => setInputs((s) => ({ ...s, loanType: 'repayment' }))}
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-3">
+                          <span className="text-slate-700">Interest-only</span>
+                          <input
+                            type="radio"
+                            name="modal-loan-type"
+                            checked={inputs.loanType === 'interest_only'}
+                            onChange={() => setInputs((s) => ({ ...s, loanType: 'interest_only' }))}
+                          />
+                        </label>
+                        <p className="text-[10px] text-slate-500">
+                          Interest-only keeps the balance level; repayment shifts cash flow toward principal over time.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Rent & growth</h3>
+                  <div className="mt-3 space-y-3">
+                    {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
+                    {pctInput('rentGrowth', 'Rent growth %')}
+                    {pctInput('annualAppreciation', 'Capital growth %')}
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Cash flow options</h3>
+                  <div className="mt-3 space-y-3">
+                    <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(inputs.reinvestIncome)}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            reinvestIncome: event.target.checked,
+                          }))
+                        }
+                      />
+                      <span className="flex-1">
+                        <span className="block font-semibold text-slate-700">Reinvest after-tax cash flow</span>
+                        <span className="mt-1 block text-[11px] text-slate-500">
+                          Compound positive cash flow alongside the index fund path.
+                        </span>
+                      </span>
+                    </label>
+                    {inputs.reinvestIncome ? pctInput('reinvestPct', 'Reinvest % of after-tax cash flow') : null}
+                  </div>
+                </div>
+              </div>
+            </aside>
           </div>
         </div>
       </div>
