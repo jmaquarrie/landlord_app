@@ -107,7 +107,7 @@ const ROI_HEATMAP_YIELD_OPTIONS = [0.04, 0.05, 0.06, 0.07, 0.08];
 const HEATMAP_COLOR_START = [248, 113, 113];
 const HEATMAP_COLOR_END = [34, 197, 94];
 const HEATMAP_COLOR_NEUTRAL = [148, 163, 184];
-const LEVERAGE_LTV_OPTIONS = [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9];
+const LEVERAGE_LTV_OPTIONS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75];
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -379,8 +379,6 @@ const SECTION_DESCRIPTIONS = {
     'Track cap rate, yield on cost, cash-on-cash, and IRR across the hold period to compare return profiles over time.',
   exitComparison:
     'Compares exit-year totals for the property and the index fund, including after-tax wealth and cumulative rental tax.',
-  sensitivity:
-    'Adjust the rent sensitivity to see how Year 1 after-tax cash flow shifts when rents move up or down.',
   cashflowBars:
     'Visualises annual rent, expenses, debt service, and after-tax cash flow to highlight lean years or sudden swings.',
   roiHeatmap:
@@ -1372,7 +1370,6 @@ export default function App() {
     showZeroBaseline: true,
   });
   const [performanceYear, setPerformanceYear] = useState(1);
-  const [sensitivityPct, setSensitivityPct] = useState(0.1);
   const [shareNotice, setShareNotice] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const pageRef = useRef(null);
@@ -2847,31 +2844,6 @@ export default function App() {
     </div>
   );
 
-  const sensitivityResults = useMemo(() => {
-    const rent = Number.isFinite(inputs.monthlyRent) ? inputs.monthlyRent : 0;
-    const scenarioBase = equity.cashflowYear1AfterTax;
-    const evaluate = (multiplier) => {
-      const adjustedRent = Math.max(0, roundTo(rent * multiplier, 2));
-      return calculateEquity({ ...inputs, monthlyRent: adjustedRent }).cashflowYear1AfterTax;
-    };
-    const downMultiplier = clamp(1 - sensitivityPct, 0, 2);
-    const upMultiplier = Math.max(0, 1 + sensitivityPct);
-    return {
-      base: scenarioBase,
-      down: evaluate(downMultiplier),
-      up: evaluate(upMultiplier),
-    };
-  }, [equity.cashflowYear1AfterTax, inputs, sensitivityPct]);
-  const sensitivityPercentLabel = `${roundTo(sensitivityPct * 100, 2)}%`;
-  const canDecreaseSensitivity = sensitivityPct > 0;
-  const canIncreaseSensitivity = sensitivityPct < 0.5;
-  const handleAdjustSensitivity = (delta) => {
-    setSensitivityPct((current) => {
-      const next = clamp(roundTo(current + delta, 3), 0, 0.5);
-      return next;
-    });
-  };
-
   const integrateScenario = (record, { select = false } = {}) => {
     const normalized = normalizeScenarioRecord(record);
     if (!normalized) return null;
@@ -3324,20 +3296,18 @@ export default function App() {
           </header>
         </div>
 
-        <main className="py-6">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3 md:items-start">
-            <section className="md:col-span-1 md:self-start">
-              <div className="md:sticky md:top-28">
-                <div className="md:max-h-[calc(100vh-8rem)] md:overflow-y-auto md:pr-2 md:pb-4">
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
+        <main className="py-6 md:min-h-screen">
+          <div className="grid grid-cols-1 gap-4 md:min-h-[calc(100vh-8rem)] md:grid-cols-3 md:items-stretch">
+            <section className="space-y-3 md:col-span-1 md:self-start md:pr-2 md:pb-4">
+              <div className="rounded-2xl bg-white p-3 shadow-sm">
+                <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
 
-              <CollapsibleSection
-                title="Property info"
-                collapsed={collapsedSections.propertyInfo}
-                onToggle={() => toggleSection('propertyInfo')}
-              >
-                <div className="grid gap-2 md:grid-cols-2">
+                <CollapsibleSection
+                  title="Property info"
+                  collapsed={collapsedSections.propertyInfo}
+                  onToggle={() => toggleSection('propertyInfo')}
+                >
+                  <div className="grid gap-2 md:grid-cols-2">
                   <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
                   <div className="flex flex-col gap-1 md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Property URL</label>
@@ -3408,14 +3378,14 @@ export default function App() {
                   {previewLoading ? <div>Loading preview…</div> : null}
                   {previewError ? <div className="text-rose-600">{previewError}</div> : null}
                 </div>
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-              <CollapsibleSection
-                title="Buyer profile"
-                collapsed={collapsedSections.buyerProfile}
-                onToggle={() => toggleSection('buyerProfile')}
-              >
-                <div className="flex items-center gap-3 text-xs">
+                <CollapsibleSection
+                  title="Buyer profile"
+                  collapsed={collapsedSections.buyerProfile}
+                  onToggle={() => toggleSection('buyerProfile')}
+                >
+                  <div className="flex items-center gap-3 text-xs">
                   <label className="inline-flex items-center gap-2">
                     <input
                       type="radio"
@@ -3459,14 +3429,14 @@ export default function App() {
                     Company purchases are treated here at higher rates (+5% surcharge on the total price).
                   </div>
                 )}
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-              <CollapsibleSection
-                title="Household income"
-                collapsed={collapsedSections.householdIncome}
-                onToggle={() => toggleSection('householdIncome')}
-              >
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <CollapsibleSection
+                  title="Household income"
+                  collapsed={collapsedSections.householdIncome}
+                  onToggle={() => toggleSection('householdIncome')}
+                >
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {moneyInput('incomePerson1', 'Owner A income (£)', 1000)}
                   {moneyInput('incomePerson2', 'Owner B income (£)', 1000)}
                   {pctInput('ownershipShare1', 'Owner A ownership %')}
@@ -3477,14 +3447,14 @@ export default function App() {
                     ? 'For company purchases, rental profits are taxed at a flat 19% corporation tax rate. Ownership percentages still control how cash flows are split across the summary.'
                     : 'Rental profit is allocated according to the ownership percentages above before applying each owner’s marginal tax bands. Percentages are normalised if they do not sum to 100%.'}
                 </p>
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-              <CollapsibleSection
-                title="Purchase costs"
-                collapsed={collapsedSections.purchaseCosts}
-                onToggle={() => toggleSection('purchaseCosts')}
-              >
-                <div className="grid grid-cols-2 gap-2">
+                <CollapsibleSection
+                  title="Purchase costs"
+                  collapsed={collapsedSections.purchaseCosts}
+                  onToggle={() => toggleSection('purchaseCosts')}
+                >
+                  <div className="grid grid-cols-2 gap-2">
                   {moneyInput('purchasePrice', 'Purchase price (£)')}
                   {pctInput('depositPct', 'Deposit %')}
                   {pctInput('closingCostsPct', 'Other closing costs %')}
@@ -3517,14 +3487,14 @@ export default function App() {
                     <div className="mt-1 text-[11px] text-slate-500">Interest‑only keeps the loan balance unchanged until exit; debt service = interest only.</div>
                   </div>
                 </div>
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-              <CollapsibleSection
-                title="Rental cashflow"
-                collapsed={collapsedSections.rentalCashflow}
-                onToggle={() => toggleSection('rentalCashflow')}
-              >
-                <div className="grid grid-cols-2 gap-2">
+                <CollapsibleSection
+                  title="Rental cashflow"
+                  collapsed={collapsedSections.rentalCashflow}
+                  onToggle={() => toggleSection('rentalCashflow')}
+                >
+                  <div className="grid grid-cols-2 gap-2">
                   {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
                   {pctInput('vacancyPct', 'Vacancy %')}
                   {pctInput('mgmtPct', 'Management %')}
@@ -3561,14 +3531,13 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-            </div>
-          </div>
-        </div>
-      </section>
+              </div>
+            </section>
 
-      <section className="space-y-3 md:col-span-2">
+      <section className="md:col-span-2 md:self-stretch">
+        <div className="flex flex-col space-y-3 md:h-[calc(100vh-8rem)] md:min-h-[calc(100vh-8rem)] md:overflow-y-auto md:pr-2 md:pb-6">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
               <SummaryCard title="Cash needed" tooltip={SECTION_DESCRIPTIONS.cashNeeded}>
                 <Line label="Deposit" value={currency(equity.deposit)} />
@@ -3629,6 +3598,93 @@ export default function App() {
             
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div
+                className={`flex items-center justify-between gap-3 ${
+                  collapsedSections.cashflowDetail ? '' : 'mb-2'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('cashflowDetail')}
+                    aria-expanded={!collapsedSections.cashflowDetail}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.cashflowDetail ? 'Show cash flow table' : 'Hide cash flow table'}
+                  >
+                    {collapsedSections.cashflowDetail ? '+' : '−'}
+                  </button>
+                  <SectionTitle label="Annual cash flow detail" className="text-sm font-semibold text-slate-700" />
+                </div>
+              </div>
+              {!collapsedSections.cashflowDetail ? (
+                <>
+                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
+                  <CashflowTable
+                    rows={cashflowTableRows}
+                    columns={selectedCashflowColumns}
+                    hiddenColumns={hiddenCashflowColumns}
+                    onRemoveColumn={handleRemoveCashflowColumn}
+                    onAddColumn={handleAddCashflowColumn}
+                    onExport={handleExportCashflowCsv}
+                  />
+                </>
+              ) : null}
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="order-1 md:order-1">
+                <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
+                  <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
+                  <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
+                  <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
+                  <hr className="my-2" />
+                  <Line
+                    label="Estimated equity then"
+                    value={currency(estimatedExitEquity)}
+                    bold
+                    tooltip={estimatedEquityTooltip}
+                  />
+                </SummaryCard>
+              </div>
+
+              <div className="order-3 md:order-2">
+                <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`} tooltip={SECTION_DESCRIPTIONS.npv}>
+                  <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
+                  <Line label="NPV" value={currency(equity.npv)} bold />
+                </SummaryCard>
+              </div>
+
+              <div className="order-2 md:order-3 md:col-span-2">
+                <SummaryCard title={`Exit comparison (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exitComparison}>
+                  <Line label="Index fund value" value={currency(equity.indexValEnd)} tooltip={indexFundTooltip} />
+                  <Line
+                    label="Property gross"
+                    value={currency(equity.propertyGrossWealthAtExit)}
+                    tooltip={propertyGrossTooltip}
+                  />
+                  <Line label="Property net" value={currency(equity.propertyNetWealthAtExit)} tooltip={propertyNetTooltip} />
+                  <Line
+                    label={propertyNetAfterTaxLabel}
+                    value={currency(equity.propertyNetWealthAfterTax)}
+                    tooltip={propertyNetAfterTaxTooltip}
+                  />
+                  <Line
+                    label={rentalTaxCumulativeLabel}
+                    value={currency(equity.totalPropertyTax)}
+                    tooltip={rentalTaxTooltip}
+                  />
+                  <div className="mt-2 text-xs text-slate-600">
+                    {equity.propertyNetWealthAfterTax > equity.indexValEnd
+                      ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
+                      : equity.propertyNetWealthAfterTax < equity.indexValEnd
+                      ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
+                      : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
+                  </div>
+                </SummaryCard>
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <button
@@ -3686,101 +3742,6 @@ export default function App() {
                   )}
                 </div>
               ) : null}
-            </div>
-
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => toggleSection('leverage')}
-                    aria-expanded={!collapsedSections.leverage}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                    aria-label={collapsedSections.leverage ? 'Show chart' : 'Hide chart'}
-                  >
-                    {collapsedSections.leverage ? '+' : '−'}
-                  </button>
-                  <SectionTitle
-                    label="Leverage multiplier"
-                    tooltip={SECTION_DESCRIPTIONS.leverage}
-                    className="text-sm font-semibold text-slate-700"
-                  />
-                </div>
-              </div>
-              {!collapsedSections.leverage ? (
-                <>
-                  <p className="mb-2 text-[11px] text-slate-500">
-                    Each point recalculates the deal using the same assumptions but with a different LTV. ROI reflects net wealth at exit versus cash invested.
-                  </p>
-                  <div className="h-72 w-full">
-                    {hasLeverageData ? (
-                      <ResponsiveContainer>
-                        <LineChart data={leverageChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis
-                            dataKey="ltv"
-                            tickFormatter={(value) => formatPercent(value)}
-                            tick={{ fontSize: 11, fill: '#475569' }}
-                          />
-                          <YAxis
-                            tickFormatter={(value) => formatPercent(value)}
-                            tick={{ fontSize: 11, fill: '#475569' }}
-                            width={90}
-                          />
-                          <Tooltip
-                            formatter={(value, key) => [formatPercent(value), key === 'irr' ? 'IRR' : 'Total ROI']}
-                            labelFormatter={(label) => `LTV ${formatPercent(label)}`}
-                          />
-                          <Legend />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="irr"
-                            name="IRR"
-                            stroke={SERIES_COLORS.irrSeries}
-                            strokeWidth={2}
-                            dot={{ r: 3 }}
-                            isAnimationActive={false}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="roi"
-                            name="Total ROI"
-                            stroke="#0ea5e9"
-                            strokeWidth={2}
-                            strokeDasharray="4 2"
-                            dot={{ r: 3 }}
-                            isAnimationActive={false}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
-                        Enter a purchase price and rent to explore leverage outcomes.
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : null}
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
-                <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
-                <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
-                <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
-                <hr className="my-2" />
-                <Line
-                  label="Estimated equity then"
-                  value={currency(estimatedExitEquity)}
-                  bold
-                  tooltip={estimatedEquityTooltip}
-                />
-              </SummaryCard>
-
-              <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`} tooltip={SECTION_DESCRIPTIONS.npv}>
-                <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
-                <Line label="NPV" value={currency(equity.npv)} bold />
-              </SummaryCard>
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
@@ -4202,6 +4163,83 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    onClick={() => toggleSection('leverage')}
+                    aria-expanded={!collapsedSections.leverage}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.leverage ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.leverage ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Leverage multiplier"
+                    tooltip={SECTION_DESCRIPTIONS.leverage}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+              </div>
+              {!collapsedSections.leverage ? (
+                <>
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    Each point recalculates the deal using the same assumptions but with a different LTV. ROI reflects net wealth at exit versus cash invested.
+                  </p>
+                  <div className="h-72 w-full">
+                    {hasLeverageData ? (
+                      <ResponsiveContainer>
+                        <LineChart data={leverageChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis
+                            dataKey="ltv"
+                            tickFormatter={(value) => formatPercent(value)}
+                            tick={{ fontSize: 11, fill: '#475569' }}
+                            domain={[0.1, 0.75]}
+                            type="number"
+                          />
+                          <YAxis
+                            tickFormatter={(value) => formatPercent(value)}
+                            tick={{ fontSize: 11, fill: '#475569' }}
+                            width={90}
+                          />
+                          <Tooltip
+                            formatter={(value, key) => [formatPercent(value), key === 'irr' ? 'IRR' : 'Total ROI']}
+                            labelFormatter={(label) => `LTV ${formatPercent(label)}`}
+                          />
+                          <Legend />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="irr"
+                            name="IRR"
+                            stroke={SERIES_COLORS.irrSeries}
+                            strokeWidth={2}
+                            dot={{ r: 3 }}
+                            isAnimationActive={false}
+                          />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="roi"
+                            name="Total ROI"
+                            stroke="#0ea5e9"
+                            strokeWidth={2}
+                            strokeDasharray="4 2"
+                            dot={{ r: 3 }}
+                            isAnimationActive={false}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+                        Enter a purchase price and rent to explore leverage outcomes.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
                     onClick={() => toggleSection('roiHeatmap')}
                     aria-expanded={!collapsedSections.roiHeatmap}
                     className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
@@ -4311,111 +4349,8 @@ export default function App() {
 
             
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="space-y-3 md:order-2 md:col-span-1">
-                <SummaryCard
-                  title={`Exit comparison (Year ${inputs.exitYear})`}
-                  tooltip={SECTION_DESCRIPTIONS.exitComparison}
-                >
-                  <Line
-                    label="Index fund value"
-                    value={currency(equity.indexValEnd)}
-                    tooltip={indexFundTooltip}
-                  />
-                  <Line
-                    label="Property gross"
-                    value={currency(equity.propertyGrossWealthAtExit)}
-                    tooltip={propertyGrossTooltip}
-                  />
-                  <Line
-                    label="Property net"
-                    value={currency(equity.propertyNetWealthAtExit)}
-                    tooltip={propertyNetTooltip}
-                  />
-                  <Line
-                    label={propertyNetAfterTaxLabel}
-                    value={currency(equity.propertyNetWealthAfterTax)}
-                    tooltip={propertyNetAfterTaxTooltip}
-                  />
-                  <Line
-                    label={rentalTaxCumulativeLabel}
-                    value={currency(equity.totalPropertyTax)}
-                    tooltip={rentalTaxTooltip}
-                  />
-                  <div className="mt-2 text-xs text-slate-600">
-                    {equity.propertyNetWealthAfterTax > equity.indexValEnd
-                      ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
-                      : equity.propertyNetWealthAfterTax < equity.indexValEnd
-                      ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
-                      : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
-                  </div>
-                </SummaryCard>
-              </div>
-
-              <div className="md:order-1 md:col-span-1">
-                <SummaryCard
-                  title={
-                    <div className="flex items-center justify-between gap-2">
-                      <SectionTitle
-                        label="Sensitivity"
-                        tooltip={SECTION_DESCRIPTIONS.sensitivity}
-                        className="text-sm font-semibold text-slate-700"
-                      />
-                      <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                        <button
-                          type="button"
-                          onClick={() => handleAdjustSensitivity(-0.01)}
-                          className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label="Decrease rent sensitivity"
-                          disabled={!canDecreaseSensitivity}
-                        >
-                          ▼
-                        </button>
-                        <span className="min-w-[3ch] text-right font-semibold text-slate-700">
-                          {sensitivityPercentLabel}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleAdjustSensitivity(0.01)}
-                          className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label="Increase rent sensitivity"
-                          disabled={!canIncreaseSensitivity}
-                        >
-                          ▲
-                        </button>
-                      </div>
-                    </div>
-                  }
-                >
-                  <div className="space-y-0.5">
-                    <SensitivityRow label={`Rent −${sensitivityPercentLabel}`} value={sensitivityResults.down} />
-                    <SensitivityRow label="Base" value={sensitivityResults.base} />
-                    <SensitivityRow label={`Rent +${sensitivityPercentLabel}`} value={sensitivityResults.up} />
-                  </div>
-                </SummaryCard>
-              </div>
-
-              <div className="md:col-span-2 md:order-3">
-                <CollapsibleSection
-                  title="Annual cash flow detail"
-                  collapsed={collapsedSections.cashflowDetail}
-                  onToggle={() => toggleSection('cashflowDetail')}
-                  className="rounded-2xl bg-white p-3 shadow-sm"
-                >
-                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-                  <CashflowTable
-                    rows={cashflowTableRows}
-                    columns={selectedCashflowColumns}
-                    hiddenColumns={hiddenCashflowColumns}
-                    onRemoveColumn={handleRemoveCashflowColumn}
-                    onAddColumn={handleAddCashflowColumn}
-                    onExport={handleExportCashflowCsv}
-                  />
-                </CollapsibleSection>
-              </div>
-            </div>
-
-          </section>
+        </div>
+      </section>
         </div>
 
         <section className="mt-6">
@@ -5031,89 +4966,6 @@ export default function App() {
                         />
                       ) : null}
                     </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="w-full border-t border-slate-200 bg-slate-50 p-5 text-xs text-slate-700 md:w-96 md:border-l md:border-t-0 md:text-[11px]">
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700">Exit & growth assumptions</h3>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    {smallInput('exitYear', 'Exit year', 1)}
-                    {pctInput('annualAppreciation', 'Appreciation %')}
-                    {pctInput('rentGrowth', 'Rent growth %')}
-                    {pctInput('indexFundGrowth', 'Index fund growth %')}
-                    {pctInput('sellingCostsPct', 'Selling costs %')}
-                    {pctInput('discountRate', 'Discount rate %', 0.001)}
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700">Financing levers</h3>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    {moneyInput('purchasePrice', 'Purchase price (£)')}
-                    {pctInput('depositPct', 'Deposit %')}
-                    {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
-                    {smallInput('mortgageYears', 'Mortgage term (years)')}
-                    {pctInput('closingCostsPct', 'Closing costs %')}
-                  </div>
-                  <div className="mt-3 rounded-xl border border-slate-200 p-3">
-                    <div className="text-xs font-semibold text-slate-700">Loan type</div>
-                    <div className="mt-2 flex flex-wrap gap-4 text-xs">
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="radio"
-                          name="loanTypeExpanded"
-                          checked={inputs.loanType === 'repayment'}
-                          onChange={() => setInputs((prev) => ({ ...prev, loanType: 'repayment' }))}
-                        />
-                        <span>Capital repayment</span>
-                      </label>
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="radio"
-                          name="loanTypeExpanded"
-                          checked={inputs.loanType === 'interest_only'}
-                          onChange={() => setInputs((prev) => ({ ...prev, loanType: 'interest_only' }))}
-                        />
-                        <span>Interest-only</span>
-                      </label>
-                    </div>
-                    <p className="mt-2 text-[11px] text-slate-500">Switching loan type updates debt service and equity projections instantly.</p>
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700">Rental cashflow inputs</h3>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
-                    {pctInput('vacancyPct', 'Vacancy %')}
-                    {pctInput('mgmtPct', 'Management %')}
-                    {pctInput('repairsPct', 'Repairs/CapEx %')}
-                    {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
-                    {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
-                  </div>
-                  <div className="mt-3 rounded-xl border border-slate-200 p-3">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(inputs.reinvestIncome)}
-                        onChange={(e) =>
-                          setInputs((prev) => ({
-                            ...prev,
-                            reinvestIncome: e.target.checked,
-                          }))
-                        }
-                      />
-                      <span>Reinvest after-tax cash flow into index fund</span>
-                    </label>
-                    {inputs.reinvestIncome && (
-                      <div className="mt-2 grid grid-cols-1 gap-2">
-                        {pctInput('reinvestPct', 'Reinvest % of after-tax cash flow')}
-                        <p className="text-[11px] text-slate-500">
-                          Only positive after-tax cash flows are reinvested and compound alongside the index fund baseline.
-                        </p>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
@@ -5955,21 +5807,6 @@ function Line({ label, value, bold = false, tooltip }) {
           {tooltip}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function SensitivityRow({ label, value }) {
-  const numericValue = Number.isFinite(value) ? value : 0;
-  const positive = numericValue >= 0;
-  return (
-    <div className="flex items-center justify-between text-xs">
-      <span className="text-slate-600">{label}</span>
-      <span
-        className={`rounded-lg px-2 py-0.5 ${positive ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}
-      >
-        {currency(numericValue)}
-      </span>
     </div>
   );
 }
