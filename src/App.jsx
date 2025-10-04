@@ -1188,6 +1188,10 @@ export default function App() {
     password: authCredentials.password ?? '',
   });
   const [collapsedSections, setCollapsedSections] = useState({
+    dealInputs: false,
+    dealAnalysis: false,
+    scenarioHistory: false,
+    listingPreview: false,
     propertyInfo: false,
     buyerProfile: false,
     householdIncome: false,
@@ -2818,7 +2822,7 @@ export default function App() {
             {authError ? (
               <div className="text-sm text-rose-600" role="alert">
                 {authError}
-              </div>
+            </div>
             ) : null}
             <div className="flex items-center justify-end gap-2">
               <button
@@ -2891,14 +2895,26 @@ export default function App() {
         <main className="py-6">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             <section className="md:col-span-1">
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
+              <div className="rounded-2xl bg-white p-3 shadow-sm">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold text-slate-800">Deal inputs</h2>
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('dealInputs')}
+                    aria-expanded={!collapsedSections.dealInputs}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    {collapsedSections.dealInputs ? 'Expand' : 'Collapse'}
+                  </button>
+                </div>
 
-              <CollapsibleSection
-                title="Property info"
-                collapsed={collapsedSections.propertyInfo}
-                onToggle={() => toggleSection('propertyInfo')}
-              >
+                {!collapsedSections.dealInputs ? (
+                  <>
+                    <CollapsibleSection
+                      title="Property info"
+                      collapsed={collapsedSections.propertyInfo}
+                      onToggle={() => toggleSection('propertyInfo')}
+                    >
                 <div className="grid gap-2 md:grid-cols-2">
                   <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
                   <div className="flex flex-col gap-1 md:col-span-2">
@@ -3125,290 +3141,298 @@ export default function App() {
                 </div>
               </CollapsibleSection>
 
+                  </>
+                ) : null}
             </div>
           </section>
 
-          <section className="space-y-3 md:col-span-2">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <SummaryCard title="Cash needed" tooltip={SECTION_DESCRIPTIONS.cashNeeded}>
-                <Line label="Deposit" value={currency(equity.deposit)} />
-                <Line label="Stamp Duty (est.)" value={currency(equity.stampDuty)} />
-                <Line label="Other closing costs" value={currency(equity.otherClosing)} />
-                <Line label="Renovation (upfront)" value={currency(inputs.renovationCost)} />
-                <hr className="my-2" />
-                <Line label="Total cash in" value={currency(equity.cashIn)} bold />
-              </SummaryCard>
-
-              <SummaryCard
-                title={
-                  <div className="flex items-center justify-between gap-2">
-                    <SectionTitle
-                      label="Performance"
-                      tooltip={SECTION_DESCRIPTIONS.performance}
-                      className="text-sm font-semibold text-slate-700"
-                    />
-                    <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                      <span>Year</span>
-                      <select
-                        value={performanceYearClamped}
-                        onChange={(event) => setPerformanceYear(Number(event.target.value) || 1)}
-                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
-                      >
-                        {performanceYearOptions.map((year) => (
-                          <option key={year} value={year}>{`Year ${year}`}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                }
-              >
-                <Line label="Gross rent (vacancy adj.)" value={currency(selectedGrossRent)} />
-                <Line label="Operating expenses" value={currency(selectedOperatingExpenses)} />
-                <Line label="NOI" value={currency(selectedNoi)} />
-                <Line label="Debt service" value={currency(selectedDebtService)} />
-                <Line label="Cash flow (pre‑tax)" value={currency(selectedCashPreTax)} />
-                <Line label={rentalTaxLabel} value={currency(selectedRentalTax)} />
-                <hr className="my-2" />
-                <Line label="Cash flow (after tax)" value={currency(selectedCashAfterTax)} bold />
-              </SummaryCard>
-
-              <SummaryCard title="Key ratios" tooltip={SECTION_DESCRIPTIONS.keyRatios}>
-                <Line label="Cap rate" value={formatPercent(equity.cap)} tooltip={KEY_RATIO_TOOLTIPS.cap} />
-                <Line label="Yield on cost" value={formatPercent(equity.yoc)} tooltip={KEY_RATIO_TOOLTIPS.yoc} />
-                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} tooltip={KEY_RATIO_TOOLTIPS.coc} />
-                <Line label="IRR" value={formatPercent(equity.irr)} tooltip={KEY_RATIO_TOOLTIPS.irr} />
-                <Line
-                  label="DSCR"
-                  value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
-                  tooltip={KEY_RATIO_TOOLTIPS.dscr}
-                />
-                <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} tooltip={KEY_RATIO_TOOLTIPS.mortgage} />
-              </SummaryCard>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
-                <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
-                <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
-                <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
-                <hr className="my-2" />
-                <Line
-                  label="Estimated equity then"
-                  value={currency(estimatedExitEquity)}
-                  bold
-                  tooltip={estimatedEquityTooltip}
-                />
-              </SummaryCard>
-
-              <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`} tooltip={SECTION_DESCRIPTIONS.npv}>
-                <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
-                <Line label="NPV" value={currency(equity.npv)} bold />
-              </SummaryCard>
-            </div>
-
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <SectionTitle
-                  label="Wealth trajectory vs Index Fund"
-                  tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
-                  className="text-sm font-semibold text-slate-700"
-                />
+          <section className="md:col-span-2">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-base font-semibold text-slate-800">Deal analysis</h2>
                 <button
                   type="button"
-                  onClick={() => setShowChartModal(true)}
-                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                  onClick={() => toggleSection('dealAnalysis')}
+                  aria-expanded={!collapsedSections.dealAnalysis}
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
                 >
-                  Expand chart
+                  {collapsedSections.dealAnalysis ? 'Expand' : 'Collapse'}
                 </button>
               </div>
-              <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
-                <span>Showing years {chartRange.start} – {chartRange.end}</span>
-              </div>
-              <div className="h-72 w-full">
-                <ResponsiveContainer>
-                  <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis
-                      dataKey="year"
-                      tickFormatter={(t) => `Y${t}`}
-                      tick={{ fontSize: 10, fill: '#475569' }}
-                    />
-                    <YAxis
-                      tickFormatter={(v) => currency(v)}
-                      tick={{ fontSize: 10, fill: '#475569' }}
-                      width={90}
-                    />
-                    <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
-                    <Legend
-                      content={(props) => (
-                        <ChartLegend
-                          {...props}
-                          activeSeries={activeSeries}
-                          onToggle={toggleSeries}
-                        />
-                      )}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="indexFund"
-                      name="Index fund"
-                      stroke="#f97316"
-                      fill="rgba(249,115,22,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.indexFund}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="cashflow"
-                      name="Cashflow"
-                      stroke="#facc15"
-                      fill="rgba(250,204,21,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.cashflow}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyValue"
-                      name="Property value"
-                      stroke="#0ea5e9"
-                      fill="rgba(14,165,233,0.18)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyValue}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyGross"
-                      name="Property gross"
-                      stroke="#2563eb"
-                      fill="rgba(37,99,235,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyGross}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyNet"
-                      name="Property net"
-                      stroke="#16a34a"
-                      fill="rgba(22,163,74,0.25)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyNet}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyNetAfterTax"
-                      name={propertyNetAfterTaxLabel}
-                      stroke="#9333ea"
-                      fill="rgba(147,51,234,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyNetAfterTax}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="space-y-3 md:order-2 md:col-span-1">
-                <SummaryCard
-                  title={`Exit comparison (Year ${inputs.exitYear})`}
-                  tooltip={SECTION_DESCRIPTIONS.exitComparison}
-                >
-                  <Line
-                    label="Index fund value"
-                    value={currency(equity.indexValEnd)}
-                    tooltip={indexFundTooltip}
-                  />
-                  <Line
-                    label="Property gross"
-                    value={currency(equity.propertyGrossWealthAtExit)}
-                    tooltip={propertyGrossTooltip}
-                  />
-                  <Line
-                    label="Property net"
-                    value={currency(equity.propertyNetWealthAtExit)}
-                    tooltip={propertyNetTooltip}
-                  />
-                  <Line
-                    label={propertyNetAfterTaxLabel}
-                    value={currency(equity.propertyNetWealthAfterTax)}
-                    tooltip={propertyNetAfterTaxTooltip}
-                  />
-                  <Line
-                    label={rentalTaxCumulativeLabel}
-                    value={currency(equity.totalPropertyTax)}
-                    tooltip={rentalTaxTooltip}
-                  />
-                  <div className="mt-2 text-xs text-slate-600">
-                    {equity.propertyNetWealthAfterTax > equity.indexValEnd
-                      ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
-                      : equity.propertyNetWealthAfterTax < equity.indexValEnd
-                      ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
-                      : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
+              {!collapsedSections.dealAnalysis && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <SummaryCard title="Cash needed" tooltip={SECTION_DESCRIPTIONS.cashNeeded}>
+                      <Line label="Deposit" value={currency(equity.deposit)} />
+                      <Line label="Stamp Duty (est.)" value={currency(equity.stampDuty)} />
+                      <Line label="Other closing costs" value={currency(equity.otherClosing)} />
+                      <Line label="Renovation (upfront)" value={currency(inputs.renovationCost)} />
+                      <hr className="my-2" />
+                      <Line label="Total cash in" value={currency(equity.cashIn)} bold />
+                    </SummaryCard>
+
+                    <SummaryCard
+                      title={
+                        <div className="flex items-center justify-between gap-2">
+                          <SectionTitle
+                            label="Performance"
+                            tooltip={SECTION_DESCRIPTIONS.performance}
+                            className="text-sm font-semibold text-slate-700"
+                          />
+                          <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                            <span>Year</span>
+                            <select
+                              value={performanceYearClamped}
+                              onChange={(event) => setPerformanceYear(Number(event.target.value) || 1)}
+                              className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                            >
+                              {performanceYearOptions.map((year) => (
+                                <option key={year} value={year}>{`Year ${year}`}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      }
+                    >
+                      <Line label="Gross rent (vacancy adj.)" value={currency(selectedGrossRent)} />
+                      <Line label="Operating expenses" value={currency(selectedOperatingExpenses)} />
+                      <Line label="NOI" value={currency(selectedNoi)} />
+                      <Line label="Debt service" value={currency(selectedDebtService)} />
+                      <Line label="Cash flow (pre‑tax)" value={currency(selectedCashPreTax)} />
+                      <Line label={rentalTaxLabel} value={currency(selectedRentalTax)} />
+                      <hr className="my-2" />
+                      <Line label="Cash flow (after tax)" value={currency(selectedCashAfterTax)} bold />
+                    </SummaryCard>
+
+                    <SummaryCard title="Key ratios" tooltip={SECTION_DESCRIPTIONS.keyRatios}>
+                      <Line label="Cap rate" value={formatPercent(equity.cap)} tooltip={KEY_RATIO_TOOLTIPS.cap} />
+                      <Line label="Yield on cost" value={formatPercent(equity.yoc)} tooltip={KEY_RATIO_TOOLTIPS.yoc} />
+                      <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} tooltip={KEY_RATIO_TOOLTIPS.coc} />
+                      <Line label="IRR" value={formatPercent(equity.irr)} tooltip={KEY_RATIO_TOOLTIPS.irr} />
+                      <Line
+                        label="DSCR"
+                        value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
+                        tooltip={KEY_RATIO_TOOLTIPS.dscr}
+                      />
+                      <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} tooltip={KEY_RATIO_TOOLTIPS.mortgage} />
+                    </SummaryCard>
                   </div>
-                </SummaryCard>
-              </div>
 
-              <div className="md:order-1 md:col-span-1">
-                <SummaryCard
-                  title={
-                    <div className="flex items-center justify-between gap-2">
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
+                      <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
+                      <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
+                      <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
+                      <hr className="my-2" />
+                      <Line
+                        label="Estimated equity then"
+                        value={currency(estimatedExitEquity)}
+                        bold
+                        tooltip={estimatedEquityTooltip}
+                      />
+                    </SummaryCard>
+
+                    <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`} tooltip={SECTION_DESCRIPTIONS.npv}>
+                      <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
+                      <Line label="NPV" value={currency(equity.npv)} bold />
+                    </SummaryCard>
+                  </div>
+
+                  <div className="rounded-2xl bg-white p-3 shadow-sm">
+                    <div className="mb-2 flex items-center justify-between gap-3">
                       <SectionTitle
-                        label="Sensitivity"
-                        tooltip={SECTION_DESCRIPTIONS.sensitivity}
+                        label="Wealth trajectory vs Index Fund"
+                        tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
                         className="text-sm font-semibold text-slate-700"
                       />
-                      <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                        <button
-                          type="button"
-                          onClick={() => handleAdjustSensitivity(-0.01)}
-                          className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label="Decrease rent sensitivity"
-                          disabled={!canDecreaseSensitivity}
-                        >
-                          ▼
-                        </button>
-                        <span className="min-w-[3ch] text-right font-semibold text-slate-700">
-                          {sensitivityPercentLabel}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleAdjustSensitivity(0.01)}
-                          className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label="Increase rent sensitivity"
-                          disabled={!canIncreaseSensitivity}
-                        >
-                          ▲
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowChartModal(true)}
+                        className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      >
+                        Expand chart
+                      </button>
                     </div>
-                  }
-                >
-                  <div className="space-y-0.5">
-                    <SensitivityRow label={`Rent −${sensitivityPercentLabel}`} value={sensitivityResults.down} />
-                    <SensitivityRow label="Base" value={sensitivityResults.base} />
-                    <SensitivityRow label={`Rent +${sensitivityPercentLabel}`} value={sensitivityResults.up} />
+                    <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
+                      <span>Showing years {chartRange.start} – {chartRange.end}</span>
+                    </div>
+                    <div className="h-72 w-full">
+                      <ResponsiveContainer>
+                        <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 10, fill: '#475569' }} />
+                          <YAxis tickFormatter={(v) => currency(v)} tick={{ fontSize: 10, fill: '#475569' }} width={90} />
+                          <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
+                          <Legend
+                            content={(props) => (
+                              <ChartLegend
+                                {...props}
+                                activeSeries={activeSeries}
+                                onToggle={toggleSeries}
+                              />
+                            )}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="indexFund"
+                            name="Index fund"
+                            stroke="#f97316"
+                            fill="rgba(249,115,22,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.indexFund}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="cashflow"
+                            name="Cashflow"
+                            stroke="#facc15"
+                            fill="rgba(250,204,21,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.cashflow}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="propertyValue"
+                            name="Property value"
+                            stroke="#0ea5e9"
+                            fill="rgba(14,165,233,0.18)"
+                            strokeWidth={2}
+                            hide={!activeSeries.propertyValue}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="propertyGross"
+                            name="Property gross"
+                            stroke="#2563eb"
+                            fill="rgba(37,99,235,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.propertyGross}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="propertyNet"
+                            name="Property net"
+                            stroke="#16a34a"
+                            fill="rgba(22,163,74,0.25)"
+                            strokeWidth={2}
+                            hide={!activeSeries.propertyNet}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="propertyNetAfterTax"
+                            name={propertyNetAfterTaxLabel}
+                            stroke="#9333ea"
+                            fill="rgba(147,51,234,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.propertyNetAfterTax}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </SummaryCard>
-              </div>
 
-              <div className="md:col-span-2 md:order-3">
-                <CollapsibleSection
-                  title="Annual cash flow detail"
-                  collapsed={collapsedSections.cashflowDetail}
-                  onToggle={() => toggleSection('cashflowDetail')}
-                  className="rounded-2xl bg-white p-3 shadow-sm"
-                >
-                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-                  <CashflowTable
-                    rows={cashflowTableRows}
-                    columns={selectedCashflowColumns}
-                    hiddenColumns={hiddenCashflowColumns}
-                    onRemoveColumn={handleRemoveCashflowColumn}
-                    onAddColumn={handleAddCashflowColumn}
-                    onExport={handleExportCashflowCsv}
-                  />
-                </CollapsibleSection>
-              </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="space-y-3 md:order-2 md:col-span-1">
+                      <SummaryCard
+                        title={`Exit comparison (Year ${inputs.exitYear})`}
+                        tooltip={SECTION_DESCRIPTIONS.exitComparison}
+                      >
+                        <Line label="Index fund value" value={currency(equity.indexValEnd)} tooltip={indexFundTooltip} />
+                        <Line
+                          label="Property gross"
+                          value={currency(equity.propertyGrossWealthAtExit)}
+                          tooltip={propertyGrossTooltip}
+                        />
+                        <Line
+                          label="Property net"
+                          value={currency(equity.propertyNetWealthAtExit)}
+                          tooltip={propertyNetTooltip}
+                        />
+                        <Line
+                          label={propertyNetAfterTaxLabel}
+                          value={currency(equity.propertyNetWealthAfterTax)}
+                          tooltip={propertyNetAfterTaxTooltip}
+                        />
+                        <Line
+                          label={rentalTaxCumulativeLabel}
+                          value={currency(equity.totalPropertyTax)}
+                          tooltip={rentalTaxTooltip}
+                        />
+                        <div className="mt-2 text-xs text-slate-600">
+                          {equity.propertyNetWealthAfterTax > equity.indexValEnd
+                            ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
+                            : equity.propertyNetWealthAfterTax < equity.indexValEnd
+                            ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
+                            : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
+                        </div>
+                      </SummaryCard>
+                    </div>
+
+                    <div className="md:order-1 md:col-span-1">
+                      <SummaryCard
+                        title={
+                          <div className="flex items-center justify-between gap-2">
+                            <SectionTitle
+                              label="Sensitivity"
+                              tooltip={SECTION_DESCRIPTIONS.sensitivity}
+                              className="text-sm font-semibold text-slate-700"
+                            />
+                            <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                              <button
+                                type="button"
+                                onClick={() => handleAdjustSensitivity(-0.01)}
+                                className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                aria-label="Decrease rent sensitivity"
+                                disabled={!canDecreaseSensitivity}
+                              >
+                                ▼
+                              </button>
+                              <span className="min-w-[3ch] text-right font-semibold text-slate-700">
+                                {sensitivityPercentLabel}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleAdjustSensitivity(0.01)}
+                                className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                aria-label="Increase rent sensitivity"
+                                disabled={!canIncreaseSensitivity}
+                              >
+                                ▲
+                              </button>
+                            </div>
+                          </div>
+                        }
+                      >
+                        <div className="space-y-0.5">
+                          <SensitivityRow label={`Rent −${sensitivityPercentLabel}`} value={sensitivityResults.down} />
+                          <SensitivityRow label="Base" value={sensitivityResults.base} />
+                          <SensitivityRow label={`Rent +${sensitivityPercentLabel}`} value={sensitivityResults.up} />
+                        </div>
+                      </SummaryCard>
+                    </div>
+
+                    <div className="md:col-span-2 md:order-3">
+                      <CollapsibleSection
+                        title="Annual cash flow detail"
+                        collapsed={collapsedSections.cashflowDetail}
+                        onToggle={() => toggleSection('cashflowDetail')}
+                        className="rounded-2xl bg-white p-3 shadow-sm"
+                      >
+                        <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
+                        <CashflowTable
+                          rows={cashflowTableRows}
+                          columns={selectedCashflowColumns}
+                          hiddenColumns={hiddenCashflowColumns}
+                          onRemoveColumn={handleRemoveCashflowColumn}
+                          onAddColumn={handleAddCashflowColumn}
+                          onExport={handleExportCashflowCsv}
+                        />
+                      </CollapsibleSection>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
           </section>
@@ -3416,147 +3440,162 @@ export default function App() {
 
         <section className="mt-6">
           <div className="p-3">
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">Scenario history</h3>
-            <p className="text-xs text-slate-600">
-              Save your current inputs and reload any previous scenario to compare different deals quickly.
-            </p>
-            {remoteEnabled ? (
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <p
-                  className={scenarioStatusClass}
-                  role={
-                    scenarioStatus.tone === 'error' || scenarioStatus.tone === 'warn' ? 'alert' : undefined
-                  }
-                >
-                  {scenarioStatus.message}
-                </p>
-                {scenarioStatus.retry ? (
-                  <button
-                    type="button"
-                    onClick={handleRetryConnection}
-                    className="inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-                  >
-                    Retry
-                  </button>
-                ) : null}
-              </div>
-            ) : (
-              <p className="text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
-            )}
-            <div className="mt-3 flex flex-wrap items-center gap-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-slate-800">Scenario history</h3>
               <button
                 type="button"
-                onClick={handleSaveScenario}
-                className="no-print inline-flex items-center gap-1 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+                onClick={() => toggleSection('scenarioHistory')}
+                aria-expanded={!collapsedSections.scenarioHistory}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
               >
-                Save scenario
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowLoadPanel((prev) => !prev)}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                {showLoadPanel ? 'Hide saved scenarios' : 'Load saved scenario'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowTableModal(true)}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Table
-              </button>
-              <button
-                type="button"
-                onClick={handleExportTableCsv}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={scenarioTableData.length === 0}
-              >
-                Export CSV
+                {collapsedSections.scenarioHistory ? 'Expand' : 'Collapse'}
               </button>
             </div>
-            {showLoadPanel ? (
-              <div className="mt-3 space-y-3">
-                <div className="flex flex-col gap-1 text-xs text-slate-700">
-                  <label className="font-semibold text-slate-800" htmlFor="scenario-select">
-                    Choose scenario
-                  </label>
-                  <select
-                    id="scenario-select"
-                    value={selectedScenarioId}
-                    onChange={(event) => setSelectedScenarioId(event.target.value)}
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
-                  >
-                    {savedScenarios.length === 0 ? (
-                      <option value="">No scenarios saved</option>
-                    ) : null}
-                    {savedScenarios.map((scenario) => (
-                      <option key={scenario.id} value={scenario.id}>
-                        {scenario.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {savedScenarios.length > 0 ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handleLoadScenario}
-                      className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+
+            {!collapsedSections.scenarioHistory ? (
+              <>
+                <p className="text-xs text-slate-600">
+                  Save your current inputs and reload any previous scenario to compare different deals quickly.
+                </p>
+                {remoteEnabled ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                    <p
+                      className={scenarioStatusClass}
+                      role={
+                        scenarioStatus.tone === 'error' || scenarioStatus.tone === 'warn' ? 'alert' : undefined
+                      }
                     >
-                      Load selected scenario
-                    </button>
-                    <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
-                      {savedScenarios.map((scenario) => (
-                        <div
-                          key={`${scenario.id}-meta`}
-                          className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
-                        >
-                          <div className="flex flex-col">
-                            <span className="font-semibold text-slate-700">{scenario.name}</span>
-                            <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
-                            {scenario.data?.propertyAddress ? (
-                              <span className="text-slate-500">{scenario.data.propertyAddress}</span>
-                            ) : null}
-                            {scenario.data?.propertyUrl ? (
-                              <a
-                                href={scenario.data.propertyUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-slate-500 underline-offset-2 hover:underline"
-                              >
-                                View listing
-                              </a>
-                            ) : null}
-                          </div>
-                          <div className="no-print flex items-center gap-2 text-[11px]">
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateScenario(scenario.id)}
-                              className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
-                            >
-                              Update
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRenameScenario(scenario.id)}
-                              className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
-                            >
-                              Rename
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteScenario(scenario.id)}
-                              className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                      {scenarioStatus.message}
+                    </p>
+                    {scenarioStatus.retry ? (
+                      <button
+                        type="button"
+                        onClick={handleRetryConnection}
+                        className="inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                      >
+                        Retry
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
+                )}
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleSaveScenario}
+                    className="no-print inline-flex items-center gap-1 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+                  >
+                    Save scenario
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowLoadPanel((prev) => !prev)}
+                    className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    {showLoadPanel ? 'Hide saved scenarios' : 'Load saved scenario'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowTableModal(true)}
+                    className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Table
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportTableCsv}
+                    className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={scenarioTableData.length === 0}
+                  >
+                    Export CSV
+                  </button>
+                </div>
+                {showLoadPanel ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="flex flex-col gap-1 text-xs text-slate-700">
+                      <label className="font-semibold text-slate-800" htmlFor="scenario-select">
+                        Choose scenario
+                      </label>
+                      <select
+                        id="scenario-select"
+                        value={selectedScenarioId}
+                        onChange={(event) => setSelectedScenarioId(event.target.value)}
+                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
+                      >
+                        {savedScenarios.length === 0 ? (
+                          <option value="">No scenarios saved</option>
+                        ) : null}
+                        {savedScenarios.map((scenario) => (
+                          <option key={scenario.id} value={scenario.id}>
+                            {scenario.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                  </>
+                    {savedScenarios.length > 0 ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleLoadScenario}
+                          className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+                        >
+                          Load selected scenario
+                        </button>
+                        <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
+                          {savedScenarios.map((scenario) => (
+                            <div
+                              key={`${scenario.id}-meta`}
+                              className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
+                            >
+                              <div className="flex flex-col">
+                                <span className="font-semibold text-slate-700">{scenario.name}</span>
+                                <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                                {scenario.data?.propertyAddress ? (
+                                  <span className="text-slate-500">{scenario.data.propertyAddress}</span>
+                                ) : null}
+                                {scenario.data?.propertyUrl ? (
+                                  <a
+                                    href={scenario.data.propertyUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-slate-500 underline-offset-2 hover:underline"
+                                  >
+                                    View listing
+                                  </a>
+                                ) : null}
+                              </div>
+                              <div className="no-print flex items-center gap-2 text-[11px]">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateScenario(scenario.id)}
+                                  className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                                >
+                                  Update
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRenameScenario(scenario.id)}
+                                  className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
+                                >
+                                  Rename
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteScenario(scenario.id)}
+                                  className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
                 ) : null}
-              </div>
+              </>
             ) : null}
           </div>
         </section>
@@ -3564,80 +3603,95 @@ export default function App() {
         {showListingPreview ? (
           <section className="mt-6">
             <div className="rounded-2xl bg-white p-3 shadow-sm" data-capture-placeholder data-hide-on-export>
-              <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-800">Listing preview</h3>
-                  <p className="text-[11px] text-slate-500">
-                    {previewActive
-                      ? 'Live view of the property URL. This frame is saved with scenarios and share links.'
-                      : hasPropertyUrl
-                      ? 'Preview the property page without leaving the dashboard.'
-                      : 'Enter a property URL to display the listing preview here.'}
-                  </p>
-                  {previewError ? <p className="text-[11px] text-rose-600">{previewError}</p> : null}
-                </div>
-                <div className="no-print flex flex-wrap items-center gap-2 text-[11px]">
-                  <button
-                    type="button"
-                    onClick={handleLoadPreview}
-                    className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                    disabled={!hasPropertyUrl || previewLoading}
-                  >
-                    {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearPreview}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
-                    disabled={!previewActive && !previewError}
-                  >
-                    Hide preview
-                  </button>
-                </div>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-800">Listing preview</h3>
+                <button
+                  type="button"
+                  onClick={() => toggleSection('listingPreview')}
+                  aria-expanded={!collapsedSections.listingPreview}
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                >
+                  {collapsedSections.listingPreview ? 'Expand' : 'Collapse'}
+                </button>
               </div>
-              <div
-                className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
-                style={{ height: '45rem' }}
-              >
-                {previewActive ? (
-                  <>
-                    <iframe
-                      key={previewKey}
-                      ref={iframeRef}
-                      src={previewUrl}
-                      title="Property listing preview"
-                      className="h-full w-full border-0"
-                      allowFullScreen
-                      onLoad={() => {
-                        setPreviewStatus('ready');
-                        setPreviewError('');
-                      }}
-                      onError={() => {
-                        setPreviewStatus('error');
-                        setPreviewError('Unable to load the listing inside the preview frame.');
-                        setPreviewActive(false);
-                      }}
-                    />
-                    {previewLoading ? (
-                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/80 px-4 text-center text-sm text-slate-600">
-                        Loading preview…
+
+              {!collapsedSections.listingPreview ? (
+                <>
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-[11px] text-slate-500">
+                        {previewActive
+                          ? 'Live view of the property URL. This frame is saved with scenarios and share links.'
+                          : hasPropertyUrl
+                          ? 'Preview the property page without leaving the dashboard.'
+                          : 'Enter a property URL to display the listing preview here.'}
+                      </p>
+                      {previewError ? <p className="text-[11px] text-rose-600">{previewError}</p> : null}
+                    </div>
+                    <div className="no-print flex flex-wrap items-center gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={handleLoadPreview}
+                        className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
+                        disabled={!hasPropertyUrl || previewLoading}
+                      >
+                        {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clearPreview}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
+                        disabled={!previewActive && !previewError}
+                      >
+                        Hide preview
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className="relative mt-3 w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
+                    style={{ height: '45rem' }}
+                  >
+                    {previewActive ? (
+                      <>
+                        <iframe
+                          key={previewKey}
+                          ref={iframeRef}
+                          src={previewUrl}
+                          title="Property listing preview"
+                          className="h-full w-full border-0"
+                          allowFullScreen
+                          onLoad={() => {
+                            setPreviewStatus('ready');
+                            setPreviewError('');
+                          }}
+                          onError={() => {
+                            setPreviewStatus('error');
+                            setPreviewError('Unable to load the listing inside the preview frame.');
+                            setPreviewActive(false);
+                          }}
+                        />
+                        {previewLoading ? (
+                          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/80 px-4 text-center text-sm text-slate-600">
+                            Loading preview…
+                          </div>
+                        ) : null}
+                      </>
+                    ) : previewError ? (
+                      <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-rose-600">
+                        {previewError}
                       </div>
-                    ) : null}
-                  </>
-                ) : previewError ? (
-                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-rose-600">
-                    {previewError}
+                    ) : hasPropertyUrl ? (
+                      <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
+                        Load the preview to view the listing here.
+                      </div>
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
+                        Add a property URL to show the listing preview.
+                      </div>
+                    )}
                   </div>
-                ) : hasPropertyUrl ? (
-                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
-                    Load the preview to view the listing here.
-                  </div>
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
-                    Add a property URL to show the listing preview.
-                  </div>
-                )}
-              </div>
+                </>
+              ) : null}
             </div>
           </section>
         ) : null}
