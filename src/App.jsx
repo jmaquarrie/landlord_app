@@ -4,6 +4,8 @@ import {
   AreaChart,
   Area,
   LineChart,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   Tooltip,
@@ -92,6 +94,19 @@ const SERIES_LABELS = {
   cashOnCash: 'Cash on cash',
   irrSeries: 'IRR',
 };
+
+const CASHFLOW_BAR_COLORS = {
+  rentIncome: '#0ea5e9',
+  operatingExpenses: '#ef4444',
+  mortgagePayments: '#7c3aed',
+  netCashflow: '#10b981',
+};
+
+const ROI_HEATMAP_GROWTH_OPTIONS = [-0.02, 0, 0.02, 0.04, 0.06];
+const ROI_HEATMAP_YIELD_OPTIONS = [0.04, 0.05, 0.06, 0.07, 0.08];
+const HEATMAP_COLOR_START = [248, 113, 113];
+const HEATMAP_COLOR_END = [34, 197, 94];
+const HEATMAP_COLOR_NEUTRAL = [148, 163, 184];
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -283,6 +298,25 @@ const formatPercent = (value) => {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+const mixColorChannel = (start, end, t) => Math.round(start + (end - start) * t);
+
+const getHeatmapColor = (value, min, max) => {
+  if (!Number.isFinite(value)) {
+    return 'rgba(226,232,240,0.6)';
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+    const [r, g, b] = HEATMAP_COLOR_NEUTRAL;
+    return `rgba(${r}, ${g}, ${b}, 0.35)`;
+  }
+  const ratio = clamp((value - min) / (max - min), 0, 1);
+  const [rs, gs, bs] = HEATMAP_COLOR_START;
+  const [re, ge, be] = HEATMAP_COLOR_END;
+  const r = mixColorChannel(rs, re, ratio);
+  const g = mixColorChannel(gs, ge, ratio);
+  const b = mixColorChannel(bs, be, ratio);
+  return `rgba(${r}, ${g}, ${b}, 0.85)`;
+};
+
 const encodeSharePayload = (payload) => {
   try {
     const json = JSON.stringify(payload);
@@ -346,6 +380,12 @@ const SECTION_DESCRIPTIONS = {
     'Compares exit-year totals for the property and the index fund, including after-tax wealth and cumulative rental tax.',
   sensitivity:
     'Adjust the rent sensitivity to see how Year 1 after-tax cash flow shifts when rents move up or down.',
+  cashflowBars:
+    'Visualises annual rent, expenses, debt service, and after-tax cash flow to highlight lean years or sudden swings.',
+  roiHeatmap:
+    'Stress-tests total ROI or IRR outcomes across a grid of rental yields and capital growth rates.',
+  equityGrowth:
+    'Shows how property equity builds relative to the outstanding loan balance across the investment horizon.',
 };
 
 const KEY_RATIO_TOOLTIPS = {
@@ -1244,6 +1284,9 @@ export default function App() {
     cashflowDetail: false,
     wealthTrajectory: false,
     rateTrends: false,
+    cashflowBars: false,
+    roiHeatmap: false,
+    equityGrowth: false,
   });
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1288,6 +1331,13 @@ export default function App() {
     cashOnCash: false,
     irrSeries: true,
   });
+  const [cashflowSeriesActive, setCashflowSeriesActive] = useState({
+    rentIncome: true,
+    operatingExpenses: true,
+    mortgagePayments: true,
+    netCashflow: true,
+  });
+  const [roiHeatmapMetric, setRoiHeatmapMetric] = useState('irr');
   const [showChartModal, setShowChartModal] = useState(false);
   const [showRatesModal, setShowRatesModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
@@ -1659,6 +1709,96 @@ export default function App() {
   }, [rateChartData, rateChartSettings.showMovingAverage, rateChartSettings.movingAverageWindow]);
 
   const rateRangeLength = Math.max(1, rateChartRange.end - rateChartRange.start + 1);
+
+  const annualCashflowChartData = useMemo(() => {
+    if (!Array.isArray(equity.chart)) {
+      return [];
+    }
+    return equity.chart
+      .map((point) => {
+        const year = Number(point?.year);
+        if (!Number.isFinite(year) || year <= 0) {
+          return null;
+        }
+        const yearly = point.meta?.yearly ?? {};
+        return {
+          year,
+          rentIncome: Number(yearly.gross) || 0,
+          operatingExpenses: -(Number(yearly.operatingExpenses) || 0),
+          mortgagePayments: -(Number(yearly.debtService) || 0),
+          netCashflow: Number(yearly.cashAfterTax) || 0,
+        };
+      })
+      .filter(Boolean);
+  }, [equity.chart]);
+
+  const equityGrowthChartData = useMemo(() => {
+    if (!Array.isArray(equity.chart)) {
+      return [];
+    }
+    return equity.chart.map((point) => {
+      const year = Number(point?.year) || 0;
+      const propertyValue = Math.max(0, Number(point?.propertyValue) || 0);
+      const remainingLoan = Math.max(0, Number(point?.meta?.remainingLoan) || 0);
+      const loanShare = Math.min(remainingLoan, propertyValue);
+      const ownerEquity = Math.max(0, propertyValue - loanShare);
+      return {
+        year,
+        ownerEquity,
+        loanBalance: loanShare,
+        totalValue: propertyValue,
+      };
+    });
+  }, [equity.chart]);
+
+  const roiHeatmapData = useMemo(() => {
+    const purchasePrice = Number(inputs.purchasePrice) || 0;
+    if (!Number.isFinite(purchasePrice) || purchasePrice <= 0) {
+      return { rows: [], roiRange: [0, 0], irrRange: [0, 0] };
+    }
+    const rows = [];
+    let roiMin = Infinity;
+    let roiMax = -Infinity;
+    let irrMin = Infinity;
+    let irrMax = -Infinity;
+    ROI_HEATMAP_GROWTH_OPTIONS.forEach((growthRate) => {
+      const cells = [];
+      ROI_HEATMAP_YIELD_OPTIONS.forEach((yieldRate) => {
+        const annualRent = purchasePrice * yieldRate;
+        const monthlyRent = Math.max(0, roundTo(annualRent / 12, 2));
+        const metrics = calculateEquity({
+          ...inputs,
+          annualAppreciation: growthRate,
+          monthlyRent,
+        });
+        const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
+        const irrValue = Number(metrics.irr) || 0;
+        if (Number.isFinite(roiValue)) {
+          roiMin = Math.min(roiMin, roiValue);
+          roiMax = Math.max(roiMax, roiValue);
+        }
+        if (Number.isFinite(irrValue)) {
+          irrMin = Math.min(irrMin, irrValue);
+          irrMax = Math.max(irrMax, irrValue);
+        }
+        cells.push({
+          yieldRate,
+          roi: Number.isFinite(roiValue) ? roiValue : 0,
+          irr: irrValue,
+        });
+      });
+      rows.push({ growthRate, cells });
+    });
+    if (roiMin === Infinity || roiMax === -Infinity) {
+      roiMin = 0;
+      roiMax = 0;
+    }
+    if (irrMin === Infinity || irrMax === -Infinity) {
+      irrMin = 0;
+      irrMax = 0;
+    }
+    return { rows, roiRange: [roiMin, roiMax], irrRange: [irrMin, irrMax] };
+  }, [inputs]);
 
   useEffect(() => {
     setRateChartSettings((prev) => {
@@ -2573,6 +2713,13 @@ export default function App() {
 
   const toggleSeries = (key) => {
     setActiveSeries((prev) => ({
+      ...prev,
+      [key]: !(prev[key] !== false),
+    }));
+  };
+
+  const toggleCashflowSeries = (key) => {
+    setCashflowSeriesActive((prev) => ({
       ...prev,
       [key]: !(prev[key] !== false),
     }));
@@ -3628,6 +3775,7 @@ export default function App() {
                           stroke="#f97316"
                           fill="rgba(249,115,22,0.2)"
                           strokeWidth={2}
+                          isAnimationActive={false}
                           hide={!activeSeries.indexFund}
                         />
                         <Area
@@ -3637,6 +3785,7 @@ export default function App() {
                           stroke="#facc15"
                           fill="rgba(250,204,21,0.2)"
                           strokeWidth={2}
+                          isAnimationActive={false}
                           hide={!activeSeries.cashflow}
                         />
                         <Area
@@ -3646,6 +3795,7 @@ export default function App() {
                           stroke="#0ea5e9"
                           fill="rgba(14,165,233,0.18)"
                           strokeWidth={2}
+                          isAnimationActive={false}
                           hide={!activeSeries.propertyValue}
                         />
                         <Area
@@ -3655,6 +3805,7 @@ export default function App() {
                           stroke="#2563eb"
                           fill="rgba(37,99,235,0.2)"
                           strokeWidth={2}
+                          isAnimationActive={false}
                           hide={!activeSeries.propertyGross}
                         />
                         <Area
@@ -3664,6 +3815,7 @@ export default function App() {
                           stroke="#16a34a"
                           fill="rgba(22,163,74,0.25)"
                           strokeWidth={2}
+                          isAnimationActive={false}
                           hide={!activeSeries.propertyNet}
                         />
                         <Area
@@ -3673,6 +3825,7 @@ export default function App() {
                           stroke="#9333ea"
                           fill="rgba(147,51,234,0.2)"
                           strokeWidth={2}
+                          isAnimationActive={false}
                           hide={!activeSeries.propertyNetAfterTax}
                         />
                         <Area
@@ -3683,10 +3836,261 @@ export default function App() {
                           fill="rgba(13,148,136,0.15)"
                           strokeWidth={2}
                           strokeDasharray="5 3"
+                          isAnimationActive={false}
                           hide={!activeSeries.investedRent || !reinvestActive}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-slate-500">Chart hidden. Select “+” to display it.</div>
+              )}
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('cashflowBars')}
+                    aria-expanded={!collapsedSections.cashflowBars}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.cashflowBars ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.cashflowBars ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Annual cash flow"
+                    tooltip={SECTION_DESCRIPTIONS.cashflowBars}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+              </div>
+              {!collapsedSections.cashflowBars ? (
+                <>
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    Track rent coming in against expenses, debt service, and after-tax cash flow each year.
+                  </p>
+                  <div className="h-72 w-full">
+                    {annualCashflowChartData.length > 0 ? (
+                      <ResponsiveContainer>
+                        <BarChart data={annualCashflowChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
+                          <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={90} />
+                          <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                          <Legend
+                            content={(props) => (
+                              <ChartLegend
+                                {...props}
+                                activeSeries={cashflowSeriesActive}
+                                onToggle={toggleCashflowSeries}
+                              />
+                            )}
+                          />
+                          <ReferenceLine y={0} stroke="#cbd5f5" strokeDasharray="4 4" />
+                          <Bar
+                            dataKey="rentIncome"
+                            name="Rent income"
+                            fill={CASHFLOW_BAR_COLORS.rentIncome}
+                            isAnimationActive={false}
+                            hide={!cashflowSeriesActive.rentIncome}
+                          />
+                          <Bar
+                            dataKey="operatingExpenses"
+                            name="Operating expenses"
+                            fill={CASHFLOW_BAR_COLORS.operatingExpenses}
+                            isAnimationActive={false}
+                            hide={!cashflowSeriesActive.operatingExpenses}
+                          />
+                          <Bar
+                            dataKey="mortgagePayments"
+                            name="Mortgage payments"
+                            fill={CASHFLOW_BAR_COLORS.mortgagePayments}
+                            isAnimationActive={false}
+                            hide={!cashflowSeriesActive.mortgagePayments}
+                          />
+                          <Bar
+                            dataKey="netCashflow"
+                            name="After-tax cash flow"
+                            fill={CASHFLOW_BAR_COLORS.netCashflow}
+                            isAnimationActive={false}
+                            hide={!cashflowSeriesActive.netCashflow}
+                          />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
+                        Not enough annual cash flow data to display.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-slate-500">Chart hidden. Select “+” to display it.</div>
+              )}
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('roiHeatmap')}
+                    aria-expanded={!collapsedSections.roiHeatmap}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.roiHeatmap ? 'Show heatmap' : 'Hide heatmap'}
+                  >
+                    {collapsedSections.roiHeatmap ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="ROI vs rental yield heatmap"
+                    tooltip={SECTION_DESCRIPTIONS.roiHeatmap}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+                {!collapsedSections.roiHeatmap ? (
+                  <div className="flex items-center gap-2 text-[11px] text-slate-600">
+                    <span className="font-semibold text-slate-500">Metric</span>
+                    {[{ key: 'irr', label: 'IRR' }, { key: 'roi', label: 'Total ROI' }].map((option) => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setRoiHeatmapMetric(option.key)}
+                        className={`rounded-full px-3 py-1 font-semibold transition ${
+                          roiHeatmapMetric === option.key
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                        aria-pressed={roiHeatmapMetric === option.key}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              {!collapsedSections.roiHeatmap ? (
+                <>
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    Each cell models the scenario with the specified rental yield and annual capital growth using today’s inputs.
+                  </p>
+                  <div className="overflow-x-auto">
+                    {roiHeatmapData.rows.length > 0 ? (
+                      <table className="min-w-full table-fixed border-separate border-spacing-1 text-[11px] text-slate-600">
+                        <thead>
+                          <tr>
+                            <th className="w-32 px-2 py-1 text-left font-semibold text-slate-500">Capital growth</th>
+                            {ROI_HEATMAP_YIELD_OPTIONS.map((yieldRate) => (
+                              <th key={yieldRate} className="px-2 py-1 text-center font-semibold text-slate-500">
+                                {formatPercent(yieldRate)} rent yield
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {roiHeatmapData.rows.map((row) => {
+                            const range = roiHeatmapMetric === 'irr' ? roiHeatmapData.irrRange : roiHeatmapData.roiRange;
+                            const [minValue, maxValue] = range;
+                            return (
+                              <tr key={row.growthRate}>
+                                <th className="px-2 py-1 text-left font-semibold text-slate-500">
+                                  {formatPercent(row.growthRate)} capital growth
+                                </th>
+                                {row.cells.map((cell) => {
+                                  const value = roiHeatmapMetric === 'irr' ? cell.irr : cell.roi;
+                                  const background = getHeatmapColor(value, minValue, maxValue);
+                                  return (
+                                    <td key={cell.yieldRate} className="px-2 py-1">
+                                      <div
+                                        className="rounded-lg px-2 py-3 text-center text-xs font-semibold text-slate-800"
+                                        style={{ backgroundColor: background }}
+                                        title={`${formatPercent(cell.irr)} IRR | ${formatPercent(cell.roi)} total ROI`}
+                                      >
+                                        {formatPercent(value)}
+                                      </div>
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-[11px] text-slate-500">
+                        Adjust the purchase price and rent assumptions to generate heatmap results.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-slate-500">Heatmap hidden. Select “+” to display it.</div>
+              )}
+            </div>
+
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('equityGrowth')}
+                    aria-expanded={!collapsedSections.equityGrowth}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.equityGrowth ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.equityGrowth ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Equity growth over time"
+                    tooltip={SECTION_DESCRIPTIONS.equityGrowth}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+              </div>
+              {!collapsedSections.equityGrowth ? (
+                <>
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    See how outstanding debt compares with the portion you own as the property appreciates and the mortgage is repaid.
+                  </p>
+                  <div className="h-72 w-full">
+                    {equityGrowthChartData.length > 0 ? (
+                      <ResponsiveContainer>
+                        <AreaChart data={equityGrowthChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
+                          <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={100} />
+                          <Tooltip
+                            formatter={(value, name) => currency(value)}
+                            labelFormatter={(label) => `Year ${label}`}
+                          />
+                          <Legend />
+                          <Area
+                            type="monotone"
+                            dataKey="loanBalance"
+                            name="Lender share"
+                            stackId="equity"
+                            stroke="#94a3b8"
+                            fill="rgba(148,163,184,0.4)"
+                            isAnimationActive={false}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="ownerEquity"
+                            name="Your equity"
+                            stackId="equity"
+                            stroke="#10b981"
+                            fill="rgba(16,185,129,0.35)"
+                            isAnimationActive={false}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
+                        Equity projections will appear once an exit year and loan details are provided.
+                      </div>
+                    )}
                   </div>
                 </>
               ) : (
@@ -4244,6 +4648,7 @@ export default function App() {
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.indexFund}
                           />
                           <Area
@@ -4254,6 +4659,7 @@ export default function App() {
                             fill="rgba(250,204,21,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.cashflow}
                           />
                           <Area
@@ -4264,6 +4670,7 @@ export default function App() {
                             fill="rgba(14,165,233,0.18)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.propertyValue}
                           />
                           <Area
@@ -4274,6 +4681,7 @@ export default function App() {
                             fill="rgba(37,99,235,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.propertyGross}
                           />
                           <Area
@@ -4284,6 +4692,7 @@ export default function App() {
                             fill="rgba(22,163,74,0.25)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.propertyNet}
                           />
                           <Area
@@ -4294,6 +4703,7 @@ export default function App() {
                             fill="rgba(147,51,234,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.propertyNetAfterTax}
                           />
                           <Area
@@ -4305,6 +4715,7 @@ export default function App() {
                             strokeWidth={2}
                             strokeDasharray="5 3"
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.investedRent}
                           />
                           <Area
@@ -4316,6 +4727,7 @@ export default function App() {
                             strokeWidth={1.5}
                             strokeDasharray="6 3"
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.indexFund1_5x}
                           />
                           <Area
@@ -4327,6 +4739,7 @@ export default function App() {
                             strokeWidth={1.5}
                             strokeDasharray="4 2"
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.indexFund2x}
                           />
                           <Area
@@ -4338,6 +4751,7 @@ export default function App() {
                             strokeWidth={1.5}
                             strokeDasharray="2 2"
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.indexFund4x}
                           />
                           <RechartsLine
@@ -4348,6 +4762,7 @@ export default function App() {
                             strokeWidth={2}
                             dot={false}
                             yAxisId="percent"
+                            isAnimationActive={false}
                             hide={!activeSeries.capRate}
                           />
                           <RechartsLine
@@ -4359,6 +4774,7 @@ export default function App() {
                             strokeDasharray="4 2"
                             dot={false}
                             yAxisId="percent"
+                            isAnimationActive={false}
                             hide={!activeSeries.yieldRate}
                           />
                           <RechartsLine
@@ -4370,6 +4786,7 @@ export default function App() {
                             strokeDasharray="2 2"
                             dot={false}
                             yAxisId="percent"
+                            isAnimationActive={false}
                             hide={!activeSeries.cashOnCash}
                           />
                           <RechartsLine
@@ -4381,6 +4798,7 @@ export default function App() {
                             strokeDasharray="6 3"
                             dot={false}
                             yAxisId="percent"
+                            isAnimationActive={false}
                             hide={!activeSeries.irrSeries}
                           />
                         </AreaChart>
