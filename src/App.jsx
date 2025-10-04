@@ -76,6 +76,7 @@ const CASHFLOW_COLUMN_KEY_SET = new Set(CASHFLOW_COLUMN_DEFINITIONS.map((column)
 const DEFAULT_CASHFLOW_COLUMN_ORDER = [
   'propertyValue',
   'indexFundValue',
+  'cashAfterTax',
   'reinvestFund',
   'cumulativeAfterTax',
   'cumulativeTax',
@@ -826,6 +827,7 @@ function calculateEquity(rawInputs) {
   let exitNetSaleProceeds = 0;
   let indexVal = cashIn;
   let reinvestFundValue = 0;
+  let investedRentValue = 0;
   const reinvestShare = inputs.reinvestIncome
     ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
     : 0;
@@ -851,6 +853,7 @@ function calculateEquity(rawInputs) {
     propertyNetAfterTax: initialNetEquity,
     reinvestFund: 0,
     cashflow: 0,
+    investedRent: 0,
   });
 
   const propertyTaxes = [];
@@ -882,6 +885,7 @@ function calculateEquity(rawInputs) {
     cumulativeCashAfterTax += afterTaxCash;
     const investableCash = Math.max(0, afterTaxCash);
     const reinvestContribution = shouldReinvest ? investableCash * reinvestShare : 0;
+    investedRentValue = investedRentValue * (1 + indexGrowth) + investableCash;
     cumulativeReinvested += reinvestContribution;
     reinvestFundValue = shouldReinvest ? reinvestFundValue * (1 + indexGrowth) + reinvestContribution : 0;
 
@@ -939,6 +943,7 @@ function calculateEquity(rawInputs) {
       propertyNetAfterTax: propertyNetAfterTaxValue,
       reinvestFund: reinvestFundValue,
       cashflow: cumulativeCashAfterTax,
+      investedRent: investedRentValue,
     });
 
     rent *= 1 + inputs.rentGrowth;
@@ -998,6 +1003,7 @@ function calculateEquity(rawInputs) {
     totalPropertyTax,
     totalReinvested: cumulativeReinvested,
     reinvestFundValue,
+    investedRentValue,
     propertyTaxes,
     propertyNetWealthAfterTax,
     wealthDeltaAfterTax,
@@ -1086,6 +1092,7 @@ export default function App() {
     propertyNet: true,
     propertyNetAfterTax: true,
     cashflow: true,
+    investedRent: false,
   });
   const [showChartModal, setShowChartModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
@@ -1424,7 +1431,7 @@ export default function App() {
     : 'Rental income tax (cumulative)';
   const propertyNetAfterTaxLabel = isCompanyBuyer
     ? 'Property net after corporation tax'
-    : 'Property net after rental tax';
+    : 'Property net after tax';
   const afterTaxComparisonPrefix = isCompanyBuyer ? 'After corporation tax' : 'After income tax';
   const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const appreciationRate = Number(inputs.annualAppreciation) || 0;
@@ -3037,33 +3044,12 @@ export default function App() {
                     />
                     <Area
                       type="monotone"
-                      dataKey="indexFund1_5x"
-                      name="Index fund 1.5×"
-                      stroke="#fb7185"
-                      fillOpacity={0}
-                      strokeWidth={1.5}
-                      strokeDasharray="6 3"
-                      hide={!activeSeries.indexFund1_5x}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="indexFund2x"
-                      name="Index fund 2×"
-                      stroke="#ec4899"
-                      fillOpacity={0}
-                      strokeWidth={1.5}
-                      strokeDasharray="4 2"
-                      hide={!activeSeries.indexFund2x}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="indexFund4x"
-                      name="Index fund 4×"
-                      stroke="#c026d3"
-                      fillOpacity={0}
-                      strokeWidth={1.5}
-                      strokeDasharray="2 2"
-                      hide={!activeSeries.indexFund4x}
+                      dataKey="cashflow"
+                      name="Cashflow"
+                      stroke="#facc15"
+                      fill="rgba(250,204,21,0.2)"
+                      strokeWidth={2}
+                      hide={!activeSeries.cashflow}
                     />
                     <Area
                       type="monotone"
@@ -3100,15 +3086,6 @@ export default function App() {
                       fill="rgba(147,51,234,0.2)"
                       strokeWidth={2}
                       hide={!activeSeries.propertyNetAfterTax}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="cashflow"
-                      name="Cashflow"
-                      stroke="#facc15"
-                      fill="rgba(250,204,21,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.cashflow}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -3523,6 +3500,31 @@ export default function App() {
                     Reset range
                   </button>
                 </div>
+                <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
+                  {[
+                    { key: 'indexFund1_5x', label: 'Index fund 1.5×' },
+                    { key: 'indexFund2x', label: 'Index fund 2×' },
+                    { key: 'indexFund4x', label: 'Index fund 4×' },
+                    { key: 'investedRent', label: 'Invested rent' },
+                  ].map((option) => {
+                    const checked = activeSeries[option.key] !== false;
+                    return (
+                      <label key={option.key} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) =>
+                            setActiveSeries((prev) => ({
+                              ...prev,
+                              [option.key]: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
                 <div className="mt-4 flex-1">
                   <div className="flex h-full flex-col">
                     <div className="flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]">
@@ -3538,7 +3540,17 @@ export default function App() {
                           <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                           <Legend
                             content={(props) => (
-                              <ChartLegend {...props} activeSeries={activeSeries} onToggle={toggleSeries} />
+                              <ChartLegend
+                                {...props}
+                                activeSeries={activeSeries}
+                                onToggle={toggleSeries}
+                                excludedKeys={[
+                                  'indexFund1_5x',
+                                  'indexFund2x',
+                                  'indexFund4x',
+                                  'investedRent',
+                                ]}
+                              />
                             )}
                           />
                           <Area
@@ -3552,33 +3564,12 @@ export default function App() {
                           />
                           <Area
                             type="monotone"
-                            dataKey="indexFund1_5x"
-                            name="Index fund 1.5×"
-                            stroke="#fb7185"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="6 3"
-                            hide={!activeSeries.indexFund1_5x}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund2x"
-                            name="Index fund 2×"
-                            stroke="#ec4899"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="4 2"
-                            hide={!activeSeries.indexFund2x}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund4x"
-                            name="Index fund 4×"
-                            stroke="#c026d3"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="2 2"
-                            hide={!activeSeries.indexFund4x}
+                            dataKey="cashflow"
+                            name="Cashflow"
+                            stroke="#facc15"
+                            fill="rgba(250,204,21,0.2)"
+                            strokeWidth={2}
+                            hide={!activeSeries.cashflow}
                           />
                           <Area
                             type="monotone"
@@ -3618,12 +3609,43 @@ export default function App() {
                           />
                           <Area
                             type="monotone"
-                            dataKey="cashflow"
-                            name="Cashflow"
-                            stroke="#facc15"
-                            fill="rgba(250,204,21,0.2)"
+                            dataKey="investedRent"
+                            name="Invested rent"
+                            stroke="#0d9488"
+                            fill="rgba(13,148,136,0.15)"
                             strokeWidth={2}
-                            hide={!activeSeries.cashflow}
+                            strokeDasharray="5 3"
+                            hide={!activeSeries.investedRent}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="indexFund1_5x"
+                            name="Index fund 1.5×"
+                            stroke="#fb7185"
+                            fillOpacity={0}
+                            strokeWidth={1.5}
+                            strokeDasharray="6 3"
+                            hide={!activeSeries.indexFund1_5x}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="indexFund2x"
+                            name="Index fund 2×"
+                            stroke="#ec4899"
+                            fillOpacity={0}
+                            strokeWidth={1.5}
+                            strokeDasharray="4 2"
+                            hide={!activeSeries.indexFund2x}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="indexFund4x"
+                            name="Index fund 4×"
+                            stroke="#c026d3"
+                            fillOpacity={0}
+                            strokeWidth={1.5}
+                            strokeDasharray="2 2"
+                            hide={!activeSeries.indexFund4x}
                           />
                         </AreaChart>
                       </ResponsiveContainer>
@@ -3975,14 +3997,18 @@ function ChatBubble({
   );
 }
 
-function ChartLegend({ payload = [], activeSeries, onToggle }) {
+function ChartLegend({ payload = [], activeSeries, onToggle, excludedKeys = [] }) {
   if (!Array.isArray(payload) || payload.length === 0) {
     return null;
   }
+  const excluded = Array.isArray(excludedKeys) ? new Set(excludedKeys) : new Set();
   return (
     <div className="flex flex-wrap gap-3 text-[11px] font-medium text-slate-600">
       {payload.map((entry) => {
         const key = entry.dataKey ?? entry.value;
+        if (excluded.has(key)) {
+          return null;
+        }
         const isActive = activeSeries?.[key] !== false;
         return (
           <button
