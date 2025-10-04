@@ -3,6 +3,7 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
+  LineChart,
   XAxis,
   YAxis,
   Tooltip,
@@ -110,6 +111,7 @@ const EXPANDED_SERIES_ORDER = [
 ];
 
 const PERCENT_SERIES_KEYS = new Set(['capRate', 'yieldRate', 'cashOnCash', 'irrSeries']);
+const RATE_SERIES_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
@@ -338,6 +340,8 @@ const SECTION_DESCRIPTIONS = {
     'Discounts annual cash flows (including sale proceeds) through the selected exit year back to today at your chosen discount rate.',
   wealthTrajectory:
     'Plots property value, property gross and net wealth, and the index fund alternative across the hold period.',
+  rateTrends:
+    'Track cap rate, yield on cost, cash-on-cash, and IRR across the hold period to compare return profiles over time.',
   exitComparison:
     'Compares exit-year totals for the property and the index fund, including after-tax wealth and cumulative rental tax.',
   sensitivity:
@@ -1239,6 +1243,7 @@ export default function App() {
     rentalCashflow: false,
     cashflowDetail: false,
     wealthTrajectory: false,
+    rateTrends: false,
   });
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1277,15 +1282,29 @@ export default function App() {
     cashOnCash: false,
     irrSeries: false,
   });
+  const [rateSeriesActive, setRateSeriesActive] = useState({
+    capRate: false,
+    yieldRate: false,
+    cashOnCash: false,
+    irrSeries: true,
+  });
   const [showChartModal, setShowChartModal] = useState(false);
+  const [showRatesModal, setShowRatesModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
+  const [rateChartRange, setRateChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
+  const [rateRangeTouched, setRateRangeTouched] = useState(false);
   const [chartFocus, setChartFocus] = useState(null);
   const [chartFocusLocked, setChartFocusLocked] = useState(false);
   const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
   const chartAreaRef = useRef(null);
   const chartOverlayRef = useRef(null);
   const chartModalContentRef = useRef(null);
+  const [rateChartSettings, setRateChartSettings] = useState({
+    showMovingAverage: false,
+    movingAverageWindow: 3,
+    showZeroBaseline: true,
+  });
   const [performanceYear, setPerformanceYear] = useState(1);
   const [sensitivityPct, setSensitivityPct] = useState(0.1);
   const [shareNotice, setShareNotice] = useState('');
@@ -1573,6 +1592,23 @@ export default function App() {
     });
   }, [chartRangeTouched, maxChartYear]);
 
+  useEffect(() => {
+    setRateChartRange((prev) => {
+      let safeStart = Math.max(0, Math.min(prev.start, maxChartYear));
+      let safeEnd = Math.max(safeStart, Math.min(prev.end, maxChartYear));
+      if (!rateRangeTouched) {
+        safeStart = 0;
+        safeEnd = maxChartYear;
+      } else if (maxChartYear > 0 && safeEnd === 0) {
+        safeEnd = maxChartYear;
+      }
+      if (safeStart === prev.start && safeEnd === prev.end) {
+        return prev;
+      }
+      return { start: safeStart, end: safeEnd };
+    });
+  }, [rateRangeTouched, maxChartYear]);
+
   const filteredChartData = useMemo(() => {
     const data = Array.isArray(equity.chart) ? equity.chart : [];
     if (data.length === 0) {
@@ -1585,6 +1621,55 @@ export default function App() {
       return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
     });
   }, [equity.chart, chartRange]);
+
+  const rateChartData = useMemo(() => {
+    const data = Array.isArray(equity.chart) ? equity.chart : [];
+    if (data.length === 0) {
+      return data;
+    }
+    const startYear = Math.max(0, Math.min(rateChartRange.start, rateChartRange.end));
+    const endYear = Math.max(startYear, rateChartRange.end);
+    return data.filter((point) => {
+      const year = Number(point?.year);
+      return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
+    });
+  }, [equity.chart, rateChartRange]);
+
+  const rateChartDataWithMovingAverage = useMemo(() => {
+    if (!rateChartSettings.showMovingAverage) {
+      return rateChartData;
+    }
+    const windowSize = Math.max(
+      1,
+      Math.min(Math.round(rateChartSettings.movingAverageWindow) || 1, rateChartData.length)
+    );
+    if (windowSize <= 1) {
+      return rateChartData;
+    }
+    return rateChartData.map((point, index) => {
+      const startIndex = Math.max(0, index - windowSize + 1);
+      const slice = rateChartData.slice(startIndex, index + 1);
+      const averages = RATE_SERIES_KEYS.reduce((acc, key) => {
+        const total = slice.reduce((sum, entry) => sum + (Number(entry?.[key]) || 0), 0);
+        acc[`${key}MA`] = slice.length > 0 ? total / slice.length : 0;
+        return acc;
+      }, {});
+      return { ...point, ...averages };
+    });
+  }, [rateChartData, rateChartSettings.showMovingAverage, rateChartSettings.movingAverageWindow]);
+
+  const rateRangeLength = Math.max(1, rateChartRange.end - rateChartRange.start + 1);
+
+  useEffect(() => {
+    setRateChartSettings((prev) => {
+      const maxWindow = Math.max(1, rateRangeLength);
+      const nextWindow = Math.min(Math.max(1, prev.movingAverageWindow || 1), maxWindow);
+      if (nextWindow === prev.movingAverageWindow) {
+        return prev;
+      }
+      return { ...prev, movingAverageWindow: nextWindow };
+    });
+  }, [rateRangeLength]);
 
   useEffect(() => {
     if (!showChartModal) {
@@ -1640,6 +1725,33 @@ export default function App() {
     (key, value) => {
       setChartRangeTouched(true);
       setChartRange((prev) => {
+        const sanitized = Number.isFinite(value) ? Math.round(value) : 0;
+        const clamped = Math.max(0, Math.min(sanitized, maxChartYear));
+        if (key === 'start') {
+          const nextStart = clamped;
+          const nextEnd = Math.max(nextStart, Math.min(prev.end, maxChartYear));
+          if (nextStart === prev.start && nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: nextStart, end: nextEnd };
+        }
+        if (key === 'end') {
+          const nextEnd = Math.max(prev.start, clamped);
+          if (nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: prev.start, end: nextEnd };
+        }
+        return prev;
+      });
+    },
+    [maxChartYear]
+  );
+
+  const handleRateChartRangeChange = useCallback(
+    (key, value) => {
+      setRateRangeTouched(true);
+      setRateChartRange((prev) => {
         const sanitized = Number.isFinite(value) ? Math.round(value) : 0;
         const clamped = Math.max(0, Math.min(sanitized, maxChartYear));
         if (key === 'start') {
@@ -2461,6 +2573,13 @@ export default function App() {
 
   const toggleSeries = (key) => {
     setActiveSeries((prev) => ({
+      ...prev,
+      [key]: !(prev[key] !== false),
+    }));
+  };
+
+  const toggleRateSeries = (key) => {
+    setRateSeriesActive((prev) => ({
       ...prev,
       [key]: !(prev[key] !== false),
     }));
@@ -3292,6 +3411,138 @@ export default function App() {
               </SummaryCard>
             </div>
 
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('rateTrends')}
+                    aria-expanded={!collapsedSections.rateTrends}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.rateTrends ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.rateTrends ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Return ratios over time"
+                    tooltip={SECTION_DESCRIPTIONS.rateTrends}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+                {!collapsedSections.rateTrends ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRateChartRange({ start: 0, end: maxChartYear });
+                        setRateRangeTouched(false);
+                      }}
+                      className="hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                    >
+                      Reset range
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowRatesModal(true)}
+                      className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    >
+                      Expand chart
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              {!collapsedSections.rateTrends ? (
+                <>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
+                    <span>
+                      Years {rateChartRange.start} – {rateChartRange.end}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRateChartRange({ start: 0, end: maxChartYear });
+                        setRateRangeTouched(false);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 sm:hidden"
+                    >
+                      Reset range
+                    </button>
+                  </div>
+                  <div className="h-72 w-full">
+                    {rateChartDataWithMovingAverage.length > 0 ? (
+                      <ResponsiveContainer>
+                        <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis
+                            dataKey="year"
+                            tickFormatter={(t) => `Y${t}`}
+                            tick={{ fontSize: 10, fill: '#475569' }}
+                          />
+                          <YAxis
+                            yAxisId="percent"
+                            tickFormatter={(v) => formatPercent(v)}
+                            tick={{ fontSize: 10, fill: '#475569' }}
+                            width={70}
+                          />
+                          <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
+                          <Legend
+                            content={(props) => (
+                              <ChartLegend
+                                {...props}
+                                activeSeries={rateSeriesActive}
+                                onToggle={toggleRateSeries}
+                                excludedKeys={RATE_SERIES_KEYS.map((key) => `${key}MA`)}
+                              />
+                            )}
+                          />
+                          {rateChartSettings.showZeroBaseline ? (
+                            <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
+                          ) : null}
+                          {RATE_SERIES_KEYS.map((key) => (
+                            <RechartsLine
+                              key={key}
+                              type="monotone"
+                              dataKey={key}
+                              name={SERIES_LABELS[key] ?? key}
+                              stroke={SERIES_COLORS[key]}
+                              strokeWidth={2}
+                              dot={false}
+                              yAxisId="percent"
+                              hide={!rateSeriesActive[key]}
+                            />
+                          ))}
+                          {rateChartSettings.showMovingAverage
+                            ? RATE_SERIES_KEYS.map((key) => (
+                                <RechartsLine
+                                  key={`${key}MA`}
+                                  type="monotone"
+                                  dataKey={`${key}MA`}
+                                  stroke={SERIES_COLORS[key]}
+                                  strokeWidth={1.5}
+                                  strokeDasharray="4 3"
+                                  dot={false}
+                                  yAxisId="percent"
+                                  hide={!rateSeriesActive[key]}
+                                  legendType="none"
+                                  isAnimationActive={false}
+                                  strokeOpacity={0.6}
+                                />
+                              ))
+                            : null}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-500">
+                        Not enough data to plot return ratios yet.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-slate-500">Chart hidden. Select “+” to display it.</div>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
                 <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
@@ -3319,9 +3570,10 @@ export default function App() {
                     type="button"
                     onClick={() => toggleSection('wealthTrajectory')}
                     aria-expanded={!collapsedSections.wealthTrajectory}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.wealthTrajectory ? 'Show chart' : 'Hide chart'}
                   >
-                    {collapsedSections.wealthTrajectory ? 'Show chart' : 'Hide chart'}
+                    {collapsedSections.wealthTrajectory ? '+' : '−'}
                   </button>
                   <SectionTitle
                     label="Wealth trajectory vs Index Fund"
@@ -3438,7 +3690,7 @@ export default function App() {
                   </div>
                 </>
               ) : (
-                <div className="text-[11px] text-slate-500">Chart hidden. Select “Show chart” to display it.</div>
+                <div className="text-[11px] text-slate-500">Chart hidden. Select “+” to display it.</div>
               )}
             </div>
 
@@ -4197,6 +4449,233 @@ export default function App() {
                         </p>
                       </div>
                     )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showRatesModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Return ratios explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowRatesModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+            <aside className="w-full border-b border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-b-0 md:border-r">
+              <div className="h-full overflow-y-auto p-5">
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Series visibility</h3>
+                    <p className="mt-1 text-[11px] text-slate-500">Toggle which ratios you want to compare.</p>
+                    <div className="mt-3 space-y-2">
+                      {RATE_SERIES_KEYS.map((key) => (
+                        <label key={`rate-series-${key}`} className="flex items-center justify-between gap-3 rounded-lg border border-transparent px-2 py-1 hover:border-slate-200">
+                          <span className="text-slate-700">{SERIES_LABELS[key]}</span>
+                          <input
+                            type="checkbox"
+                            checked={rateSeriesActive[key] !== false}
+                            onChange={(event) =>
+                              setRateSeriesActive((prev) => ({
+                                ...prev,
+                                [key]: event.target.checked,
+                              }))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Year range</h3>
+                    <p className="mt-1 text-[11px] text-slate-500">Focus on a specific portion of the hold period.</p>
+                    <div className="mt-3 space-y-3">
+                      <label className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-slate-500">Start year</span>
+                        <input
+                          type="number"
+                          value={rateChartRange.start}
+                          min={0}
+                          max={rateChartRange.end}
+                          onChange={(event) => handleRateChartRangeChange('start', Number(event.target.value))}
+                          className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-slate-500">End year</span>
+                        <input
+                          type="number"
+                          value={rateChartRange.end}
+                          min={rateChartRange.start}
+                          max={maxChartYear}
+                          onChange={(event) => handleRateChartRangeChange('end', Number(event.target.value))}
+                          className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRateChartRange({ start: 0, end: maxChartYear });
+                          setRateRangeTouched(false);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      >
+                        Reset range
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Analysis options</h3>
+                    <div className="mt-3 space-y-3">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={rateChartSettings.showMovingAverage}
+                          onChange={(event) =>
+                            setRateChartSettings((prev) => ({
+                              ...prev,
+                              showMovingAverage: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Show moving average</span>
+                      </label>
+                      {rateChartSettings.showMovingAverage ? (
+                        <div className="rounded-xl border border-slate-200 p-3">
+                          <div className="flex items-center justify-between text-[11px] text-slate-500">
+                            <span>Smoothing window</span>
+                            <span>
+                              {rateChartSettings.movingAverageWindow} yr
+                              {rateChartSettings.movingAverageWindow === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={1}
+                            max={Math.max(1, rateRangeLength)}
+                            value={rateChartSettings.movingAverageWindow}
+                            onChange={(event) =>
+                              setRateChartSettings((prev) => ({
+                                ...prev,
+                                movingAverageWindow: Number(event.target.value) || 1,
+                              }))
+                            }
+                            className="mt-2 w-full"
+                          />
+                          <p className="mt-2 text-[11px] text-slate-500">
+                            Rolling averages help highlight trend direction by reducing year-to-year volatility.
+                          </p>
+                        </div>
+                      ) : null}
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={rateChartSettings.showZeroBaseline}
+                          onChange={(event) =>
+                            setRateChartSettings((prev) => ({
+                              ...prev,
+                              showZeroBaseline: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Show 0% baseline</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </aside>
+            <div className="flex-1 overflow-hidden p-5">
+              <div className="flex h-full flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionTitle
+                    label="Return ratios over time"
+                    tooltip={SECTION_DESCRIPTIONS.rateTrends}
+                    className="text-base font-semibold text-slate-700"
+                  />
+                  <div className="text-[11px] text-slate-500">Years {rateChartRange.start} – {rateChartRange.end}</div>
+                </div>
+                <div className="mt-4 flex-1">
+                  <div className="flex h-full flex-col">
+                    <div className="relative flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      {rateChartDataWithMovingAverage.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis
+                              dataKey="year"
+                              tickFormatter={(t) => `Y${t}`}
+                              tick={{ fontSize: 11, fill: '#475569' }}
+                            />
+                            <YAxis
+                              yAxisId="percent"
+                              tickFormatter={(v) => formatPercent(v)}
+                              tick={{ fontSize: 11, fill: '#475569' }}
+                              width={80}
+                            />
+                            <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
+                            <Legend
+                              content={(props) => (
+                                <ChartLegend
+                                  {...props}
+                                  activeSeries={rateSeriesActive}
+                                  onToggle={toggleRateSeries}
+                                  excludedKeys={RATE_SERIES_KEYS.map((key) => `${key}MA`)}
+                                />
+                              )}
+                            />
+                            {rateChartSettings.showZeroBaseline ? (
+                              <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
+                            ) : null}
+                            {RATE_SERIES_KEYS.map((key) => (
+                              <RechartsLine
+                                key={`modal-${key}`}
+                                type="monotone"
+                                dataKey={key}
+                                name={SERIES_LABELS[key] ?? key}
+                                stroke={SERIES_COLORS[key]}
+                                strokeWidth={2}
+                                dot={false}
+                                yAxisId="percent"
+                                hide={!rateSeriesActive[key]}
+                              />
+                            ))}
+                            {rateChartSettings.showMovingAverage
+                              ? RATE_SERIES_KEYS.map((key) => (
+                                  <RechartsLine
+                                    key={`modal-${key}-ma`}
+                                    type="monotone"
+                                    dataKey={`${key}MA`}
+                                    stroke={SERIES_COLORS[key]}
+                                    strokeWidth={1.5}
+                                    strokeDasharray="4 3"
+                                    dot={false}
+                                    yAxisId="percent"
+                                    hide={!rateSeriesActive[key]}
+                                    legendType="none"
+                                    isAnimationActive={false}
+                                    strokeOpacity={0.6}
+                                  />
+                                ))
+                              : null}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
+                          Not enough data to plot return ratios yet.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
