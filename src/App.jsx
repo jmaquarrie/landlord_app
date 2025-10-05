@@ -386,7 +386,7 @@ const decodeSharePayload = (value) => {
 
 const SCORE_TOOLTIPS = {
   overall:
-    'Overall score combines cash-on-cash, cap rate, DSCR, NPV, and first-year cash flow. Higher is better (0-100).',
+    'Score blends cash-on-cash return, cap rate, debt service coverage, discounted net present value, and year-one after-tax cash flow into a 0-100 composite.',
   delta:
     'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
   deltaAfterTax:
@@ -1276,6 +1276,7 @@ export default function App() {
   const [scenarioScatterYAxis, setScenarioScatterYAxis] = useState(
     () => SCENARIO_RATIO_PERCENT_COLUMNS[1]?.key ?? SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'irr'
   );
+  const [scenarioAlignInputs, setScenarioAlignInputs] = useState(false);
   const [previewActive, setPreviewActive] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewStatus, setPreviewStatus] = useState('idle');
@@ -1716,10 +1717,21 @@ export default function App() {
   const scenarioTableData = useMemo(
     () =>
       savedScenarios.map((scenario) => {
-        const mergedInputs = { ...DEFAULT_INPUTS, ...scenario.data };
-        const metrics = calculateEquity(mergedInputs);
+        const scenarioDefaults = { ...DEFAULT_INPUTS, ...scenario.data };
+        const basePurchasePrice =
+          scenarioDefaults.purchasePrice ?? inputs.purchasePrice ?? DEFAULT_INPUTS.purchasePrice;
+        const baseMonthlyRent =
+          scenarioDefaults.monthlyRent ?? inputs.monthlyRent ?? DEFAULT_INPUTS.monthlyRent;
+        const evaluationInputs = scenarioAlignInputs
+          ? {
+              ...inputs,
+              purchasePrice: basePurchasePrice,
+              monthlyRent: baseMonthlyRent,
+            }
+          : scenarioDefaults;
+        const metrics = calculateEquity(evaluationInputs);
         const grossRentYear1 = Number(metrics.grossRentYear1) || 0;
-        const purchasePrice = Number(mergedInputs.purchasePrice) || 0;
+        const purchasePrice = Number(evaluationInputs.purchasePrice ?? basePurchasePrice) || 0;
         const rentalYieldValue = purchasePrice > 0 ? grossRentYear1 / purchasePrice : 0;
         return {
           scenario,
@@ -1733,7 +1745,7 @@ export default function App() {
           },
         };
       }),
-    [savedScenarios]
+    [inputs, savedScenarios, scenarioAlignInputs]
   );
   const scenarioScatterData = useMemo(() => {
     if (scenarioTableData.length === 0) {
@@ -3229,14 +3241,19 @@ export default function App() {
     integrateScenario(scenario, { select: true });
   };
 
-  const handleLoadScenario = (scenarioId) => {
+  const handleLoadScenario = (scenarioId, options = {}) => {
     const targetId = typeof scenarioId === 'string' && scenarioId ? scenarioId : selectedScenarioId;
     const scenario = savedScenarios.find((item) => item.id === targetId);
     if (!scenario) return;
     setSelectedScenarioId(scenario.id);
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setCashflowColumnKeys(sanitizeCashflowColumns(scenario.cashflowColumns));
-    setShowLoadPanel(false);
+    if (!options.preserveLoadPanel) {
+      setShowLoadPanel(false);
+    }
+    if (options.closeTableOnLoad) {
+      setShowTableModal(false);
+    }
     const scenarioUrl = scenario.data?.propertyUrl ?? '';
     const shouldActivate =
       (scenario.preview && scenario.preview.active) || (typeof scenarioUrl === 'string' && scenarioUrl.trim() !== '');
@@ -3458,11 +3475,30 @@ export default function App() {
               <div className="text-xs font-medium text-emerald-600 md:self-end">{shareNotice}</div>
             )}
             <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">
-              <div
-                className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}
-                title={SCORE_TOOLTIPS.overall}
-              >
-                Score: {Math.round(equity.score)} / 100
+              <div className="relative group">
+                <div
+                  className={`rounded-full px-4 py-1 text-white outline-none transition ${badgeColor(equity.score)}`}
+                  tabIndex={0}
+                  aria-describedby="overall-score-tooltip"
+                >
+                  Score: {Math.round(equity.score)} / 100
+                </div>
+                <div
+                  id="overall-score-tooltip"
+                  role="tooltip"
+                  className="pointer-events-none absolute left-1/2 top-full z-20 hidden w-72 -translate-x-1/2 translate-y-2 rounded-lg border border-slate-200 bg-white p-3 text-[11px] text-slate-600 shadow-lg group-hover:block group-focus-within:block"
+                >
+                  <p className="font-semibold text-slate-700">How this score is built</p>
+                  <p className="mt-1">{SCORE_TOOLTIPS.overall}</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-left">
+                    <li>Cash-on-cash return × 1.2, capped at 40 points.</li>
+                    <li>Cap rate × 0.8, capped at 25 points.</li>
+                    <li>(DSCR − 1) × 25, capped at 15 points.</li>
+                    <li>NPV ÷ £20k, capped at 15 points.</li>
+                    <li>Year-one after-tax cash flow ÷ £1k, capped at 5 points.</li>
+                  </ul>
+                  <p className="mt-2 text-slate-500">Points are summed and clipped between 0 and 100.</p>
+                </div>
               </div>
               <div
                 className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}
@@ -3791,55 +3827,6 @@ export default function App() {
                   <div className="grid grid-cols-2 gap-2">
                     {pctInput('discountRate', 'Discount rate %', 0.001)}
                     {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
-                  </div>
-                  <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
-                    <div className="text-xs font-semibold text-slate-700">Return ratio display</div>
-                    <label className="flex items-center justify-between gap-2">
-                      <span>Show moving average</span>
-                      <input
-                        type="checkbox"
-                        checked={rateChartSettings.showMovingAverage}
-                        onChange={(event) =>
-                          setRateChartSettings((prev) => ({
-                            ...prev,
-                            showMovingAverage: event.target.checked,
-                          }))
-                        }
-                      />
-                    </label>
-                    {rateChartSettings.showMovingAverage ? (
-                      <div className="flex items-center justify-between gap-3">
-                        <span>Moving average window (yrs)</span>
-                        <input
-                          type="number"
-                          value={rateChartSettings.movingAverageWindow}
-                          onChange={(event) => {
-                            const raw = Number(event.target.value) || 1;
-                            const clamped = Math.max(1, Math.round(raw));
-                            setRateChartSettings((prev) => ({
-                              ...prev,
-                              movingAverageWindow: Math.min(clamped, inputs.exitYear),
-                            }));
-                          }}
-                          min={1}
-                          max={inputs.exitYear}
-                          className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-right"
-                        />
-                      </div>
-                    ) : null}
-                    <label className="flex items-center justify-between gap-2">
-                      <span>Zero baseline on charts</span>
-                      <input
-                        type="checkbox"
-                        checked={rateChartSettings.showZeroBaseline}
-                        onChange={(event) =>
-                          setRateChartSettings((prev) => ({
-                            ...prev,
-                            showZeroBaseline: event.target.checked,
-                          }))
-                        }
-                      />
-                    </label>
                   </div>
                 </CollapsibleSection>
 
@@ -4511,7 +4498,7 @@ export default function App() {
                       {hasLeverageData ? (
                         <>
                           <ResponsiveContainer>
-                            <LineChart data={leverageChartData} margin={{ top: 10, right: 48, left: 0, bottom: 0 }}>
+                            <LineChart data={leverageChartData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
                               <CartesianGrid strokeDasharray="3 3" />
                               <XAxis
                                 dataKey="ltv"
@@ -4525,14 +4512,14 @@ export default function App() {
                                 yAxisId="left"
                                 tickFormatter={(value) => formatPercent(value)}
                                 tick={{ fontSize: 11, fill: '#475569' }}
-                                width={90}
+                                width={80}
                               />
                               <YAxis
                                 yAxisId="right"
                                 orientation="right"
                                 tickFormatter={(value) => currencyThousands(value)}
                                 tick={{ fontSize: 11, fill: '#475569' }}
-                                width={88}
+                                width={72}
                               />
                               <Tooltip
                                 formatter={(value, name, { dataKey }) => {
@@ -5759,6 +5746,14 @@ export default function App() {
                           ))}
                         </select>
                       </label>
+                      <label className="flex items-center gap-2 rounded-full border border-slate-300 px-2.5 py-1">
+                        <input
+                          type="checkbox"
+                          checked={scenarioAlignInputs}
+                          onChange={(event) => setScenarioAlignInputs(event.target.checked)}
+                        />
+                        <span className="font-semibold text-slate-600">Use current deal inputs (keep price & rent)</span>
+                      </label>
                     </div>
                     <div className="h-72 w-full">
                       {scenarioScatterData.length === 0 ? (
@@ -5806,7 +5801,20 @@ export default function App() {
                                 );
                               }}
                             />
-                            <Scatter data={scenarioScatterData} fill="#2563eb" name="Saved scenarios" />
+                            <Scatter
+                              data={scenarioScatterData}
+                              fill="#2563eb"
+                              name="Saved scenarios"
+                              cursor="pointer"
+                              onClick={(point) => {
+                                const scenarioId = point?.payload?.id;
+                                if (scenarioId) {
+                                  handleLoadScenario(scenarioId, {
+                                    preserveLoadPanel: true,
+                                  });
+                                }
+                              }}
+                            />
                           </ScatterChart>
                         </ResponsiveContainer>
                       )}
