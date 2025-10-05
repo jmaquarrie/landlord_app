@@ -937,8 +937,10 @@ function calculateEquity(rawInputs) {
         annualInterest[yearIndex] += monthlyInterest;
       }
       if (month === monthsToModel) {
-        annualDebtService[yearIndex] += bridgingAmount;
-        annualPrincipal[yearIndex] += bridgingAmount;
+        // The bridging principal is refinanced into the long-term mortgage at the
+        // end of the term, so it should not be treated as an investor cash
+        // outflow in the annual debt service totals. We still keep the
+        // interest for the term above but skip adding the principal here.
       }
     }
   }
