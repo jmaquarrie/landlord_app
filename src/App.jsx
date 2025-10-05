@@ -1268,6 +1268,7 @@ export default function App() {
   const [previewStatus, setPreviewStatus] = useState('idle');
   const [previewError, setPreviewError] = useState('');
   const [previewKey, setPreviewKey] = useState(0);
+  const [isMapModalOpen, setIsMapModalOpen] = useState(false);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [authCredentials, setAuthCredentials] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1905,13 +1906,26 @@ export default function App() {
     }
     const latFixed = lat.toFixed(6);
     const lonFixed = lon.toFixed(6);
+    const padding = 0.01;
+    const south = (lat - padding).toFixed(6);
+    const west = (lon - padding).toFixed(6);
+    const north = (lat + padding).toFixed(6);
+    const east = (lon + padding).toFixed(6);
+    const bbox = `${west},${south},${east},${north}`;
     return {
       lat,
       lon,
       displayName: geocodeState.data.displayName,
-      imageUrl: `https://staticmap.openstreetmap.org/staticmap.php?center=${latFixed},${lonFixed}&zoom=15&size=400x220&markers=${latFixed},${lonFixed},red-pushpin`,
+      embedUrl: `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${latFixed}%2C${lonFixed}`,
+      viewUrl: `https://www.openstreetmap.org/?mlat=${latFixed}&mlon=${lonFixed}#map=15/${latFixed}/${lonFixed}`,
     };
   }, [geocodeState.data]);
+
+  useEffect(() => {
+    if (!locationPreview) {
+      setIsMapModalOpen(false);
+    }
+  }, [locationPreview]);
 
 
   const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
@@ -3569,16 +3583,30 @@ export default function App() {
                   </p>
                 ) : null}
                 {locationPreview ? (
-                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-2">
-                    <div className="text-[11px] font-semibold text-slate-600">Map preview</div>
+                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-[11px] font-semibold text-slate-600">Property location</div>
                     <p className="mt-1 text-[11px] text-slate-500">{locationPreview.displayName}</p>
-                    <img
-                      src={locationPreview.imageUrl}
-                      alt={`Map preview for ${locationPreview.displayName}`}
-                      className="mt-2 h-40 w-full rounded-xl object-cover"
-                      loading="lazy"
-                    />
-                    <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-400">
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setIsMapModalOpen(true)}
+                        className="inline-flex items-center gap-2 rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                      >
+                        <span role="img" aria-hidden="true">
+                          🗺️
+                        </span>
+                        Open interactive map
+                      </button>
+                      <a
+                        href={locationPreview.viewUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                      >
+                        View on OpenStreetMap
+                      </a>
+                    </div>
+                    <div className="mt-2 text-[10px] uppercase tracking-wide text-slate-400">
                       Map data © OpenStreetMap contributors
                     </div>
                   </div>
@@ -5547,6 +5575,47 @@ export default function App() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {isMapModalOpen && locationPreview && (
+      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm">
+        <div className="relative w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-800">Property location</h2>
+              <p className="text-[11px] text-slate-500">{locationPreview.displayName}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsMapModalOpen(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="aspect-video w-full">
+            <iframe
+              title={`OpenStreetMap location for ${locationPreview.displayName}`}
+              src={locationPreview.embedUrl}
+              className="h-full w-full"
+              style={{ border: 0 }}
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+            />
+          </div>
+          <div className="flex items-center justify-between border-t border-slate-200 px-5 py-3 text-[11px] text-slate-500">
+            <span>Map data © OpenStreetMap contributors</span>
+            <a
+              href={locationPreview.viewUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Open full map
+            </a>
           </div>
         </div>
       </div>
