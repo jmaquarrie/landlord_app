@@ -19,6 +19,19 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
+const currencyThousands = (value) => {
+  if (!isFinite(value)) {
+    return '–';
+  }
+  const negative = value < 0;
+  const absoluteThousands = Math.abs(value) / 1000;
+  const maximumFractionDigits = absoluteThousands >= 100 ? 0 : absoluteThousands >= 10 ? 1 : 2;
+  const formatted = absoluteThousands.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  });
+  return `${negative ? '−' : ''}£${formatted}k`;
+};
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
@@ -3601,9 +3614,39 @@ export default function App() {
                         href={locationPreview.viewUrl}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                        aria-label="Open location on OpenStreetMap"
+                        className="inline-flex items-center justify-center rounded-full border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
                       >
-                        View on OpenStreetMap
+                        <span className="sr-only">View on OpenStreetMap</span>
+                        <svg
+                          aria-hidden="true"
+                          className="h-4 w-4"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          xmlns="http://www.w3.org/2000/svg"
+                        >
+                          <path
+                            d="M11.25 3.5H5.5A2 2 0 0 0 3.5 5.5v9A2 2 0 0 0 5.5 16.5h9a2 2 0 0 0 2-2v-5.75"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M9.5 10.5 16.5 3.5"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M12.5 3.5h4v4"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
                       </a>
                     </div>
                     <div className="mt-2 text-[10px] uppercase tracking-wide text-slate-400">
@@ -4432,7 +4475,7 @@ export default function App() {
                       {hasLeverageData ? (
                         <>
                           <ResponsiveContainer>
-                            <LineChart data={leverageChartData} margin={{ top: 10, right: 80, left: 0, bottom: 0 }}>
+                            <LineChart data={leverageChartData} margin={{ top: 10, right: 48, left: 0, bottom: 0 }}>
                               <CartesianGrid strokeDasharray="3 3" />
                               <XAxis
                                 dataKey="ltv"
@@ -4451,9 +4494,9 @@ export default function App() {
                               <YAxis
                                 yAxisId="right"
                                 orientation="right"
-                                tickFormatter={(value) => currency(value)}
+                                tickFormatter={(value) => currencyThousands(value)}
                                 tick={{ fontSize: 11, fill: '#475569' }}
-                                width={120}
+                                width={88}
                               />
                               <Tooltip
                                 formatter={(value, name, { dataKey }) => {
