@@ -888,6 +888,7 @@ function calculateEquity(rawInputs) {
   const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
   const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
   const annualPrincipal = Array.from({ length: inputs.exitYear }, () => 0);
+  const annualBridgingDebtService = Array.from({ length: inputs.exitYear }, () => 0);
   const monthlyRate = inputs.interestRate / 12;
   let balance = loan;
   const totalMonths = inputs.exitYear * 12;
@@ -935,6 +936,7 @@ function calculateEquity(rawInputs) {
       if (monthlyInterest !== 0) {
         annualDebtService[yearIndex] += monthlyInterest;
         annualInterest[yearIndex] += monthlyInterest;
+        annualBridgingDebtService[yearIndex] += monthlyInterest;
       }
       if (month === monthsToModel) {
         // The bridging principal is refinanced into the long-term mortgage at the
@@ -1055,6 +1057,8 @@ function calculateEquity(rawInputs) {
         operatingExpenses: 0,
         noi: 0,
         debtService: 0,
+        debtServiceMortgage: 0,
+        debtServiceBridging: 0,
         cashPreTax: 0,
         cashAfterTax: 0,
         cashAfterTaxRetained: 0,
@@ -1076,6 +1080,8 @@ function calculateEquity(rawInputs) {
     const fixed = inputs.insurancePerYear + inputs.otherOpexPerYear;
     const noi = gross - (varOpex + fixed);
     const debtService = annualDebtService[y - 1] ?? 0;
+    const bridgingDebtService = annualBridgingDebtService[y - 1] ?? 0;
+    const mortgageDebtService = Math.max(0, debtService - bridgingDebtService);
     const cash = noi - debtService;
     irrCashflows.push(cash);
     cumulativeCashPreTax += cash;
@@ -1222,6 +1228,8 @@ function calculateEquity(rawInputs) {
           operatingExpenses: varOpex + fixed,
           noi,
           debtService,
+          debtServiceMortgage: mortgageDebtService,
+          debtServiceBridging: bridgingDebtService,
           cashPreTax: cash,
           cashAfterTax: afterTaxCash,
           cashAfterTaxRetained: shouldReinvest ? afterTaxCash - reinvestContribution : afterTaxCash,
@@ -1308,6 +1316,7 @@ function calculateEquity(rawInputs) {
     annualCashflowsPreTax,
     annualCashflowsAfterTax,
     annualDebtService,
+    annualBridgingDebtService,
     annualInterest,
     annualPrincipal,
     irr: irrValue,
@@ -1900,6 +1909,12 @@ export default function App() {
   const selectedOperatingExpenses = equity.annualOperatingExpenses[performanceYearIndex] ?? 0;
   const selectedNoi = equity.annualNoiValues[performanceYearIndex] ?? 0;
   const selectedDebtService = equity.annualDebtService[performanceYearIndex] ?? 0;
+  const selectedBridgingDebtService =
+    equity.annualBridgingDebtService?.[performanceYearIndex] ?? 0;
+  const selectedMortgageDebtService = Math.max(
+    0,
+    selectedDebtService - selectedBridgingDebtService
+  );
   const selectedCashPreTax = equity.annualCashflowsPreTax[performanceYearIndex] ?? 0;
   const selectedCashAfterTax = equity.annualCashflowsAfterTax[performanceYearIndex] ?? 0;
   const selectedRentalTax = equity.propertyTaxes[performanceYearIndex] ?? 0;
@@ -4051,7 +4066,10 @@ export default function App() {
                 <Line label="Gross rent (vacancy adj.)" value={currency(selectedGrossRent)} />
                 <Line label="Operating expenses" value={currency(selectedOperatingExpenses)} />
                 <Line label="NOI" value={currency(selectedNoi)} />
-                <Line label="Debt service" value={currency(selectedDebtService)} />
+                <Line label="Debt service" value={currency(selectedMortgageDebtService)} />
+                {selectedBridgingDebtService !== 0 ? (
+                  <Line label="Debt service (bridging)" value={currency(selectedBridgingDebtService)} />
+                ) : null}
                 <Line label="Cash flow (pre‑tax)" value={currency(selectedCashPreTax)} />
                 <Line label={rentalTaxLabel} value={currency(selectedRentalTax)} />
                 <hr className="my-2" />
@@ -6336,7 +6354,15 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Gross rent (year)', value: yearly.gross || 0 });
       breakdowns.push({ label: 'Operating expenses (year)', value: -(yearly.operatingExpenses || 0) });
       breakdowns.push({ label: 'NOI (year)', value: yearly.noi || 0 });
-      breakdowns.push({ label: 'Debt service (year)', value: -(yearly.debtService || 0) });
+      const totalDebtService = Number(yearly.debtService) || 0;
+      const bridgingDebtService = Number(yearly.debtServiceBridging) || 0;
+      const mortgageDebtService = Number.isFinite(Number(yearly.debtServiceMortgage))
+        ? Number(yearly.debtServiceMortgage) || 0
+        : Math.max(0, totalDebtService - bridgingDebtService);
+      breakdowns.push({ label: 'Debt service (year)', value: -mortgageDebtService });
+      if (bridgingDebtService !== 0) {
+        breakdowns.push({ label: 'Debt service (bridging)', value: -bridgingDebtService });
+      }
       breakdowns.push({ label: `${rentalTaxLabel} (year)`, value: -(yearly.tax || 0) });
       breakdowns.push({ label: 'After-tax cash flow (year)', value: yearly.cashAfterTax || 0 });
       breakdowns.push({ label: 'Reinvested this year', value: -(yearly.reinvestContribution || 0) });
