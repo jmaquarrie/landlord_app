@@ -1909,7 +1909,7 @@ export default function App() {
       lat,
       lon,
       displayName: geocodeState.data.displayName,
-      imageUrl: `https://staticmap.openstreetmap.de/staticmap.php?center=${latFixed},${lonFixed}&zoom=15&size=400x220&markers=${latFixed},${lonFixed},red-pushpin`,
+      imageUrl: `https://staticmap.openstreetmap.org/staticmap.php?center=${latFixed},${lonFixed}&zoom=15&size=400x220&markers=${latFixed},${lonFixed},red-pushpin`,
     };
   }, [geocodeState.data]);
 
