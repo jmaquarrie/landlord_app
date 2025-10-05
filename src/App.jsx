@@ -92,6 +92,7 @@ const SERIES_COLORS = {
   yieldRate: '#0369a1',
   cashOnCash: '#0f766e',
   irrSeries: '#7c3aed',
+  irrHurdle: '#f43f5e',
   npvToDate: '#0f172a',
 };
 
@@ -110,6 +111,7 @@ const SERIES_LABELS = {
   yieldRate: 'Yield rate',
   cashOnCash: 'Cash on cash',
   irrSeries: 'IRR',
+  irrHurdle: 'IRR hurdle',
   npvToDate: 'Net present value',
 };
 
@@ -144,9 +146,11 @@ const EXPANDED_SERIES_ORDER = [
 ];
 
 const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
+const RATE_STATIC_PERCENT_KEYS = ['irrHurdle'];
+const RATE_PERCENT_SERIES = [...RATE_PERCENT_KEYS, ...RATE_STATIC_PERCENT_KEYS];
 const RATE_VALUE_KEYS = ['npvToDate'];
-const RATE_SERIES_KEYS = [...RATE_PERCENT_KEYS, ...RATE_VALUE_KEYS];
-const PERCENT_SERIES_KEYS = new Set(RATE_PERCENT_KEYS);
+const RATE_SERIES_KEYS = [...RATE_PERCENT_SERIES, ...RATE_VALUE_KEYS];
+const PERCENT_SERIES_KEYS = new Set(RATE_PERCENT_SERIES);
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
@@ -298,6 +302,7 @@ const DEFAULT_INPUTS = {
   exitYear: 20,
   sellingCostsPct: 0.02,
   discountRate: 0.07,
+  irrHurdle: 0.12,
   buyerType: 'individual',
   propertiesOwned: 0,
   indexFundGrowth: DEFAULT_INDEX_GROWTH,
@@ -737,32 +742,6 @@ function csvEscape(value) {
   return stringValue;
 }
 
-function normaliseForCsv(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      return '';
-    }
-    return String(roundTo(value, 6));
-  }
-  if (typeof value === 'boolean') {
-    return value ? 'true' : 'false';
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (typeof value === 'object') {
-    try {
-      return JSON.stringify(value);
-    } catch (error) {
-      return String(value);
-    }
-  }
-  return String(value);
-}
-
 function getControlDisplayValue(node) {
   const tag = node.tagName.toLowerCase();
   if (tag === 'select') {
@@ -873,6 +852,7 @@ function calculateEquity(rawInputs) {
   const closing = otherClosing + stampDuty;
 
   const loan = inputs.purchasePrice - deposit;
+  const irrHurdleValue = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
   const mortgageMonthly =
     inputs.loanType === 'interest_only'
       ? (loan * inputs.interestRate) / 12
@@ -1158,6 +1138,7 @@ function calculateEquity(rawInputs) {
       yieldRate: yieldRateYear,
       cashOnCash: cashOnCashYear,
       irrSeries: irrToDate,
+      irrHurdle: irrHurdleValue,
       npvToDate,
       meta: {
         propertyValue: vt,
@@ -1279,6 +1260,7 @@ function calculateEquity(rawInputs) {
     annualInterest,
     annualPrincipal,
     irr: irrValue,
+    irrHurdle: irrHurdleValue,
   };
 }
 
@@ -1329,6 +1311,7 @@ export default function App() {
     householdIncome: false,
     purchaseCosts: false,
     rentalCashflow: false,
+    extraSettings: true,
     cashflowDetail: true,
     wealthTrajectory: false,
     rateTrends: true,
@@ -1376,6 +1359,7 @@ export default function App() {
     yieldRate: false,
     cashOnCash: false,
     irrSeries: true,
+    irrHurdle: true,
     npvToDate: true,
   });
   const [cashflowSeriesActive, setCashflowSeriesActive] = useState({
@@ -1389,6 +1373,7 @@ export default function App() {
     roi: true,
     propertyNetAfterTax: true,
     efficiency: true,
+    irrHurdle: true,
   });
   const [roiHeatmapMetric, setRoiHeatmapMetric] = useState('irr');
   const [showChartModal, setShowChartModal] = useState(false);
@@ -2105,6 +2090,7 @@ export default function App() {
     if (!Number.isFinite(price) || price <= 0) {
       return [];
     }
+    const irrHurdleBaseline = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
     return LEVERAGE_LTV_OPTIONS.map((ltv) => {
       const depositPct = clamp(1 - ltv, 0, 1);
       const metrics = calculateEquity({
@@ -2120,12 +2106,14 @@ export default function App() {
         Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue)
           ? irrValue * propertyNetAfterTaxValue
           : 0;
+      const irrHurdleValue = Number.isFinite(metrics.irrHurdle) ? metrics.irrHurdle : irrHurdleBaseline;
       return {
         ltv,
         roi: Number.isFinite(roiValue) ? roiValue : 0,
         irr: Number.isFinite(irrValue) ? irrValue : 0,
         propertyNetAfterTax: propertyNetAfterTaxValue,
         efficiency: efficiencyValue,
+        irrHurdle: irrHurdleValue,
       };
     });
   }, [inputs]);
@@ -2925,86 +2913,6 @@ export default function App() {
     window.URL.revokeObjectURL(url);
   };
 
-  const handleExportTableCsv = () => {
-    if (savedScenarios.length === 0) {
-      if (typeof window !== 'undefined') {
-        window.alert('No saved scenarios to export yet.');
-      }
-      return;
-    }
-
-    if (typeof document === 'undefined' || typeof window === 'undefined') {
-      return;
-    }
-
-    const scenarioData = savedScenarios.map((scenario) => {
-      const data = { ...DEFAULT_INPUTS, ...scenario.data };
-      const metrics = calculateEquity(data);
-      const preview = scenario.preview ?? null;
-      return { scenario, data, metrics, preview };
-    });
-
-    const inputKeys = new Set();
-    const metricKeys = new Set();
-    const previewKeys = new Set();
-
-    scenarioData.forEach(({ data, metrics, preview }) => {
-      Object.keys(data || {}).forEach((key) => inputKeys.add(key));
-      Object.keys(metrics || {}).forEach((key) => metricKeys.add(key));
-      if (preview && typeof preview === 'object') {
-        Object.keys(preview).forEach((key) => previewKeys.add(key));
-      }
-    });
-
-    const sortedInputKeys = Array.from(inputKeys).sort();
-    const sortedMetricKeys = Array.from(metricKeys).sort();
-    const sortedPreviewKeys = Array.from(previewKeys).sort();
-
-    const header = [
-      'scenario_id',
-      'scenario_name',
-      'saved_at_iso',
-      ...sortedInputKeys.map((key) => `input_${key}`),
-      ...sortedPreviewKeys.map((key) => `preview_${key}`),
-      ...sortedMetricKeys.map((key) => `metric_${key}`),
-    ];
-
-    const rows = scenarioData.map(({ scenario, data, metrics, preview }) => {
-      const row = [
-        scenario.id ?? '',
-        scenario.name ?? '',
-        scenario.savedAt ? new Date(scenario.savedAt).toISOString() : '',
-      ];
-      sortedInputKeys.forEach((key) => {
-        row.push(normaliseForCsv(data?.[key]));
-      });
-      sortedPreviewKeys.forEach((key) => {
-        const value = preview && typeof preview === 'object' ? preview[key] : '';
-        row.push(normaliseForCsv(value));
-      });
-      sortedMetricKeys.forEach((key) => {
-        row.push(normaliseForCsv(metrics?.[key]));
-      });
-      return row;
-    });
-
-    const csvBody = [header, ...rows]
-      .map((row) => row.map((value) => csvEscape(value)).join(','))
-      .join('\n');
-
-    const csvContent = `\ufeff${csvBody}`;
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'property-scenarios.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  };
-
   const onNum = (key, value, decimals = 2) => {
     setInputs((prev) => {
       const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
@@ -3321,9 +3229,11 @@ export default function App() {
     integrateScenario(scenario, { select: true });
   };
 
-  const handleLoadScenario = () => {
-    const scenario = savedScenarios.find((item) => item.id === selectedScenarioId);
+  const handleLoadScenario = (scenarioId) => {
+    const targetId = typeof scenarioId === 'string' && scenarioId ? scenarioId : selectedScenarioId;
+    const scenario = savedScenarios.find((item) => item.id === targetId);
     if (!scenario) return;
+    setSelectedScenarioId(scenario.id);
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setCashflowColumnKeys(sanitizeCashflowColumns(scenario.cashflowColumns));
     setShowLoadPanel(false);
@@ -3847,7 +3757,6 @@ export default function App() {
                   {pctInput('indexFundGrowth', 'Index fund growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
                   {pctInput('sellingCostsPct', 'Selling costs %')}
-                  {pctInput('discountRate', 'Discount rate %', 0.001)}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                       <input
@@ -3872,6 +3781,66 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                </CollapsibleSection>
+
+                <CollapsibleSection
+                  title="Extra settings"
+                  collapsed={collapsedSections.extraSettings}
+                  onToggle={() => toggleSection('extraSettings')}
+                >
+                  <div className="grid grid-cols-2 gap-2">
+                    {pctInput('discountRate', 'Discount rate %', 0.001)}
+                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                  </div>
+                  <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                    <div className="text-xs font-semibold text-slate-700">Return ratio display</div>
+                    <label className="flex items-center justify-between gap-2">
+                      <span>Show moving average</span>
+                      <input
+                        type="checkbox"
+                        checked={rateChartSettings.showMovingAverage}
+                        onChange={(event) =>
+                          setRateChartSettings((prev) => ({
+                            ...prev,
+                            showMovingAverage: event.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                    {rateChartSettings.showMovingAverage ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Moving average window (yrs)</span>
+                        <input
+                          type="number"
+                          value={rateChartSettings.movingAverageWindow}
+                          onChange={(event) => {
+                            const raw = Number(event.target.value) || 1;
+                            const clamped = Math.max(1, Math.round(raw));
+                            setRateChartSettings((prev) => ({
+                              ...prev,
+                              movingAverageWindow: Math.min(clamped, inputs.exitYear),
+                            }));
+                          }}
+                          min={1}
+                          max={inputs.exitYear}
+                          className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-right"
+                        />
+                      </div>
+                    ) : null}
+                    <label className="flex items-center justify-between gap-2">
+                      <span>Zero baseline on charts</span>
+                      <input
+                        type="checkbox"
+                        checked={rateChartSettings.showZeroBaseline}
+                        onChange={(event) =>
+                          setRateChartSettings((prev) => ({
+                            ...prev,
+                            showZeroBaseline: event.target.checked,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
                 </CollapsibleSection>
 
               </div>
@@ -4233,7 +4202,7 @@ export default function App() {
                             {rateChartSettings.showZeroBaseline ? (
                               <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
                             ) : null}
-                            {RATE_PERCENT_KEYS.map((key) => (
+                            {RATE_PERCENT_SERIES.map((key) => (
                               <RechartsLine
                                 key={key}
                                 type="monotone"
@@ -4244,6 +4213,8 @@ export default function App() {
                                 dot={false}
                                 yAxisId="percent"
                                 hide={!rateSeriesActive[key]}
+                                strokeDasharray={key === 'irrHurdle' ? '4 4' : undefined}
+                                isAnimationActive={false}
                               />
                             ))}
                             {RATE_VALUE_KEYS.map((key) => (
@@ -4618,6 +4589,18 @@ export default function App() {
                               />
                               <RechartsLine
                                 type="monotone"
+                                dataKey="irrHurdle"
+                                name="IRR hurdle"
+                                yAxisId="left"
+                                stroke={SERIES_COLORS.irrHurdle}
+                                strokeWidth={2}
+                                strokeDasharray="4 4"
+                                dot={false}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.irrHurdle}
+                              />
+                              <RechartsLine
+                                type="monotone"
                                 dataKey="propertyNetAfterTax"
                                 name={propertyNetAfterTaxLabel}
                                 yAxisId="right"
@@ -4862,99 +4845,81 @@ export default function App() {
                 onClick={() => setShowTableModal(true)}
                 className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
               >
-                Table
-              </button>
-              <button
-                type="button"
-                onClick={handleExportTableCsv}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={scenarioTableData.length === 0}
-              >
-                Export CSV
+                Comparison
               </button>
             </div>
             {showLoadPanel ? (
               <div className="mt-3 space-y-3">
-                <div className="flex flex-col gap-1 text-xs text-slate-700">
-                  <label className="font-semibold text-slate-800" htmlFor="scenario-select">
-                    Choose scenario
-                  </label>
-                  <select
-                    id="scenario-select"
-                    value={selectedScenarioId}
-                    onChange={(event) => setSelectedScenarioId(event.target.value)}
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
-                  >
-                    {savedScenarios.length === 0 ? (
-                      <option value="">No scenarios saved</option>
-                    ) : null}
-                    {savedScenarios.map((scenario) => (
-                      <option key={scenario.id} value={scenario.id}>
-                        {scenario.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {savedScenarios.length > 0 ? (
+                {savedScenarios.length === 0 ? (
+                  <p className="text-xs text-slate-600">No scenarios saved yet.</p>
+                ) : (
                   <>
-                    <button
-                      type="button"
-                      onClick={handleLoadScenario}
-                      className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
-                    >
-                      Load selected scenario
-                    </button>
+                    <p className="text-xs text-slate-600">
+                      Click a scenario name below to load it instantly.
+                    </p>
                     <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
-                      {savedScenarios.map((scenario) => (
-                        <div
-                          key={`${scenario.id}-meta`}
-                          className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
-                        >
-                          <div className="flex flex-col">
-                            <span className="font-semibold text-slate-700">{scenario.name}</span>
-                            <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
-                            {scenario.data?.propertyAddress ? (
-                              <span className="text-slate-500">{scenario.data.propertyAddress}</span>
-                            ) : null}
-                            {scenario.data?.propertyUrl ? (
-                              <a
-                                href={scenario.data.propertyUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-slate-500 underline-offset-2 hover:underline"
+                      {savedScenarios.map((scenario) => {
+                        const isSelected = selectedScenarioId === scenario.id;
+                        return (
+                          <div
+                            key={`${scenario.id}-meta`}
+                            className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
+                          >
+                            <div className="flex flex-col">
+                              <button
+                                type="button"
+                                onClick={() => handleLoadScenario(scenario.id)}
+                                className={`text-left font-semibold transition hover:text-indigo-700 hover:underline ${
+                                  isSelected ? 'text-indigo-700 underline' : 'text-slate-700'
+                                }`}
+                                aria-pressed={isSelected}
                               >
-                                View listing
-                              </a>
-                            ) : null}
+                                {scenario.name}
+                              </button>
+                              <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                              {scenario.data?.propertyAddress ? (
+                                <span className="text-slate-500">{scenario.data.propertyAddress}</span>
+                              ) : null}
+                              {scenario.data?.propertyUrl ? (
+                                <a
+                                  href={scenario.data.propertyUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-slate-500 underline-offset-2 hover:underline"
+                                >
+                                  View listing
+                                </a>
+                              ) : null}
+                            </div>
+                            <div className="no-print flex flex-wrap items-center gap-2 text-[11px]">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateScenario(scenario.id)}
+                                className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                              >
+                                Update
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRenameScenario(scenario.id)}
+                                className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
+                              >
+                                Rename
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteScenario(scenario.id)}
+                                className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
-                          <div className="no-print flex items-center gap-2 text-[11px]">
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateScenario(scenario.id)}
-                              className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
-                            >
-                              Update
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRenameScenario(scenario.id)}
-                              className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
-                            >
-                              Rename
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteScenario(scenario.id)}
-                              className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </>
-                ) : null}
+                )}
               </div>
             ) : null}
           </div>
@@ -5358,6 +5323,7 @@ export default function App() {
                     {pctInput('indexFundGrowth', 'Index fund growth %')}
                     {pctInput('sellingCostsPct', 'Selling costs %')}
                     {pctInput('discountRate', 'Discount rate %', 0.001)}
+                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
                   </div>
                 </div>
                 <div>
@@ -5639,7 +5605,7 @@ export default function App() {
                             {rateChartSettings.showZeroBaseline ? (
                               <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
                             ) : null}
-                            {RATE_PERCENT_KEYS.map((key) => (
+                            {RATE_PERCENT_SERIES.map((key) => (
                               <RechartsLine
                                 key={`modal-${key}`}
                                 type="monotone"
@@ -5650,6 +5616,8 @@ export default function App() {
                                 dot={false}
                                 yAxisId="percent"
                                 hide={!rateSeriesActive[key]}
+                                strokeDasharray={key === 'irrHurdle' ? '4 4' : undefined}
+                                isAnimationActive={false}
                               />
                             ))}
                             {RATE_VALUE_KEYS.map((key) => (
@@ -5879,17 +5847,6 @@ export default function App() {
                   </div>
                 </div>
               )}
-            </div>
-            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-500">
-              <span>CSV export includes every saved scenario.</span>
-              <button
-                type="button"
-                onClick={handleExportTableCsv}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={scenarioTableData.length === 0}
-              >
-                Export CSV
-              </button>
             </div>
           </div>
         </div>
