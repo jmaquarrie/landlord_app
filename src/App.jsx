@@ -76,6 +76,7 @@ const SERIES_COLORS = {
   yieldRate: '#0369a1',
   cashOnCash: '#0f766e',
   irrSeries: '#7c3aed',
+  npvToDate: '#0f172a',
 };
 
 const SERIES_LABELS = {
@@ -93,6 +94,7 @@ const SERIES_LABELS = {
   yieldRate: 'Yield rate',
   cashOnCash: 'Cash on cash',
   irrSeries: 'IRR',
+  npvToDate: 'Net present value',
 };
 
 const CASHFLOW_BAR_COLORS = {
@@ -123,8 +125,10 @@ const EXPANDED_SERIES_ORDER = [
   'indexFund4x',
 ];
 
-const PERCENT_SERIES_KEYS = new Set();
-const RATE_SERIES_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
+const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
+const RATE_VALUE_KEYS = ['npvToDate'];
+const RATE_SERIES_KEYS = [...RATE_PERCENT_KEYS, ...RATE_VALUE_KEYS];
+const PERCENT_SERIES_KEYS = new Set(RATE_PERCENT_KEYS);
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
@@ -373,7 +377,7 @@ const SECTION_DESCRIPTIONS = {
   wealthTrajectory:
     'Plots property value, property gross and net wealth, and the index fund alternative across the hold period.',
   rateTrends:
-    'Track cap rate, yield on cost, cash-on-cash, and IRR across the hold period to compare return profiles over time.',
+    'Track cap rate, rental yield, cash-on-cash, IRR, and net present value across the hold period to compare return profiles over time.',
   exitComparison:
     'Compares exit-year totals for the property and the index fund, including after-tax wealth and cumulative rental tax.',
   cashflowBars:
@@ -390,6 +394,7 @@ const SECTION_DESCRIPTIONS = {
 
 const KEY_RATIO_TOOLTIPS = {
   cap: 'First-year net operating income divided by the purchase price.',
+  rentalYield: 'First-year rent collected after vacancy divided by the purchase price.',
   yoc: 'First-year net operating income divided by total project cost (price + closing + renovation).',
   coc: 'Year 1 after-debt cash flow divided by total cash invested.',
   dscr: 'Debt service coverage ratio: Year 1 NOI divided by annual debt service.',
@@ -1084,6 +1089,7 @@ function calculateEquity(rawInputs) {
     const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
     const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
 
+    let yearCashflowForCf = cash;
     if (y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
@@ -1092,13 +1098,13 @@ function calculateEquity(rawInputs) {
           ? loan
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
-      cf.push(cash + netSaleProceeds);
+      yearCashflowForCf = cash + netSaleProceeds;
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
       exitNetSaleProceeds = netSaleProceeds;
-    } else {
-      cf.push(cash);
     }
+    cf.push(yearCashflowForCf);
+    const npvToDate = npv(inputs.discountRate, cf);
 
     indexVal = indexVal * (1 + indexGrowth);
     const cumulativeCashAfterTaxKept = shouldReinvest
@@ -1127,6 +1133,7 @@ function calculateEquity(rawInputs) {
       yieldRate: yieldRateYear,
       cashOnCash: cashOnCashYear,
       irrSeries: irrToDate,
+      npvToDate,
       meta: {
         propertyValue: vt,
         saleValue: vt,
@@ -1337,6 +1344,7 @@ export default function App() {
     yieldRate: false,
     cashOnCash: false,
     irrSeries: true,
+    npvToDate: true,
   });
   const [cashflowSeriesActive, setCashflowSeriesActive] = useState({
     rentIncome: true,
@@ -1363,6 +1371,9 @@ export default function App() {
   const chartAreaRef = useRef(null);
   const chartOverlayRef = useRef(null);
   const chartModalContentRef = useRef(null);
+  const geocodeDebounceRef = useRef(null);
+  const geocodeAbortRef = useRef(null);
+  const lastGeocodeQueryRef = useRef('');
   const [rateChartSettings, setRateChartSettings] = useState({
     showMovingAverage: false,
     movingAverageWindow: 3,
@@ -1375,6 +1386,7 @@ export default function App() {
   const iframeRef = useRef(null);
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
+  const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
 
   const remoteAvailable = remoteEnabled && authStatus === 'ready';
 
@@ -1501,6 +1513,96 @@ export default function App() {
       password: authCredentials.password ?? '',
     });
   }, [authCredentials.username, authCredentials.password]);
+
+  useEffect(() => {
+    const rawAddress = (inputs.propertyAddress ?? '').trim();
+    const normalizedQuery = rawAddress.toLowerCase();
+
+    if (geocodeDebounceRef.current) {
+      clearTimeout(geocodeDebounceRef.current);
+      geocodeDebounceRef.current = null;
+    }
+    if (geocodeAbortRef.current) {
+      geocodeAbortRef.current.abort();
+      geocodeAbortRef.current = null;
+    }
+
+    if (normalizedQuery.length === 0) {
+      lastGeocodeQueryRef.current = '';
+      setGeocodeState({ status: 'idle', data: null, error: '' });
+      return;
+    }
+
+    if (normalizedQuery.length < 3) {
+      setGeocodeState((prev) => ({ ...prev, status: 'idle', error: '' }));
+      return;
+    }
+
+    geocodeDebounceRef.current = window.setTimeout(() => {
+      const controller = new AbortController();
+      geocodeAbortRef.current = controller;
+      setGeocodeState((prev) => ({ status: 'loading', data: prev.data ?? null, error: '' }));
+      const params = new URLSearchParams({ q: rawAddress, limit: '1' });
+      fetch(`https://geocode.maps.co/search?${params.toString()}`, {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error('Geocoding request failed');
+          }
+          return response.json();
+        })
+        .then((results) => {
+          if (!Array.isArray(results) || results.length === 0) {
+            setGeocodeState({ status: 'error', data: null, error: 'No matching location found.' });
+            lastGeocodeQueryRef.current = '';
+            return;
+          }
+          const result = results[0];
+          const lat = Number.parseFloat(result.lat);
+          const lon = Number.parseFloat(result.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+            setGeocodeState({ status: 'error', data: null, error: 'Location lookup returned invalid coordinates.' });
+            lastGeocodeQueryRef.current = '';
+            return;
+          }
+          lastGeocodeQueryRef.current = normalizedQuery;
+          setGeocodeState({
+            status: 'success',
+            data: {
+              lat,
+              lon,
+              displayName: typeof result.display_name === 'string' && result.display_name.trim() !== ''
+                ? result.display_name
+                : rawAddress,
+            },
+            error: '',
+          });
+        })
+        .catch((error) => {
+          if (error.name === 'AbortError') {
+            return;
+          }
+          setGeocodeState({ status: 'error', data: null, error: 'Unable to load map preview.' });
+          lastGeocodeQueryRef.current = '';
+        })
+        .finally(() => {
+          geocodeAbortRef.current = null;
+        });
+    }, 600);
+
+    return () => {
+      if (geocodeDebounceRef.current) {
+        clearTimeout(geocodeDebounceRef.current);
+        geocodeDebounceRef.current = null;
+      }
+      if (geocodeAbortRef.current) {
+        geocodeAbortRef.current.abort();
+        geocodeAbortRef.current = null;
+      }
+    };
+  }, [inputs.propertyAddress]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1711,7 +1813,7 @@ export default function App() {
     return rateChartData.map((point, index) => {
       const startIndex = Math.max(0, index - windowSize + 1);
       const slice = rateChartData.slice(startIndex, index + 1);
-      const averages = RATE_SERIES_KEYS.reduce((acc, key) => {
+      const averages = RATE_PERCENT_KEYS.reduce((acc, key) => {
         const total = slice.reduce((sum, entry) => sum + (Number(entry?.[key]) || 0), 0);
         acc[`${key}MA`] = slice.length > 0 ? total / slice.length : 0;
         return acc;
@@ -1783,6 +1885,34 @@ export default function App() {
     });
   }, [equity.chart]);
 
+  const rentalYield = useMemo(() => {
+    const grossRentYear1 = Number(equity.grossRentYear1) || 0;
+    const purchasePrice = Number(inputs.purchasePrice) || 0;
+    if (!Number.isFinite(grossRentYear1) || !Number.isFinite(purchasePrice) || purchasePrice <= 0) {
+      return 0;
+    }
+    return grossRentYear1 / purchasePrice;
+  }, [equity.grossRentYear1, inputs.purchasePrice]);
+
+  const locationPreview = useMemo(() => {
+    if (!geocodeState?.data) {
+      return null;
+    }
+    const lat = Number(geocodeState.data.lat);
+    const lon = Number(geocodeState.data.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return null;
+    }
+    const latFixed = lat.toFixed(6);
+    const lonFixed = lon.toFixed(6);
+    return {
+      lat,
+      lon,
+      displayName: geocodeState.data.displayName,
+      imageUrl: `https://staticmap.openstreetmap.de/staticmap.php?center=${latFixed},${lonFixed}&zoom=15&size=400x220&markers=${latFixed},${lonFixed},red-pushpin`,
+    };
+  }, [geocodeState.data]);
+
 
   const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const appreciationRate = Number(inputs.annualAppreciation) || 0;
@@ -1791,19 +1921,18 @@ export default function App() {
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
   const appreciationPower = Math.pow(appreciationFactor, exitYears);
   const appreciationPowerDisplay = appreciationPower.toFixed(4);
-  const { baselineHeatmapYield, heatmapYieldMode } = useMemo(() => {
-    const yocValue = Number(equity.yoc);
-    const projectCost = Number(equity.projectCost);
-    if (Number.isFinite(yocValue) && yocValue > 0 && Number.isFinite(projectCost) && projectCost > 0) {
-      return { baselineHeatmapYield: yocValue, heatmapYieldMode: 'yoc' };
+  const baselineHeatmapYield = useMemo(() => {
+    if (Number.isFinite(rentalYield) && rentalYield > 0) {
+      return rentalYield;
     }
     const price = Number(inputs.purchasePrice) || 0;
     const rent = Number(inputs.monthlyRent) || 0;
+    const vacancy = Math.max(0, Math.min(1, Number(inputs.vacancyPct) || 0));
     if (!Number.isFinite(price) || price <= 0) {
-      return { baselineHeatmapYield: 0, heatmapYieldMode: 'gross' };
+      return 0;
     }
-    return { baselineHeatmapYield: (rent * 12) / price, heatmapYieldMode: 'gross' };
-  }, [equity.projectCost, equity.yoc, inputs.monthlyRent, inputs.purchasePrice]);
+    return (rent * 12 * (1 - vacancy)) / price;
+  }, [inputs.monthlyRent, inputs.purchasePrice, inputs.vacancyPct, rentalYield]);
   const roiHeatmapYieldOptions = useMemo(
     () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(baselineHeatmapYield + offset, 0)),
     [baselineHeatmapYield]
@@ -1820,19 +1949,8 @@ export default function App() {
     }
     const rows = [];
     const actualMonthlyRent = Number(inputs.monthlyRent) || 0;
-    const projectCost = Number(equity.projectCost);
-    const closingCosts = Number(equity.closing);
-    const fallbackProjectCost =
-      purchasePrice +
-      (Number.isFinite(closingCosts) ? closingCosts : purchasePrice * (Number(inputs.closingCostsPct) || 0)) +
-      (Number(inputs.renovationCost) || 0);
-    const heatmapProjectCost = Number.isFinite(projectCost) && projectCost > 0 ? projectCost : fallbackProjectCost;
     const vacancyPct = Number(inputs.vacancyPct) || 0;
-    const mgmtPct = Number(inputs.mgmtPct) || 0;
-    const repairsPct = Number(inputs.repairsPct) || 0;
-    const fixedOpexAnnual = (Number(inputs.insurancePerYear) || 0) + (Number(inputs.otherOpexPerYear) || 0);
-    const rentEffectDenominator = 12 * ((1 - vacancyPct) - (mgmtPct + repairsPct));
-    const usesYieldOnCost = heatmapYieldMode === 'yoc';
+    const occupancyFactor = Math.max(0, 1 - vacancyPct);
     let roiMin = Infinity;
     let roiMax = -Infinity;
     let irrMin = Infinity;
@@ -1842,13 +1960,13 @@ export default function App() {
       roiHeatmapYieldOptions.forEach((yieldRate, columnIndex) => {
         const targetYield = Math.max(yieldRate, 0);
         let monthlyRent = actualMonthlyRent;
-        if (Math.abs(targetYield - baselineHeatmapYield) > 1e-8) {
-          if (usesYieldOnCost && heatmapProjectCost > 0 && rentEffectDenominator > 0) {
-            const targetNoi = targetYield * heatmapProjectCost;
-            monthlyRent = (targetNoi + fixedOpexAnnual) / rentEffectDenominator;
-          } else if (purchasePrice > 0) {
-            monthlyRent = (targetYield * purchasePrice) / 12;
-          }
+        if (
+          Math.abs(targetYield - baselineHeatmapYield) > 1e-8 &&
+          purchasePrice > 0 &&
+          occupancyFactor > 0
+        ) {
+          const targetAnnualRent = targetYield * purchasePrice;
+          monthlyRent = targetAnnualRent / (12 * occupancyFactor);
         }
         monthlyRent = Math.max(0, roundTo(monthlyRent, 2));
         const metrics = calculateEquity({
@@ -1858,11 +1976,10 @@ export default function App() {
         });
         const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
         const irrValue = Number(metrics.irr) || 0;
-        const computedYield = usesYieldOnCost
-          ? Number(metrics.yoc) || targetYield
-          : purchasePrice > 0
-          ? (monthlyRent * 12) / purchasePrice
-          : targetYield;
+        const computedYield =
+          purchasePrice > 0 && occupancyFactor > 0
+            ? (monthlyRent * 12 * occupancyFactor) / purchasePrice
+            : targetYield;
         if (Number.isFinite(roiValue)) {
           roiMin = Math.min(roiMin, roiValue);
           roiMax = Math.max(roiMax, roiValue);
@@ -1889,15 +2006,7 @@ export default function App() {
       irrMax = 0;
     }
     return { rows, roiRange: [roiMin, roiMax], irrRange: [irrMin, irrMax] };
-  }, [
-    baselineHeatmapYield,
-    equity.closing,
-    equity.projectCost,
-    heatmapYieldMode,
-    inputs,
-    roiHeatmapGrowthOptions,
-    roiHeatmapYieldOptions,
-  ]);
+  }, [baselineHeatmapYield, inputs, roiHeatmapGrowthOptions, roiHeatmapYieldOptions]);
 
   const leverageChartData = useMemo(() => {
     const price = Number(inputs.purchasePrice) || 0;
@@ -3451,6 +3560,29 @@ export default function App() {
                   {previewLoading ? <div>Loading preview…</div> : null}
                   {previewError ? <div className="text-rose-600">{previewError}</div> : null}
                 </div>
+                {geocodeState.status === 'loading' ? (
+                  <p className="mt-2 text-[11px] text-slate-500">Locating property…</p>
+                ) : null}
+                {geocodeState.status === 'error' ? (
+                  <p className="mt-2 text-[11px] text-rose-600" role="alert">
+                    {geocodeState.error}
+                  </p>
+                ) : null}
+                {locationPreview ? (
+                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-2">
+                    <div className="text-[11px] font-semibold text-slate-600">Map preview</div>
+                    <p className="mt-1 text-[11px] text-slate-500">{locationPreview.displayName}</p>
+                    <img
+                      src={locationPreview.imageUrl}
+                      alt={`Map preview for ${locationPreview.displayName}`}
+                      className="mt-2 h-40 w-full rounded-xl object-cover"
+                      loading="lazy"
+                    />
+                    <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-400">
+                      Map data © OpenStreetMap contributors
+                    </div>
+                  </div>
+                ) : null}
                 </CollapsibleSection>
 
                 <CollapsibleSection
@@ -3656,6 +3788,11 @@ export default function App() {
 
               <SummaryCard title="Key ratios" tooltip={SECTION_DESCRIPTIONS.keyRatios}>
                 <Line label="Cap rate" value={formatPercent(equity.cap)} tooltip={KEY_RATIO_TOOLTIPS.cap} />
+                <Line
+                  label="Rental yield"
+                  value={formatPercent(rentalYield)}
+                  tooltip={KEY_RATIO_TOOLTIPS.rentalYield}
+                />
                 <Line label="Yield on cost" value={formatPercent(equity.yoc)} tooltip={KEY_RATIO_TOOLTIPS.yoc} />
                 <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} tooltip={KEY_RATIO_TOOLTIPS.coc} />
                 <Line label="IRR" value={formatPercent(equity.irr)} tooltip={KEY_RATIO_TOOLTIPS.irr} />
@@ -3739,7 +3876,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setShowChartModal(true)}
-                    className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
                   >
                     Expand chart
                   </button>
@@ -3891,7 +4028,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setShowRatesModal(true)}
-                        className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                        className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
                       >
                         Expand chart
                       </button>
@@ -3916,7 +4053,7 @@ export default function App() {
                     <div className="h-72 w-full">
                       {rateChartDataWithMovingAverage.length > 0 ? (
                         <ResponsiveContainer>
-                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 70, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis
                               dataKey="year"
@@ -3929,21 +4066,38 @@ export default function App() {
                               tick={{ fontSize: 10, fill: '#475569' }}
                               width={70}
                             />
-                            <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
+                            <YAxis
+                              yAxisId="currency"
+                              orientation="right"
+                              tickFormatter={(v) => currency(v)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              width={90}
+                            />
+                            <Tooltip
+                              formatter={(value, name, entry) => {
+                                const key = entry?.dataKey;
+                                const label = SERIES_LABELS[key] ?? name;
+                                if (RATE_VALUE_KEYS.includes(key)) {
+                                  return [currency(value), label];
+                                }
+                                return [formatPercent(value), label];
+                              }}
+                              labelFormatter={(label) => `Year ${label}`}
+                            />
                             <Legend
                               content={(props) => (
                                 <ChartLegend
                                   {...props}
                                   activeSeries={rateSeriesActive}
                                   onToggle={toggleRateSeries}
-                                  excludedKeys={RATE_SERIES_KEYS.map((key) => `${key}MA`)}
+                                  excludedKeys={RATE_PERCENT_KEYS.map((key) => `${key}MA`)}
                                 />
                               )}
                             />
                             {rateChartSettings.showZeroBaseline ? (
                               <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
                             ) : null}
-                            {RATE_SERIES_KEYS.map((key) => (
+                            {RATE_PERCENT_KEYS.map((key) => (
                               <RechartsLine
                                 key={key}
                                 type="monotone"
@@ -3956,8 +4110,21 @@ export default function App() {
                                 hide={!rateSeriesActive[key]}
                               />
                             ))}
+                            {RATE_VALUE_KEYS.map((key) => (
+                              <RechartsLine
+                                key={key}
+                                type="monotone"
+                                dataKey={key}
+                                name={SERIES_LABELS[key] ?? key}
+                                stroke={SERIES_COLORS[key]}
+                                strokeWidth={2}
+                                dot={false}
+                                yAxisId="currency"
+                                hide={!rateSeriesActive[key]}
+                              />
+                            ))}
                             {rateChartSettings.showMovingAverage
-                              ? RATE_SERIES_KEYS.map((key) => (
+                              ? RATE_PERCENT_KEYS.map((key) => (
                                   <RechartsLine
                                     key={`${key}MA`}
                                     type="monotone"
@@ -5280,7 +5447,7 @@ export default function App() {
                     <div className="relative flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       {rateChartDataWithMovingAverage.length > 0 ? (
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 90, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis
                               dataKey="year"
@@ -5293,21 +5460,38 @@ export default function App() {
                               tick={{ fontSize: 11, fill: '#475569' }}
                               width={80}
                             />
-                            <Tooltip formatter={(value) => formatPercent(value)} labelFormatter={(label) => `Year ${label}`} />
+                            <YAxis
+                              yAxisId="currency"
+                              orientation="right"
+                              tickFormatter={(v) => currency(v)}
+                              tick={{ fontSize: 11, fill: '#475569' }}
+                              width={110}
+                            />
+                            <Tooltip
+                              formatter={(value, name, entry) => {
+                                const key = entry?.dataKey;
+                                const label = SERIES_LABELS[key] ?? name;
+                                if (RATE_VALUE_KEYS.includes(key)) {
+                                  return [currency(value), label];
+                                }
+                                return [formatPercent(value), label];
+                              }}
+                              labelFormatter={(label) => `Year ${label}`}
+                            />
                             <Legend
                               content={(props) => (
                                 <ChartLegend
                                   {...props}
                                   activeSeries={rateSeriesActive}
                                   onToggle={toggleRateSeries}
-                                  excludedKeys={RATE_SERIES_KEYS.map((key) => `${key}MA`)}
+                                  excludedKeys={RATE_PERCENT_KEYS.map((key) => `${key}MA`)}
                                 />
                               )}
                             />
                             {rateChartSettings.showZeroBaseline ? (
                               <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
                             ) : null}
-                            {RATE_SERIES_KEYS.map((key) => (
+                            {RATE_PERCENT_KEYS.map((key) => (
                               <RechartsLine
                                 key={`modal-${key}`}
                                 type="monotone"
@@ -5320,8 +5504,21 @@ export default function App() {
                                 hide={!rateSeriesActive[key]}
                               />
                             ))}
+                            {RATE_VALUE_KEYS.map((key) => (
+                              <RechartsLine
+                                key={`modal-${key}`}
+                                type="monotone"
+                                dataKey={key}
+                                name={SERIES_LABELS[key] ?? key}
+                                stroke={SERIES_COLORS[key]}
+                                strokeWidth={2}
+                                dot={false}
+                                yAxisId="currency"
+                                hide={!rateSeriesActive[key]}
+                              />
+                            ))}
                             {rateChartSettings.showMovingAverage
-                              ? RATE_SERIES_KEYS.map((key) => (
+                              ? RATE_PERCENT_KEYS.map((key) => (
                                   <RechartsLine
                                     key={`modal-${key}-ma`}
                                     type="monotone"
