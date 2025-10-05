@@ -15,6 +15,8 @@ import {
   ReferenceDot,
   ReferenceArea,
   Line as RechartsLine,
+  ScatterChart,
+  Scatter,
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -198,6 +200,13 @@ const sanitizeCashflowColumns = (keys, fallbackKeys = DEFAULT_CASHFLOW_COLUMN_OR
 };
 
 const DEFAULT_CASHFLOW_COLUMNS = sanitizeCashflowColumns(DEFAULT_CASHFLOW_COLUMN_ORDER);
+const SCENARIO_RATIO_PERCENT_COLUMNS = [
+  { key: 'cap', label: 'Cap rate' },
+  { key: 'rentalYield', label: 'Rental yield' },
+  { key: 'yoc', label: 'Yield on cost' },
+  { key: 'coc', label: 'Cash-on-cash' },
+  { key: 'irr', label: 'IRR' },
+];
 const CASHFLOW_COLUMNS_STORAGE_KEY = 'qc_cashflow_columns';
 const DEFAULT_AUTH_CREDENTIALS = { username: SCENARIO_USERNAME, password: SCENARIO_PASSWORD };
 
@@ -1279,6 +1288,12 @@ export default function App() {
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
+  const [scenarioScatterXAxis, setScenarioScatterXAxis] = useState(
+    () => SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'cap'
+  );
+  const [scenarioScatterYAxis, setScenarioScatterYAxis] = useState(
+    () => SCENARIO_RATIO_PERCENT_COLUMNS[1]?.key ?? SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'irr'
+  );
   const [previewActive, setPreviewActive] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewStatus, setPreviewStatus] = useState('idle');
@@ -1715,11 +1730,58 @@ export default function App() {
 
   const scenarioTableData = useMemo(
     () =>
-      savedScenarios.map((scenario) => ({
-        scenario,
-        metrics: calculateEquity({ ...DEFAULT_INPUTS, ...scenario.data }),
-      })),
+      savedScenarios.map((scenario) => {
+        const mergedInputs = { ...DEFAULT_INPUTS, ...scenario.data };
+        const metrics = calculateEquity(mergedInputs);
+        const grossRentYear1 = Number(metrics.grossRentYear1) || 0;
+        const purchasePrice = Number(mergedInputs.purchasePrice) || 0;
+        const rentalYieldValue = purchasePrice > 0 ? grossRentYear1 / purchasePrice : 0;
+        return {
+          scenario,
+          metrics,
+          ratios: {
+            cap: Number.isFinite(metrics.cap) ? metrics.cap : 0,
+            rentalYield: Number.isFinite(rentalYieldValue) ? rentalYieldValue : 0,
+            yoc: Number.isFinite(metrics.yoc) ? metrics.yoc : 0,
+            coc: Number.isFinite(metrics.coc) ? metrics.coc : 0,
+            irr: Number.isFinite(metrics.irr) ? metrics.irr : 0,
+          },
+        };
+      }),
     [savedScenarios]
+  );
+  const scenarioScatterData = useMemo(() => {
+    if (scenarioTableData.length === 0) {
+      return [];
+    }
+    return scenarioTableData
+      .map(({ scenario, metrics, ratios }) => {
+        const x = ratios?.[scenarioScatterXAxis];
+        const y = ratios?.[scenarioScatterYAxis];
+        const propertyNetAfterTax = Number(metrics.propertyNetWealthAfterTax) || 0;
+        return {
+          id: scenario.id,
+          name: scenario.name,
+          x: Number.isFinite(x) ? x : null,
+          y: Number.isFinite(y) ? y : null,
+          propertyNetAfterTax,
+          savedAt: scenario.savedAt,
+        };
+      })
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  }, [scenarioScatterXAxis, scenarioScatterYAxis, scenarioTableData]);
+  const scenarioScatterXAxisOption = useMemo(
+    () =>
+      SCENARIO_RATIO_PERCENT_COLUMNS.find((option) => option.key === scenarioScatterXAxis) ??
+      SCENARIO_RATIO_PERCENT_COLUMNS[0],
+    [scenarioScatterXAxis]
+  );
+  const scenarioScatterYAxisOption = useMemo(
+    () =>
+      SCENARIO_RATIO_PERCENT_COLUMNS.find((option) => option.key === scenarioScatterYAxis) ??
+      SCENARIO_RATIO_PERCENT_COLUMNS[SCENARIO_RATIO_PERCENT_COLUMNS.length - 1] ??
+      SCENARIO_RATIO_PERCENT_COLUMNS[0],
+    [scenarioScatterYAxis]
   );
 
   const exitYearCount = Math.max(1, Math.floor(Number(equity.exitYear) || 1));
@@ -5692,36 +5754,130 @@ export default function App() {
                 Close
               </button>
             </div>
-            <div className="overflow-auto">
+            <div className="max-h-[65vh] overflow-auto px-5 py-4">
               {scenarioTableData.length === 0 ? (
-                <p className="px-5 py-6 text-sm text-slate-600">No scenarios saved yet.</p>
+                <p className="text-sm text-slate-600">No scenarios saved yet.</p>
               ) : (
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="px-4 py-2 text-left font-semibold">Scenario</th>
-                      <th className="px-4 py-2 text-left font-semibold">Saved</th>
-                      <th className="px-4 py-2 text-right font-semibold">Total cash in</th>
-                      <th className="px-4 py-2 text-right font-semibold">Cash flow (after tax)</th>
-                      <th className="px-4 py-2 text-right font-semibold">Mortgage pmt (mo)</th>
-                      <th className="px-4 py-2 text-right font-semibold">Yield on cost</th>
-                      <th className="px-4 py-2 text-right font-semibold">{propertyNetAfterTaxLabel}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {scenarioTableData.map(({ scenario, metrics }) => (
-                      <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
-                        <td className="px-4 py-2 font-semibold text-slate-800">{scenario.name}</td>
-                        <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashIn)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashflowYear1AfterTax)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.mortgage)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.yoc)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.propertyNetWealthAfterTax)} ({metrics.exitYear}y)</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="space-y-6">
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                      <label className="flex items-center gap-1" htmlFor="scenario-scatter-x-axis">
+                        <span className="font-semibold text-slate-700">X-axis</span>
+                        <select
+                          id="scenario-scatter-x-axis"
+                          value={scenarioScatterXAxis}
+                          onChange={(event) => setScenarioScatterXAxis(event.target.value)}
+                          className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                        >
+                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => (
+                            <option key={`scatter-x-${option.key}`} value={option.key}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-1" htmlFor="scenario-scatter-y-axis">
+                        <span className="font-semibold text-slate-700">Y-axis</span>
+                        <select
+                          id="scenario-scatter-y-axis"
+                          value={scenarioScatterYAxis}
+                          onChange={(event) => setScenarioScatterYAxis(event.target.value)}
+                          className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                        >
+                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => (
+                            <option key={`scatter-y-${option.key}`} value={option.key}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="h-72 w-full">
+                      {scenarioScatterData.length === 0 ? (
+                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-500">
+                          Saved scenarios with valid ratios will appear here.
+                        </div>
+                      ) : (
+                        <ResponsiveContainer>
+                          <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis
+                              type="number"
+                              dataKey="x"
+                              name={scenarioScatterXAxisOption?.label}
+                              tickFormatter={(value) => formatPercent(value)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              domain={['auto', 'auto']}
+                              label={{ value: scenarioScatterXAxisOption?.label, position: 'insideBottom', offset: -5, style: { fill: '#475569' } }}
+                            />
+                            <YAxis
+                              type="number"
+                              dataKey="y"
+                              name={scenarioScatterYAxisOption?.label}
+                              tickFormatter={(value) => formatPercent(value)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              domain={['auto', 'auto']}
+                              label={{ value: scenarioScatterYAxisOption?.label, angle: -90, position: 'insideLeft', offset: 10, style: { fill: '#475569' } }}
+                            />
+                            <Tooltip
+                              cursor={{ strokeDasharray: '3 3' }}
+                              content={({ active, payload }) => {
+                                if (!active || !payload || payload.length === 0) {
+                                  return null;
+                                }
+                                const datum = payload[0].payload;
+                                return (
+                                  <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-700 shadow-lg">
+                                    <div className="font-semibold text-slate-800">{datum.name}</div>
+                                    <div>{scenarioScatterXAxisOption?.label}: {formatPercent(datum.x)}</div>
+                                    <div>{scenarioScatterYAxisOption?.label}: {formatPercent(datum.y)}</div>
+                                    <div>
+                                      {propertyNetAfterTaxLabel}: {currency(datum.propertyNetAfterTax)}
+                                    </div>
+                                  </div>
+                                );
+                              }}
+                            />
+                            <Scatter data={scenarioScatterData} fill="#2563eb" name="Saved scenarios" />
+                          </ScatterChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-slate-200 text-sm">
+                      <thead className="bg-slate-50 text-slate-600">
+                        <tr>
+                          <th className="px-4 py-2 text-left font-semibold">Scenario</th>
+                          <th className="px-4 py-2 text-left font-semibold">Saved</th>
+                          <th className="px-4 py-2 text-right font-semibold">{propertyNetAfterTaxLabel}</th>
+                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((column) => (
+                            <th key={`header-${column.key}`} className="px-4 py-2 text-right font-semibold">
+                              {column.label}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {scenarioTableData.map(({ scenario, metrics, ratios }) => (
+                          <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
+                            <td className="px-4 py-2 font-semibold text-slate-800">{scenario.name}</td>
+                            <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
+                            <td className="px-4 py-2 text-right text-slate-700">
+                              {currency(metrics.propertyNetWealthAfterTax)}
+                              {metrics.exitYear ? ` (Y${metrics.exitYear})` : ''}
+                            </td>
+                            {SCENARIO_RATIO_PERCENT_COLUMNS.map((column) => (
+                              <td key={`${scenario.id}-${column.key}`} className="px-4 py-2 text-right text-slate-700">
+                                {formatPercent(ratios?.[column.key])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               )}
             </div>
             <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-500">
