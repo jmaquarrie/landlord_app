@@ -863,7 +863,7 @@ function calculateEquity(rawInputs) {
 
   const bridgingEnabled = Boolean(inputs.useBridgingLoan);
   const rawBridgingTerm = Number(inputs.bridgingLoanTermMonths ?? 0);
-  const bridgingTermMonths =
+  const bridgingLoanTermMonths =
     bridgingEnabled && Number.isFinite(rawBridgingTerm)
       ? Math.max(0, Math.round(rawBridgingTerm))
       : 0;
@@ -922,8 +922,8 @@ function calculateEquity(rawInputs) {
     annualPrincipal[yearIndex] += principalPaid;
   }
 
-  if (bridgingEnabled && bridgingAmount > 0 && bridgingTermMonths > 0) {
-    const monthsToModel = Math.min(bridgingTermMonths, inputs.exitYear * 12);
+  if (bridgingEnabled && bridgingAmount > 0 && bridgingLoanTermMonths > 0) {
+    const monthsToModel = Math.min(bridgingLoanTermMonths, inputs.exitYear * 12);
     const bridgingMonthlyRate = bridgingRate / 12;
     const monthlyInterest = bridgingMonthlyRate > 0 ? bridgingAmount * bridgingMonthlyRate : 0;
     for (let month = 1; month <= monthsToModel; month++) {
