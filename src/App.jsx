@@ -875,6 +875,7 @@ function calculateEquity(rawInputs) {
   const bridgingAmount = bridgingEnabled ? deposit : 0;
   const totalCashRequired = deposit + closing + inputs.renovationCost;
   const initialCashOutlay = Math.max(totalCashRequired - bridgingAmount, 0);
+  const indexInitialInvestment = bridgingEnabled ? deposit : initialCashOutlay;
 
   const baseIncome1 = isCompanyBuyer ? 0 : (inputs.incomePerson1 ?? 0);
   const baseIncome2 = isCompanyBuyer ? 0 : (inputs.incomePerson2 ?? 0);
@@ -978,10 +979,10 @@ function calculateEquity(rawInputs) {
   let exitCumCash = 0;
   let exitCumCashAfterTax = 0;
   let exitNetSaleProceeds = 0;
-  let indexVal = initialCashOutlay;
+  let indexVal = indexInitialInvestment;
   let reinvestFundValue = 0;
   let investedRentValue = 0;
-  const indexBasis = initialCashOutlay;
+  const indexBasis = indexInitialInvestment;
   const reinvestShare = inputs.reinvestIncome
     ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
     : 0;
