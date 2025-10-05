@@ -2678,6 +2678,12 @@ export default function App() {
     : 'Property net after tax';
   const verifyingAuth = authStatus === 'verifying';
   const shouldShowAuthOverlay = remoteEnabled && (authStatus === 'unauthorized' || verifyingAuth);
+  const selectedScenario = useMemo(
+    () => savedScenarios.find((item) => item.id === selectedScenarioId) ?? null,
+    [savedScenarios, selectedScenarioId]
+  );
+  const canUpdateSelectedScenario = Boolean(selectedScenario);
+  const isUpdatingScenario = syncStatus === 'updating';
   const scenarioStatus = (() => {
     if (!remoteEnabled) {
       return { message: 'Scenarios are stored locally in your browser.', tone: 'neutral', retry: false };
@@ -3940,14 +3946,28 @@ export default function App() {
               <div className="rounded-2xl bg-white p-3 shadow-sm">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h2 className="text-base font-semibold">Deal Inputs</h2>
-                  <button
-                    type="button"
-                    onClick={handleResetInputs}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100"
-                    aria-label="Reset deal inputs"
-                  >
-                    <span aria-hidden="true">↻</span>
-                  </button>
+                  <div className="flex items-center gap-1">
+                    {canUpdateSelectedScenario ? (
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateScenario(selectedScenario.id)}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-label="Update saved scenario"
+                        title="Update saved scenario"
+                        disabled={isUpdatingScenario}
+                      >
+                        <span aria-hidden="true">💾</span>
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={handleResetInputs}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100"
+                      aria-label="Reset deal inputs"
+                    >
+                      <span aria-hidden="true">↻</span>
+                    </button>
+                  </div>
                 </div>
 
                 <CollapsibleSection
