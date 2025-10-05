@@ -200,7 +200,7 @@ const sanitizeCashflowColumns = (keys, fallbackKeys = DEFAULT_CASHFLOW_COLUMN_OR
   if (fallbackOutput.length > 0) {
     return fallbackOutput;
   }
-  return Array.from(CASHFLOW_COLUMN_KEY_SET);
+  return DEFAULT_CASHFLOW_COLUMN_ORDER;
 };
 
 const DEFAULT_CASHFLOW_COLUMNS = sanitizeCashflowColumns(DEFAULT_CASHFLOW_COLUMN_ORDER);
@@ -211,6 +211,7 @@ const SCENARIO_RATIO_PERCENT_COLUMNS = [
   { key: 'coc', label: 'Cash-on-cash' },
   { key: 'irr', label: 'IRR' },
 ];
+const SCENARIO_RATIO_KEY_SET = new Set(SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => option.key));
 const CASHFLOW_COLUMNS_STORAGE_KEY = 'qc_cashflow_columns';
 const DEFAULT_AUTH_CREDENTIALS = { username: SCENARIO_USERNAME, password: SCENARIO_PASSWORD };
 
@@ -239,6 +240,24 @@ const sortScenarios = (list) =>
       })
     : [];
 
+const mergeBooleanMap = (current, overrides) => {
+  if (!current || typeof current !== 'object') {
+    return current;
+  }
+  if (!overrides || typeof overrides !== 'object') {
+    return current;
+  }
+  let changed = false;
+  const next = { ...current };
+  Object.keys(current).forEach((key) => {
+    if (typeof overrides[key] === 'boolean' && next[key] !== overrides[key]) {
+      next[key] = overrides[key];
+      changed = true;
+    }
+  });
+  return changed ? next : current;
+};
+
 const normalizeScenarioRecord = (scenario) => {
   if (!scenario || typeof scenario !== 'object') {
     return null;
@@ -258,6 +277,12 @@ const normalizeScenarioRecord = (scenario) => {
     scenario.preview && typeof scenario.preview === 'object'
       ? { active: Boolean(scenario.preview.active) }
       : { active: false };
+  const rawUiState =
+    scenario.uiState ?? (typeof scenario.ui_state === 'object' ? scenario.ui_state : undefined);
+  const uiState =
+    rawUiState && typeof rawUiState === 'object'
+      ? JSON.parse(JSON.stringify(rawUiState))
+      : null;
   const normalized = {
     id: scenario.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     name,
@@ -269,6 +294,9 @@ const normalizeScenarioRecord = (scenario) => {
       scenario.cashflowColumns ?? scenario.data?.cashflowColumns ?? DEFAULT_CASHFLOW_COLUMNS
     ),
   };
+  if (uiState) {
+    normalized.uiState = uiState;
+  }
   return normalized;
 };
 
@@ -1477,8 +1505,125 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
   const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
+  const [urlSyncReady, setUrlSyncReady] = useState(false);
+  const urlSyncLastValueRef = useRef('');
 
   const remoteAvailable = remoteEnabled && authStatus === 'ready';
+
+  function applyUiState(uiState) {
+    if (!uiState || typeof uiState !== 'object') {
+      return;
+    }
+    const {
+      collapsedSections: collapsed,
+      activeSeries: active,
+      rateSeriesActive: rateActive,
+      cashflowSeriesActive: cashActive,
+      leverageSeriesActive: leverageActive,
+      roiHeatmapMetric: metric,
+      chartRange: chartRangeValue,
+      chartRangeTouched: chartRangeTouchedValue,
+      rateChartRange: rateChartRangeValue,
+      rateRangeTouched: rateRangeTouchedValue,
+      rateChartSettings: rateSettingsValue,
+      performanceYear: performanceYearValue,
+      scenarioAlignInputs: alignValue,
+      scenarioScatterXAxis: scatterX,
+      scenarioScatterYAxis: scatterY,
+      scenarioSort: sortValue,
+    } = uiState;
+    if (collapsed && typeof collapsed === 'object') {
+      setCollapsedSections((prev) => mergeBooleanMap(prev, collapsed));
+    }
+    if (active && typeof active === 'object') {
+      setActiveSeries((prev) => mergeBooleanMap(prev, active));
+    }
+    if (rateActive && typeof rateActive === 'object') {
+      setRateSeriesActive((prev) => mergeBooleanMap(prev, rateActive));
+    }
+    if (cashActive && typeof cashActive === 'object') {
+      setCashflowSeriesActive((prev) => mergeBooleanMap(prev, cashActive));
+    }
+    if (leverageActive && typeof leverageActive === 'object') {
+      setLeverageSeriesActive((prev) => mergeBooleanMap(prev, leverageActive));
+    }
+    if (typeof metric === 'string' && (metric === 'irr' || metric === 'roi')) {
+      setRoiHeatmapMetric(metric);
+    }
+    if (chartRangeValue && typeof chartRangeValue === 'object') {
+      const start = Number(chartRangeValue.start);
+      const end = Number(chartRangeValue.end);
+      if (Number.isFinite(start) && Number.isFinite(end)) {
+        setChartRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+      }
+    }
+    if (typeof chartRangeTouchedValue === 'boolean') {
+      setChartRangeTouched(chartRangeTouchedValue);
+    }
+    if (rateChartRangeValue && typeof rateChartRangeValue === 'object') {
+      const start = Number(rateChartRangeValue.start);
+      const end = Number(rateChartRangeValue.end);
+      if (Number.isFinite(start) && Number.isFinite(end)) {
+        setRateChartRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+      }
+    }
+    if (typeof rateRangeTouchedValue === 'boolean') {
+      setRateRangeTouched(rateRangeTouchedValue);
+    }
+    if (rateSettingsValue && typeof rateSettingsValue === 'object') {
+      setRateChartSettings((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        if (
+          typeof rateSettingsValue.showMovingAverage === 'boolean' &&
+          next.showMovingAverage !== rateSettingsValue.showMovingAverage
+        ) {
+          next.showMovingAverage = rateSettingsValue.showMovingAverage;
+          changed = true;
+        }
+        if (Number.isFinite(Number(rateSettingsValue.movingAverageWindow))) {
+          const windowValue = Number(rateSettingsValue.movingAverageWindow);
+          if (next.movingAverageWindow !== windowValue) {
+            next.movingAverageWindow = windowValue;
+            changed = true;
+          }
+        }
+        if (
+          typeof rateSettingsValue.showZeroBaseline === 'boolean' &&
+          next.showZeroBaseline !== rateSettingsValue.showZeroBaseline
+        ) {
+          next.showZeroBaseline = rateSettingsValue.showZeroBaseline;
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }
+    if (Number.isFinite(Number(performanceYearValue))) {
+      const sanitizedYear = Math.max(1, Math.round(Number(performanceYearValue)));
+      setPerformanceYear((prev) => (prev === sanitizedYear ? prev : sanitizedYear));
+    }
+    if (typeof alignValue === 'boolean') {
+      setScenarioAlignInputs(alignValue);
+    }
+    if (typeof scatterX === 'string' && SCENARIO_RATIO_KEY_SET.has(scatterX)) {
+      setScenarioScatterXAxis(scatterX);
+    }
+    if (typeof scatterY === 'string' && SCENARIO_RATIO_KEY_SET.has(scatterY)) {
+      setScenarioScatterYAxis(scatterY);
+    }
+    if (sortValue && typeof sortValue === 'object') {
+      const nextKey = typeof sortValue.key === 'string' ? sortValue.key : scenarioSort.key;
+      const nextDirection =
+        sortValue.direction === 'asc' || sortValue.direction === 'desc'
+          ? sortValue.direction
+          : scenarioSort.direction;
+      setScenarioSort((prev) =>
+        prev.key === nextKey && prev.direction === nextDirection
+          ? prev
+          : { key: nextKey, direction: nextDirection }
+      );
+    }
+  }
 
   const apiFetch = useCallback(
     async (path, options = {}, credentialsOverride) => {
@@ -1557,30 +1702,101 @@ export default function App() {
     return true;
   };
 
+  const handleResetInputs = () => {
+    setInputs({ ...DEFAULT_INPUTS });
+    clearPreview();
+    setGeocodeState({ status: 'idle', data: null, error: '' });
+  };
+
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') {
+      setUrlSyncReady(true);
+      return;
+    }
     const url = new URL(window.location.href);
     const encoded = url.searchParams.get('scenario');
-    if (!encoded) return;
-    const payload = decodeSharePayload(encoded);
-    if (payload && typeof payload === 'object' && payload.inputs) {
-      setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
-      setCashflowColumnKeys(sanitizeCashflowColumns(payload.cashflowColumns));
-      const targetUrl = payload.inputs?.propertyUrl ?? '';
-      const shouldActivatePreview =
-        (payload.preview && payload.preview.active) || (typeof targetUrl === 'string' && targetUrl.trim() !== '');
-      if (shouldActivatePreview) {
-        openPreviewForUrl(targetUrl, { force: true });
-      } else {
-        clearPreview();
+    if (encoded) {
+      const payload = decodeSharePayload(encoded);
+      if (payload && typeof payload === 'object') {
+        if (payload.inputs && typeof payload.inputs === 'object') {
+          setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
+        }
+        if (payload.cashflowColumns) {
+          setCashflowColumnKeys(sanitizeCashflowColumns(payload.cashflowColumns));
+        }
+        applyUiState(payload.uiState);
+        const targetUrl = payload.inputs?.propertyUrl ?? '';
+        const shouldActivatePreview =
+          (payload.preview && payload.preview.active) || (typeof targetUrl === 'string' && targetUrl.trim() !== '');
+        if (shouldActivatePreview) {
+          openPreviewForUrl(targetUrl, { force: true });
+        } else {
+          clearPreview();
+        }
+        if (payload.inputs) {
+          setShareNotice('Loaded shared scenario');
+        }
+        urlSyncLastValueRef.current = encoded;
       }
-      setShareNotice('Loaded shared scenario');
     }
-    url.searchParams.delete('scenario');
+    setUrlSyncReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!urlSyncReady) return;
+    if (typeof window === 'undefined') return;
+    const snapshot = buildScenarioSnapshot();
+    const payload = {
+      inputs: snapshot.data,
+      preview: snapshot.preview,
+      cashflowColumns: snapshot.cashflowColumns,
+      uiState: snapshot.uiState,
+    };
+    const encoded = encodeSharePayload(payload);
+    if (!encoded) return;
+    if (urlSyncLastValueRef.current === encoded) {
+      const current = new URL(window.location.href);
+      if (current.searchParams.get('scenario') === encoded) {
+        return;
+      }
+    }
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('scenario') === encoded) {
+      urlSyncLastValueRef.current = encoded;
+      return;
+    }
+    url.searchParams.set('scenario', encoded);
     const nextSearch = url.searchParams.toString();
     const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
     window.history.replaceState({}, document.title, nextUrl);
-  }, []);
+    urlSyncLastValueRef.current = encoded;
+  }, [
+    urlSyncReady,
+    inputs,
+    cashflowColumnKeys,
+    collapsedSections,
+    activeSeries,
+    rateSeriesActive,
+    cashflowSeriesActive,
+    leverageSeriesActive,
+    roiHeatmapMetric,
+    chartRange.start,
+    chartRange.end,
+    chartRangeTouched,
+    rateChartRange.start,
+    rateChartRange.end,
+    rateRangeTouched,
+    rateChartSettings.showMovingAverage,
+    rateChartSettings.movingAverageWindow,
+    rateChartSettings.showZeroBaseline,
+    performanceYear,
+    scenarioAlignInputs,
+    scenarioScatterXAxis,
+    scenarioScatterYAxis,
+    scenarioSort.key,
+    scenarioSort.direction,
+    previewActive,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -3222,6 +3438,44 @@ export default function App() {
     });
   };
 
+  function captureUiState() {
+    const fallbackEnd = Number(inputs.exitYear) || Number(DEFAULT_INPUTS.exitYear) || 0;
+    const sanitizeRange = (range) => {
+      const start = Number(range?.start);
+      const end = Number(range?.end);
+      return {
+        start: Number.isFinite(start) ? start : 0,
+        end: Number.isFinite(end) ? end : fallbackEnd,
+      };
+    };
+    const sanitizeWindow = Number(rateChartSettings.movingAverageWindow);
+    return {
+      collapsedSections: { ...collapsedSections },
+      activeSeries: { ...activeSeries },
+      rateSeriesActive: { ...rateSeriesActive },
+      cashflowSeriesActive: { ...cashflowSeriesActive },
+      leverageSeriesActive: { ...leverageSeriesActive },
+      roiHeatmapMetric,
+      chartRange: sanitizeRange(chartRange),
+      chartRangeTouched: Boolean(chartRangeTouched),
+      rateChartRange: sanitizeRange(rateChartRange),
+      rateRangeTouched: Boolean(rateRangeTouched),
+      rateChartSettings: {
+        showMovingAverage: Boolean(rateChartSettings.showMovingAverage),
+        movingAverageWindow: Number.isFinite(sanitizeWindow) ? sanitizeWindow : 0,
+        showZeroBaseline: Boolean(rateChartSettings.showZeroBaseline),
+      },
+      performanceYear: Math.max(1, Math.round(Number(performanceYear) || 1)),
+      scenarioAlignInputs: Boolean(scenarioAlignInputs),
+      scenarioScatterXAxis,
+      scenarioScatterYAxis,
+      scenarioSort: {
+        key: typeof scenarioSort.key === 'string' ? scenarioSort.key : 'savedAt',
+        direction: scenarioSort.direction === 'asc' ? 'asc' : 'desc',
+      },
+    };
+  }
+
   const buildScenarioSnapshot = () => {
     const sanitizedInputs = JSON.parse(
       JSON.stringify({
@@ -3237,6 +3491,7 @@ export default function App() {
       data: sanitizedInputs,
       preview: previewSnapshot,
       cashflowColumns: sanitizeCashflowColumns(cashflowColumnKeys),
+      uiState: captureUiState(),
     };
   };
 
@@ -3248,6 +3503,7 @@ export default function App() {
         inputs: snapshot.data,
         preview: snapshot.preview,
         cashflowColumns: snapshot.cashflowColumns,
+        uiState: snapshot.uiState,
       };
       const encoded = encodeSharePayload(payload);
       if (!encoded) {
@@ -3396,6 +3652,7 @@ export default function App() {
       data: snapshot.data,
       preview: snapshot.preview,
       cashflowColumns: snapshot.cashflowColumns,
+      uiState: snapshot.uiState,
     };
     integrateScenario(scenario, { select: true });
   };
@@ -3407,6 +3664,7 @@ export default function App() {
     setSelectedScenarioId(scenario.id);
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setCashflowColumnKeys(sanitizeCashflowColumns(scenario.cashflowColumns));
+    applyUiState(scenario.uiState);
     if (!options.preserveLoadPanel) {
       setShowLoadPanel(false);
     }
@@ -3504,6 +3762,7 @@ export default function App() {
         data: snapshot.data,
         preview: snapshot.preview,
         cashflowColumns: snapshot.cashflowColumns,
+        uiState: snapshot.uiState,
         savedAt: updatedAt,
       },
       { select: selectedScenarioId === id }
@@ -3679,7 +3938,17 @@ export default function App() {
           <div className="grid grid-cols-1 gap-4 md:min-h-[calc(100vh-8rem)] md:grid-cols-3 md:items-stretch">
             <section className="space-y-3 md:col-span-1 md:self-start md:pr-2 md:pb-4">
               <div className="rounded-2xl bg-white p-3 shadow-sm">
-                <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold">Deal Inputs</h2>
+                  <button
+                    type="button"
+                    onClick={handleResetInputs}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100"
+                    aria-label="Reset deal inputs"
+                  >
+                    <span aria-hidden="true">↻</span>
+                  </button>
+                </div>
 
                 <CollapsibleSection
                   title="Property info"
