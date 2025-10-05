@@ -896,10 +896,18 @@ function calculateEquity(rawInputs) {
   const totalMonths = inputs.exitYear * 12;
 
   for (let month = 1; month <= totalMonths; month++) {
+    const mortgageMonth = bridgingEnabled ? month - bridgingLoanTermMonths : month;
+    if (bridgingEnabled && mortgageMonth <= 0) {
+      continue;
+    }
+
     const yearIndex = Math.ceil(month / 12) - 1;
     if (yearIndex >= annualDebtService.length) break;
 
-    if (inputs.loanType !== 'interest_only' && (month > inputs.mortgageYears * 12 || balance <= 0)) {
+    if (
+      inputs.loanType !== 'interest_only' &&
+      (mortgageMonth > inputs.mortgageYears * 12 || balance <= 0)
+    ) {
       break;
     }
 
@@ -1121,7 +1129,8 @@ function calculateEquity(rawInputs) {
     annualCashflowsPreTax.push(cash);
     annualCashflowsAfterTax.push(afterTaxCash);
 
-    const monthsPaid = Math.min(y * 12, inputs.mortgageYears * 12);
+    const monthsPaidRaw = Math.max(0, y * 12 - (bridgingEnabled ? bridgingLoanTermMonths : 0));
+    const monthsPaid = Math.min(monthsPaidRaw, inputs.mortgageYears * 12);
     const remainingLoanYear =
       inputs.loanType === 'interest_only'
         ? loan
@@ -3940,7 +3949,7 @@ export default function App() {
                     {inputs.useBridgingLoan ? (
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
-                        {pctInput('bridgingLoanInterestRate', 'Bridging rate (monthly) %', 0.001)}
+                        {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
                       </div>
                     ) : null}
                     {inputs.useBridgingLoan ? (
