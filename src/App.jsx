@@ -291,6 +291,9 @@ const DEFAULT_INPUTS = {
   interestRate: 0.055,
   mortgageYears: 30,
   loanType: 'repayment',
+  useBridgingLoan: false,
+  bridgingLoanTermMonths: 12,
+  bridgingLoanInterestRate: 0.08,
   monthlyRent: 800,
   vacancyPct: 0.05,
   mgmtPct: 0.1,
@@ -858,6 +861,21 @@ function calculateEquity(rawInputs) {
       ? (loan * inputs.interestRate) / 12
       : monthlyMortgagePayment({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears });
 
+  const bridgingEnabled = Boolean(inputs.useBridgingLoan);
+  const rawBridgingTerm = Number(inputs.bridgingLoanTermMonths ?? 0);
+  const bridgingTermMonths =
+    bridgingEnabled && Number.isFinite(rawBridgingTerm)
+      ? Math.max(0, Math.round(rawBridgingTerm))
+      : 0;
+  const rawBridgingRate = Number(inputs.bridgingLoanInterestRate ?? 0);
+  const bridgingRate =
+    bridgingEnabled && Number.isFinite(rawBridgingRate)
+      ? Math.max(0, rawBridgingRate)
+      : 0;
+  const bridgingAmount = bridgingEnabled ? deposit : 0;
+  const totalCashRequired = deposit + closing + inputs.renovationCost;
+  const initialCashOutlay = Math.max(totalCashRequired - bridgingAmount, 0);
+
   const baseIncome1 = isCompanyBuyer ? 0 : (inputs.incomePerson1 ?? 0);
   const baseIncome2 = isCompanyBuyer ? 0 : (inputs.incomePerson2 ?? 0);
   const sharePct1 = Number.isFinite(inputs.ownershipShare1) ? inputs.ownershipShare1 : 0.5;
@@ -904,6 +922,26 @@ function calculateEquity(rawInputs) {
     annualPrincipal[yearIndex] += principalPaid;
   }
 
+  if (bridgingEnabled && bridgingAmount > 0 && bridgingTermMonths > 0) {
+    const monthsToModel = Math.min(bridgingTermMonths, inputs.exitYear * 12);
+    const bridgingMonthlyRate = bridgingRate / 12;
+    const monthlyInterest = bridgingMonthlyRate > 0 ? bridgingAmount * bridgingMonthlyRate : 0;
+    for (let month = 1; month <= monthsToModel; month++) {
+      const yearIndex = Math.ceil(month / 12) - 1;
+      if (yearIndex < 0 || yearIndex >= annualDebtService.length) {
+        continue;
+      }
+      if (monthlyInterest !== 0) {
+        annualDebtService[yearIndex] += monthlyInterest;
+        annualInterest[yearIndex] += monthlyInterest;
+      }
+      if (month === monthsToModel) {
+        annualDebtService[yearIndex] += bridgingAmount;
+        annualPrincipal[yearIndex] += bridgingAmount;
+      }
+    }
+  }
+
   const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
   const variableOpex = inputs.monthlyRent * 12 * (inputs.mgmtPct + inputs.repairsPct);
   const fixedOpex = inputs.insurancePerYear + inputs.otherOpexPerYear;
@@ -913,9 +951,9 @@ function calculateEquity(rawInputs) {
   const cashflowYear1 = noiYear1 - debtServiceYear1;
 
   const cap = noiYear1 / inputs.purchasePrice;
-  const cashIn = deposit + closing + inputs.renovationCost;
+  const cashIn = totalCashRequired;
   const projectCost = inputs.purchasePrice + closing + inputs.renovationCost;
-  const coc = cashflowYear1 / cashIn;
+  const coc = cashIn === 0 ? 0 : cashflowYear1 / cashIn;
   const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
 
   const months = Math.min(inputs.exitYear * 12, inputs.mortgageYears * 12);
@@ -928,7 +966,7 @@ function calculateEquity(rawInputs) {
   const sellingCosts = futureValue * inputs.sellingCostsPct;
 
   const cf = [];
-  const initialOutlay = -cashIn;
+  const initialOutlay = -initialCashOutlay;
   cf.push(initialOutlay);
   const irrCashflows = [initialOutlay];
 
@@ -940,10 +978,10 @@ function calculateEquity(rawInputs) {
   let exitCumCash = 0;
   let exitCumCashAfterTax = 0;
   let exitNetSaleProceeds = 0;
-  let indexVal = cashIn;
+  let indexVal = initialCashOutlay;
   let reinvestFundValue = 0;
   let investedRentValue = 0;
-  const indexBasis = cashIn;
+  const indexBasis = initialCashOutlay;
   const reinvestShare = inputs.reinvestIncome
     ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
     : 0;
@@ -1003,6 +1041,11 @@ function calculateEquity(rawInputs) {
       purchasePrice: inputs.purchasePrice,
       projectCost,
       cashInvested: cashIn,
+      netInitialOutlay: initialCashOutlay,
+      totalCashRequired,
+      bridgingLoanAmount: bridgingAmount,
+      bridgingLoanTermMonths,
+      bridgingLoanInterestRate: bridgingRate,
       initialOutlay,
       yearly: {
         gross: 0,
@@ -1232,6 +1275,11 @@ function calculateEquity(rawInputs) {
     cf,
     chart,
     cashIn,
+    initialCashOutlay,
+    totalCashRequired,
+    bridgingLoanAmount: bridgingAmount,
+    bridgingLoanTermMonths,
+    bridgingLoanInterestRate: bridgingRate,
     projectCost,
     yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
     indexValEnd: indexVal,
@@ -1277,6 +1325,7 @@ export default function App() {
     () => SCENARIO_RATIO_PERCENT_COLUMNS[1]?.key ?? SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'irr'
   );
   const [scenarioAlignInputs, setScenarioAlignInputs] = useState(false);
+  const [scenarioSort, setScenarioSort] = useState({ key: 'savedAt', direction: 'desc' });
   const [previewActive, setPreviewActive] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewStatus, setPreviewStatus] = useState('idle');
@@ -1747,6 +1796,58 @@ export default function App() {
       }),
     [inputs, savedScenarios, scenarioAlignInputs]
   );
+  const scenarioTableSorted = useMemo(() => {
+    if (scenarioTableData.length === 0) {
+      return [];
+    }
+    const rows = [...scenarioTableData];
+    const { key, direction } = scenarioSort;
+    const multiplier = direction === 'asc' ? 1 : -1;
+    const getTimestamp = (row) => {
+      const source = row?.scenario?.savedAt ?? row?.scenario?.createdAt ?? '';
+      if (!source) {
+        return 0;
+      }
+      const value = new Date(source).getTime();
+      return Number.isFinite(value) ? value : 0;
+    };
+    rows.sort((a, b) => {
+      if (key === 'name') {
+        const aName = (a?.scenario?.name ?? '').toLowerCase();
+        const bName = (b?.scenario?.name ?? '').toLowerCase();
+        if (aName === bName) {
+          return getTimestamp(b) - getTimestamp(a);
+        }
+        return aName.localeCompare(bName) * multiplier;
+      }
+      if (key === 'savedAt') {
+        const diff = getTimestamp(a) - getTimestamp(b);
+        if (diff === 0) {
+          const aName = (a?.scenario?.name ?? '').toLowerCase();
+          const bName = (b?.scenario?.name ?? '').toLowerCase();
+          return aName.localeCompare(bName);
+        }
+        return diff * multiplier;
+      }
+      if (key === 'propertyNetAfterTax') {
+        const aValue = Number(a?.metrics?.propertyNetWealthAfterTax) || 0;
+        const bValue = Number(b?.metrics?.propertyNetWealthAfterTax) || 0;
+        const diff = aValue - bValue;
+        if (diff === 0) {
+          return getTimestamp(b) - getTimestamp(a);
+        }
+        return diff * multiplier;
+      }
+      const aValue = Number(a?.ratios?.[key]) || 0;
+      const bValue = Number(b?.ratios?.[key]) || 0;
+      const diff = aValue - bValue;
+      if (diff === 0) {
+        return getTimestamp(b) - getTimestamp(a);
+      }
+      return diff * multiplier;
+    });
+    return rows;
+  }, [scenarioTableData, scenarioSort]);
   const scenarioScatterData = useMemo(() => {
     if (scenarioTableData.length === 0) {
       return [];
@@ -2987,6 +3088,35 @@ export default function App() {
     }));
   };
 
+  const handleScenarioSort = (key) => {
+    setScenarioSort((prev) => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'desc' ? 'asc' : 'desc' };
+      }
+      return { key, direction: 'desc' };
+    });
+  };
+
+  const renderScenarioHeader = (label, key, align = 'left') => {
+    const active = scenarioSort.key === key;
+    const direction = active ? scenarioSort.direction : 'desc';
+    const icon = active ? (direction === 'asc' ? '↑' : '↓') : '↕';
+    const alignmentClasses =
+      align === 'right' ? 'justify-end text-right' : 'justify-start text-left';
+    return (
+      <button
+        type="button"
+        onClick={() => handleScenarioSort(key)}
+        className={`flex w-full items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 ${alignmentClasses}`}
+      >
+        <span className={align === 'right' ? 'ml-auto' : ''}>{label}</span>
+        <span aria-hidden="true" className="text-[10px] text-slate-400">
+          {icon}
+        </span>
+      </button>
+    );
+  };
+
   const pctInput = (k, label, step = 0.005) => (
     <div className="flex flex-col gap-1">
       <label className="text-xs font-medium text-slate-600">{label}</label>
@@ -3592,7 +3722,7 @@ export default function App() {
                 <div className="mt-2 space-y-1 text-[11px] leading-snug text-slate-500">
                   <div>
                     {previewActive
-                      ? 'The live listing below will be stored with saved scenarios and share links.'
+                      ? 'Listing preview loaded below.'
                       : 'Choose “Preview” to open the listing below; the frame is saved with scenarios and share links.'}
                   </div>
                   {previewLoading ? <div>Loading preview…</div> : null}
@@ -3773,6 +3903,32 @@ export default function App() {
                     </div>
                     <div className="mt-1 text-[11px] text-slate-500">Interest‑only keeps the loan balance unchanged until exit; debt service = interest only.</div>
                   </div>
+                  <div className="col-span-2 mt-2 space-y-2">
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(inputs.useBridgingLoan)}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            useBridgingLoan: event.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Use bridging loan for deposit</span>
+                    </label>
+                    {inputs.useBridgingLoan ? (
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
+                        {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
+                      </div>
+                    ) : null}
+                    {inputs.useBridgingLoan ? (
+                      <p className="text-[11px] text-slate-500">
+                        Deposit funds are covered by the bridge during the selected term before reverting to the standard mortgage.
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
                 </CollapsibleSection>
 
@@ -3841,8 +3997,29 @@ export default function App() {
                 <Line label="Stamp Duty (est.)" value={currency(equity.stampDuty)} />
                 <Line label="Other closing costs" value={currency(equity.otherClosing)} />
                 <Line label="Renovation (upfront)" value={currency(inputs.renovationCost)} />
+                {equity.bridgingLoanAmount > 0 ? (
+                  <Line
+                    label="Bridging loan (deposit financed)"
+                    value={currency(-equity.bridgingLoanAmount)}
+                  />
+                ) : null}
                 <hr className="my-2" />
-                <Line label="Total cash in" value={currency(equity.cashIn)} bold />
+                <Line
+                  label={
+                    equity.bridgingLoanAmount > 0
+                      ? 'Net cash in (after bridging)'
+                      : 'Total cash in'
+                  }
+                  value={currency(
+                    Number.isFinite(equity.initialCashOutlay)
+                      ? equity.initialCashOutlay
+                      : equity.cashIn
+                  )}
+                  bold
+                />
+                {equity.bridgingLoanAmount > 0 ? (
+                  <Line label="Total cash required" value={currency(equity.cashIn)} />
+                ) : null}
               </SummaryCard>
 
               <SummaryCard
@@ -5824,18 +6001,61 @@ export default function App() {
                     <table className="min-w-full divide-y divide-slate-200 text-sm">
                       <thead className="bg-slate-50 text-slate-600">
                         <tr>
-                          <th className="px-4 py-2 text-left font-semibold">Scenario</th>
-                          <th className="px-4 py-2 text-left font-semibold">Saved</th>
-                          <th className="px-4 py-2 text-right font-semibold">{propertyNetAfterTaxLabel}</th>
+                          <th
+                            className="px-4 py-2 text-left font-semibold"
+                            aria-sort={
+                              scenarioSort.key === 'name'
+                                ? scenarioSort.direction === 'asc'
+                                  ? 'ascending'
+                                  : 'descending'
+                                : 'none'
+                            }
+                          >
+                            {renderScenarioHeader('Scenario', 'name')}
+                          </th>
+                          <th
+                            className="px-4 py-2 text-left font-semibold"
+                            aria-sort={
+                              scenarioSort.key === 'savedAt'
+                                ? scenarioSort.direction === 'asc'
+                                  ? 'ascending'
+                                  : 'descending'
+                                : 'none'
+                            }
+                          >
+                            {renderScenarioHeader('Saved', 'savedAt')}
+                          </th>
+                          <th
+                            className="px-4 py-2 text-right font-semibold"
+                            aria-sort={
+                              scenarioSort.key === 'propertyNetAfterTax'
+                                ? scenarioSort.direction === 'asc'
+                                  ? 'ascending'
+                                  : 'descending'
+                                : 'none'
+                            }
+                          >
+                            {renderScenarioHeader(propertyNetAfterTaxLabel, 'propertyNetAfterTax', 'right')}
+                          </th>
                           {SCENARIO_RATIO_PERCENT_COLUMNS.map((column) => (
-                            <th key={`header-${column.key}`} className="px-4 py-2 text-right font-semibold">
-                              {column.label}
+                            <th
+                              key={`header-${column.key}`}
+                              className="px-4 py-2 text-right font-semibold"
+                              aria-sort={
+                                scenarioSort.key === column.key
+                                  ? scenarioSort.direction === 'asc'
+                                    ? 'ascending'
+                                    : 'descending'
+                                  : 'none'
+                              }
+                            >
+                              {renderScenarioHeader(column.label, column.key, 'right')}
                             </th>
                           ))}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200">
-                        {scenarioTableData.map(({ scenario, metrics, ratios }) => (
+                        {scenarioTableSorted.map(({ scenario, metrics, ratios }) => (
                           <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
                             <td className="px-4 py-2 font-semibold text-slate-800">{scenario.name}</td>
                             <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
