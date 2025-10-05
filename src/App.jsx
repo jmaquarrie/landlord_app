@@ -13,6 +13,7 @@ import {
   CartesianGrid,
   ReferenceLine,
   ReferenceDot,
+  ReferenceArea,
   Line as RechartsLine,
 } from 'recharts';
 import html2canvas from 'html2canvas';
@@ -124,6 +125,8 @@ const HEATMAP_COLOR_NEUTRAL = [148, 163, 184];
 const LEVERAGE_LTV_OPTIONS = Array.from({ length: 18 }, (_, index) =>
   Number((0.1 + index * 0.05).toFixed(2))
 );
+const LEVERAGE_SAFE_MAX_LTV = 0.75;
+const LEVERAGE_MAX_LTV = LEVERAGE_LTV_OPTIONS[LEVERAGE_LTV_OPTIONS.length - 1];
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -4516,6 +4519,18 @@ export default function App() {
                                   />
                                 )}
                               />
+                              {LEVERAGE_MAX_LTV > LEVERAGE_SAFE_MAX_LTV ? (
+                                <ReferenceArea
+                                  x1={LEVERAGE_SAFE_MAX_LTV}
+                                  x2={LEVERAGE_MAX_LTV}
+                                  yAxisId="left"
+                                  y1="dataMin"
+                                  y2="dataMax"
+                                  strokeOpacity={0}
+                                  fill="#f1f5f9"
+                                  fillOpacity={0.35}
+                                />
+                              ) : null}
                               <RechartsLine
                                 type="monotone"
                                 dataKey="irr"
