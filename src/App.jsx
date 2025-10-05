@@ -293,7 +293,7 @@ const DEFAULT_INPUTS = {
   loanType: 'repayment',
   useBridgingLoan: false,
   bridgingLoanTermMonths: 12,
-  bridgingLoanInterestRate: 0.08,
+  bridgingLoanInterestRate: 0.008,
   monthlyRent: 800,
   vacancyPct: 0.05,
   mgmtPct: 0.1,
@@ -868,7 +868,9 @@ function calculateEquity(rawInputs) {
       ? Math.max(0, Math.round(rawBridgingTerm))
       : 0;
   const rawBridgingRate = Number(inputs.bridgingLoanInterestRate ?? 0);
-  const bridgingRate =
+  // Bridging lenders typically quote monthly interest rates, so we treat the
+  // stored percentage as a per-month decimal.
+  const bridgingMonthlyRate =
     bridgingEnabled && Number.isFinite(rawBridgingRate)
       ? Math.max(0, rawBridgingRate)
       : 0;
@@ -926,8 +928,8 @@ function calculateEquity(rawInputs) {
 
   if (bridgingEnabled && bridgingAmount > 0 && bridgingLoanTermMonths > 0) {
     const monthsToModel = Math.min(bridgingLoanTermMonths, inputs.exitYear * 12);
-    const bridgingMonthlyRate = bridgingRate / 12;
-    const monthlyInterest = bridgingMonthlyRate > 0 ? bridgingAmount * bridgingMonthlyRate : 0;
+    const monthlyInterest =
+      bridgingMonthlyRate > 0 ? bridgingAmount * bridgingMonthlyRate : 0;
     for (let month = 1; month <= monthsToModel; month++) {
       const yearIndex = Math.ceil(month / 12) - 1;
       if (yearIndex < 0 || yearIndex >= annualDebtService.length) {
@@ -1050,7 +1052,7 @@ function calculateEquity(rawInputs) {
       totalCashRequired,
       bridgingLoanAmount: bridgingAmount,
       bridgingLoanTermMonths,
-      bridgingLoanInterestRate: bridgingRate,
+      bridgingLoanInterestRate: bridgingMonthlyRate,
       initialOutlay,
       yearly: {
         gross: 0,
@@ -1290,7 +1292,7 @@ function calculateEquity(rawInputs) {
     totalCashRequired,
     bridgingLoanAmount: bridgingAmount,
     bridgingLoanTermMonths,
-    bridgingLoanInterestRate: bridgingRate,
+    bridgingLoanInterestRate: bridgingMonthlyRate,
     projectCost,
     yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
     indexValEnd: indexVal,
@@ -3938,7 +3940,7 @@ export default function App() {
                     {inputs.useBridgingLoan ? (
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
-                        {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
+                        {pctInput('bridgingLoanInterestRate', 'Bridging rate (monthly) %', 0.001)}
                       </div>
                     ) : null}
                     {inputs.useBridgingLoan ? (
