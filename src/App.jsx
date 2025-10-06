@@ -17,6 +17,7 @@ import {
   Line as RechartsLine,
   ScatterChart,
   Scatter,
+  Cell,
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -2103,10 +2104,11 @@ export default function App() {
           y: Number.isFinite(y) ? y : null,
           propertyNetAfterTax,
           savedAt: scenario.savedAt,
+          isActive: scenario.id === selectedScenarioId,
         };
       })
       .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-  }, [scenarioScatterXAxis, scenarioScatterYAxis, scenarioTableData]);
+  }, [scenarioScatterXAxis, scenarioScatterYAxis, scenarioTableData, selectedScenarioId]);
   const scenarioScatterXAxisOption = useMemo(
     () =>
       SCENARIO_RATIO_PERCENT_COLUMNS.find((option) => option.key === scenarioScatterXAxis) ??
@@ -6312,7 +6314,14 @@ export default function App() {
                                   });
                                 }
                               }}
-                            />
+                            >
+                              {scenarioScatterData.map((point) => (
+                                <Cell
+                                  key={`scatter-${point.id}`}
+                                  fill={point.isActive ? '#16a34a' : '#2563eb'}
+                                />
+                              ))}
+                            </Scatter>
                           </ScatterChart>
                         </ResponsiveContainer>
                       )}
@@ -6378,7 +6387,23 @@ export default function App() {
                       <tbody className="divide-y divide-slate-200">
                         {scenarioTableSorted.map(({ scenario, metrics, ratios }) => (
                           <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
-                            <td className="px-4 py-2 font-semibold text-slate-800">{scenario.name}</td>
+                            <td className="px-4 py-2 font-semibold">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleLoadScenario(scenario.id, {
+                                    closeTableOnLoad: true,
+                                  })
+                                }
+                                className={`text-left transition hover:text-indigo-700 hover:underline ${
+                                  selectedScenarioId === scenario.id
+                                    ? 'text-indigo-700 underline'
+                                    : 'text-slate-800'
+                                }`}
+                              >
+                                {scenario.name}
+                              </button>
+                            </td>
                             <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
                             <td className="px-4 py-2 text-right text-slate-700">
                               {currency(metrics.propertyNetWealthAfterTax)}
