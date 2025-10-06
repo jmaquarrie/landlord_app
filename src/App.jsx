@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -72,6 +72,7 @@ let shortIoDomainCache = SHORT_IO_CONFIGURED_DOMAIN;
 let shortIoDomainLookupPromise = null;
 const SHORT_IO_ENABLED = SHORT_IO_API_KEY !== '';
 const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const KnowledgeBaseContext = createContext(null);
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
@@ -462,6 +463,442 @@ const KEY_RATIO_TOOLTIPS = {
   dscr: 'Debt service coverage ratio: Year 1 NOI divided by annual debt service.',
   mortgage: 'Estimated monthly mortgage payment for the modeled loan.',
   irr: 'Internal rate of return based on annual cash flows and sale proceeds through the modeled exit year.',
+};
+
+const KNOWLEDGE_GROUPS = {
+  cashNeeded: {
+    label: 'Cash needed',
+    description: 'Upfront cash requirements to acquire and prepare the property.',
+    metrics: [
+      'deposit',
+      'ltv',
+      'stampDuty',
+      'closingCosts',
+      'renovationCost',
+      'bridgingLoanAmount',
+      'netCashIn',
+      'totalCashRequired',
+    ],
+  },
+  performance: {
+    label: 'Annual performance',
+    description: 'Income, operating costs, financing costs, and after-tax cash flow for the selected year.',
+    metrics: [
+      'grossRent',
+      'operatingExpenses',
+      'noi',
+      'mortgageDebtService',
+      'bridgingDebtService',
+      'cashflowPreTax',
+      'rentalTax',
+      'cashflowAfterTax',
+    ],
+  },
+  keyRatios: {
+    label: 'Key ratios',
+    description: 'Return and coverage ratios that summarise deal quality.',
+    metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrHurdle', 'dscr', 'mortgagePayment'],
+  },
+  exitComparison: {
+    label: 'Exit comparison',
+    description: 'Compares exit-year wealth between the property and the index fund alternative.',
+    metrics: ['indexFundValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'rentalTaxTotal'],
+  },
+  exit: {
+    label: 'Equity at exit',
+    description: 'Breakdown of sale proceeds and remaining debt at the chosen exit year.',
+    metrics: ['futureValue', 'remainingLoan', 'sellingCosts', 'estimatedEquity'],
+  },
+  wealthTrajectory: {
+    label: 'Wealth trajectory',
+    description: 'Tracks how equity builds relative to the index fund over time.',
+    metrics: ['propertyValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'reinvestFund', 'indexFundValue'],
+  },
+  rateTrends: {
+    label: 'Return ratios over time',
+    description: 'Shows how return ratios evolve through the hold period.',
+    metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrHurdle', 'npvToDate'],
+  },
+  cashflowBars: {
+    label: 'Annual cash flow',
+    description: 'Highlights how rent covers expenses, debt service, and tax each year.',
+    metrics: ['grossRent', 'operatingExpenses', 'mortgageDebtService', 'bridgingDebtService', 'cashflowAfterTax'],
+  },
+  equityGrowth: {
+    label: 'Equity growth',
+    description: 'Splits the property value between lender balance and owned equity.',
+    metrics: ['propertyValue', 'loanBalance', 'ownerEquity'],
+  },
+  interestSplit: {
+    label: 'Interest vs principal split',
+    description: 'Illustrates how each year’s payment shifts from interest to principal.',
+    metrics: ['interestPaidYear1', 'principalPaidYear1'],
+  },
+  leverage: {
+    label: 'Leverage multiplier',
+    description: 'Stress-tests how returns and profit change with different loan-to-value ratios.',
+    metrics: ['ltv', 'irr', 'roi', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+  },
+  roiHeatmap: {
+    label: 'ROI vs rental yield heatmap',
+    description: 'Shows how rent yield and capital growth assumptions impact IRR and ROI.',
+    metrics: ['rentalYield', 'yieldOnCost', 'irr', 'roi', 'annualAppreciation', 'rentGrowth'],
+  },
+};
+
+const KNOWLEDGE_METRICS = {
+  deposit: {
+    label: 'Deposit',
+    groups: ['cashNeeded'],
+    description: 'Equity paid upfront toward the purchase price.',
+    calculation: 'Purchase price × deposit %.',
+    importance: 'Sets the initial equity stake and determines the loan-to-value ratio offered by lenders.',
+    unit: 'currency',
+  },
+  ltv: {
+    label: 'Loan-to-value (LTV)',
+    groups: ['cashNeeded', 'leverage'],
+    description: 'Share of the purchase that is financed by debt instead of cash.',
+    calculation: '1 − deposit %.',
+    importance: 'Higher leverage boosts returns when the deal performs but increases risk and borrowing costs.',
+    unit: 'percent',
+  },
+  stampDuty: {
+    label: 'Stamp Duty Land Tax',
+    groups: ['cashNeeded'],
+    description: 'Estimated SDLT payable on completion based on buyer profile and purchase price.',
+    calculation: 'Band-based SDLT calculation for the property value and buyer type.',
+    importance: 'A major upfront cost that differs for companies, additional properties, and first-time buyers.',
+    unit: 'currency',
+  },
+  closingCosts: {
+    label: 'Other closing costs',
+    groups: ['cashNeeded'],
+    description: 'Legal fees, broker charges, surveys, and miscellaneous transaction costs.',
+    calculation: 'Purchase price × closing cost %.',
+    importance: 'Accounts for frictional costs that need to be funded alongside the deposit.',
+    unit: 'currency',
+  },
+  renovationCost: {
+    label: 'Renovation budget',
+    groups: ['cashNeeded'],
+    description: 'Upfront capital allocated to refurbishment or initial works.',
+    calculation: 'User-specified renovation spend before any financing.',
+    importance: 'Impacts total project cost and the pace at which the property can be rented.',
+    unit: 'currency',
+  },
+  bridgingLoanAmount: {
+    label: 'Bridging loan cover',
+    groups: ['cashNeeded'],
+    description: 'Short-term finance used to fund the deposit until the long-term mortgage completes.',
+    calculation: 'Deposit amount when bridging finance is enabled.',
+    importance: 'Reduces cash required on day one but adds temporary interest costs that must be budgeted.',
+    unit: 'currency',
+  },
+  netCashIn: {
+    label: 'Net cash in',
+    groups: ['cashNeeded'],
+    description: 'Investor cash committed after accounting for any bridging funds.',
+    calculation: 'Total cash required − bridging loan amount.',
+    importance: 'Represents the equity tied up in the project until the bridge is refinanced.',
+    unit: 'currency',
+  },
+  totalCashRequired: {
+    label: 'Total cash required',
+    groups: ['cashNeeded'],
+    description: 'Sum of deposit, stamp duty, closing costs, and renovation spend before financing.',
+    calculation: 'Deposit + stamp duty + other closing costs + renovation budget.',
+    importance: 'Sets the total capital needed to complete the purchase and works.',
+    unit: 'currency',
+  },
+  grossRent: {
+    label: 'Gross rent (vacancy adjusted)',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Expected rent collected in the selected year after accounting for vacancy.',
+    calculation: 'Monthly rent × 12 × (1 − vacancy %).',
+    importance: 'Primary income stream that must cover operating costs and debt service.',
+    unit: 'currency',
+  },
+  operatingExpenses: {
+    label: 'Operating expenses',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Management, repairs, insurance, and other annual running costs.',
+    calculation: 'Variable operating % of rent plus fixed annual expenses.',
+    importance: 'Higher expenses reduce net operating income and available cash flow.',
+    unit: 'currency',
+  },
+  noi: {
+    label: 'Net operating income (NOI)',
+    groups: ['performance'],
+    description: 'Income after operating expenses but before debt service and tax.',
+    calculation: 'Gross rent − operating expenses.',
+    importance: 'Foundation for cap rate, DSCR, and cash flow analysis.',
+    unit: 'currency',
+  },
+  mortgageDebtService: {
+    label: 'Debt service',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Annual mortgage payments on the long-term loan.',
+    calculation: 'Total annual debt service − bridging interest payments.',
+    importance: 'Key cash outflow that determines leverage sustainability and DSCR.',
+    unit: 'currency',
+  },
+  bridgingDebtService: {
+    label: 'Debt service (bridging)',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Interest-only payments on the bridging loan prior to refinancing.',
+    calculation: 'Bridging balance × monthly bridge rate × term months within the year.',
+    importance: 'Temporary cost that can erode early-year cash flow until permanent financing begins.',
+    unit: 'currency',
+  },
+  cashflowPreTax: {
+    label: 'Cash flow (pre-tax)',
+    groups: ['performance'],
+    description: 'Net income after expenses and debt service but before tax.',
+    calculation: 'NOI − total debt service.',
+    importance: 'Indicates the property’s ability to generate distributable cash prior to taxes.',
+    unit: 'currency',
+  },
+  rentalTax: {
+    label: 'Rental income tax',
+    groups: ['performance'],
+    description: 'Income or corporation tax due on rental profits for the selected year.',
+    calculation: 'Taxed on annual cash flow according to buyer type and personal allowances.',
+    importance: 'Reduces distributable cash and varies materially between company and personal ownership.',
+    unit: 'currency',
+  },
+  cashflowAfterTax: {
+    label: 'Cash flow (after tax)',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Net cash retained after servicing debt and paying tax.',
+    calculation: 'Pre-tax cash flow − rental tax.',
+    importance: 'Shows real cash yield to the investor for the selected year.',
+    unit: 'currency',
+  },
+  cap: {
+    label: 'Cap rate',
+    groups: ['keyRatios', 'rateTrends'],
+    description: 'Income yield relative to purchase price ignoring financing.',
+    calculation: 'Year 1 NOI ÷ purchase price.',
+    importance: 'Benchmark for comparing property income streams across markets.',
+    unit: 'percent',
+  },
+  rentalYield: {
+    label: 'Rental yield',
+    groups: ['keyRatios', 'rateTrends', 'roiHeatmap'],
+    description: 'Rent collected after vacancy as a share of purchase price.',
+    calculation: 'Gross rent after vacancy ÷ purchase price.',
+    importance: 'Quick indicator of income intensity and sensitivity to rent changes.',
+    unit: 'percent',
+  },
+  yoc: {
+    label: 'Yield on cost',
+    groups: ['keyRatios', 'rateTrends', 'roiHeatmap'],
+    description: 'NOI relative to the total project cost including works.',
+    calculation: 'Year 1 NOI ÷ (purchase price + closing + renovation).',
+    importance: 'Captures the return after considering improvement spend.',
+    unit: 'percent',
+  },
+  coc: {
+    label: 'Cash-on-cash return',
+    groups: ['keyRatios', 'rateTrends'],
+    description: 'Year-one cash flow after debt divided by total cash invested.',
+    calculation: 'Year 1 after-tax cash flow ÷ total cash required.',
+    importance: 'Measures how quickly invested cash is recouped through annual distributions.',
+    unit: 'percent',
+  },
+  irr: {
+    label: 'Internal rate of return (IRR)',
+    groups: ['keyRatios', 'rateTrends', 'leverage', 'roiHeatmap'],
+    description: 'Discount rate that sets the net present value of projected cash flows and sale proceeds to zero.',
+    calculation: 'Solve for IRR using annual cash flows and exit proceeds through the hold period.',
+    importance: 'Captures time value of money and overall deal efficiency.',
+    unit: 'percent',
+  },
+  irrHurdle: {
+    label: 'IRR hurdle',
+    groups: ['keyRatios', 'rateTrends', 'leverage'],
+    description: 'Target IRR threshold used to benchmark performance.',
+    calculation: 'User-defined hurdle rate.',
+    importance: 'Helps decide whether projected returns compensate for the risk taken.',
+    unit: 'percent',
+  },
+  dscr: {
+    label: 'Debt service coverage ratio (DSCR)',
+    groups: ['keyRatios'],
+    description: 'Measures headroom between NOI and annual debt obligations.',
+    calculation: 'Year 1 NOI ÷ annual debt service.',
+    importance: 'Key underwriting metric for lenders and a signal of cash flow resilience.',
+    unit: 'ratio',
+  },
+  mortgagePayment: {
+    label: 'Monthly mortgage payment',
+    groups: ['keyRatios'],
+    description: 'Estimated monthly payment on the long-term mortgage.',
+    calculation: 'Amortising or interest-only payment based on loan terms.',
+    importance: 'Determines ongoing debt obligations and affordability.',
+    unit: 'currency',
+  },
+  indexFundValue: {
+    label: 'Index fund value',
+    groups: ['exitComparison', 'wealthTrajectory'],
+    description: 'Value of investing upfront cash into the chosen index fund alternative.',
+    calculation: 'Initial cash invested × (1 + index growth)^{years}.',
+    importance: 'Provides an opportunity-cost benchmark versus the property.',
+    unit: 'currency',
+  },
+  propertyGross: {
+    label: 'Property gross wealth',
+    groups: ['exitComparison', 'wealthTrajectory'],
+    description: 'Property value plus cumulative cash retained before tax and reinvested balances.',
+    calculation: 'Future value + cumulative pre-tax cash retained + reinvested fund.',
+    importance: 'Shows the property’s total economic footprint without tax drag.',
+    unit: 'currency',
+  },
+  propertyNet: {
+    label: 'Property net wealth',
+    groups: ['exitComparison', 'wealthTrajectory'],
+    description: 'Net sale proceeds plus cumulative pre-tax cash retained and reinvested balance.',
+    calculation: 'Net sale proceeds + cumulative pre-tax cash kept + reinvested fund.',
+    importance: 'Represents investor wealth before tax when exiting the property.',
+    unit: 'currency',
+  },
+  propertyNetAfterTax: {
+    label: 'Property net after tax',
+    groups: ['exitComparison', 'wealthTrajectory', 'leverage'],
+    description: 'Net sale proceeds plus cumulative after-tax cash retained and reinvested balance.',
+    calculation: 'Net sale proceeds + cumulative after-tax cash kept + reinvested fund.',
+    importance: 'Illustrates investor wealth after paying rental taxes and selling costs.',
+    unit: 'currency',
+  },
+  rentalTaxTotal: {
+    label: 'Rental tax (cumulative)',
+    groups: ['exitComparison'],
+    description: 'Total income or corporation tax paid on rental profits through exit.',
+    calculation: 'Sum of annual property tax liabilities.',
+    importance: 'Highlights the drag of taxation on portfolio cash flow.',
+    unit: 'currency',
+  },
+  futureValue: {
+    label: 'Future value',
+    groups: ['exit', 'wealthTrajectory'],
+    description: 'Projected market value at the selected exit year.',
+    calculation: 'Purchase price compounded by annual appreciation for the hold period.',
+    importance: 'Sets the basis for sale proceeds and equity build-up.',
+    unit: 'currency',
+  },
+  remainingLoan: {
+    label: 'Remaining loan balance',
+    groups: ['exit', 'equityGrowth'],
+    description: 'Outstanding mortgage principal at exit after scheduled amortisation.',
+    calculation: 'Amortised balance after the number of months in the hold period.',
+    importance: 'Determines how much of the sale price repays debt before equity is realised.',
+    unit: 'currency',
+  },
+  sellingCosts: {
+    label: 'Selling costs',
+    groups: ['exit'],
+    description: 'Estimated agency and legal costs deducted on sale.',
+    calculation: 'Future value × selling cost %.',
+    importance: 'Reduces net proceeds and must be budgeted in exit planning.',
+    unit: 'currency',
+  },
+  estimatedEquity: {
+    label: 'Estimated equity then',
+    groups: ['exit'],
+    description: 'Projected equity released after paying selling costs and clearing the loan.',
+    calculation: 'Future value − selling costs − remaining loan.',
+    importance: 'Represents the cash lump sum available at exit before tax.',
+    unit: 'currency',
+  },
+  propertyValue: {
+    label: 'Property value',
+    groups: ['wealthTrajectory', 'equityGrowth'],
+    description: 'Estimated market value of the property at the analysis horizon.',
+    calculation: 'Purchase price grown by annual appreciation.',
+    importance: 'Combines market growth assumptions with hold period to show headline value.',
+    unit: 'currency',
+  },
+  reinvestFund: {
+    label: 'Reinvested fund balance',
+    groups: ['wealthTrajectory'],
+    description: 'Value of after-tax cash reinvested each year per the reinvestment setting.',
+    calculation: 'Compounded balance of reinvested cash flows.',
+    importance: 'Captures additional wealth created by recycling surplus cash.',
+    unit: 'currency',
+  },
+  loanBalance: {
+    label: 'Loan balance',
+    groups: ['equityGrowth'],
+    description: 'Share of the property value still financed by debt.',
+    calculation: 'Remaining loan balance at the selected point in the hold period.',
+    importance: 'Shows how leverage falls over time as principal is repaid.',
+    unit: 'currency',
+  },
+  ownerEquity: {
+    label: 'Owner equity',
+    groups: ['equityGrowth'],
+    description: 'Portion of the property value owned outright after debt.',
+    calculation: 'Property value − loan balance.',
+    importance: 'Illustrates wealth accumulation from amortisation and appreciation.',
+    unit: 'currency',
+  },
+  npvToDate: {
+    label: 'Net present value',
+    groups: ['rateTrends'],
+    description: 'Discounted value of cash flows and sale proceeds up to each year.',
+    calculation: 'NPV of annual after-tax cash flows and exit value using the discount rate.',
+    importance: 'Shows whether returns exceed the chosen discount rate over time.',
+    unit: 'currency',
+  },
+  interestPaidYear1: {
+    label: 'Interest paid (year 1)',
+    groups: ['interestSplit'],
+    description: 'Interest portion of debt service in the first year, including any bridge interest.',
+    calculation: 'Sum of interest portions of monthly payments during year one.',
+    importance: 'Indicates initial cash drag from borrowing before amortisation accelerates.',
+    unit: 'currency',
+  },
+  principalPaidYear1: {
+    label: 'Principal repaid (year 1)',
+    groups: ['interestSplit'],
+    description: 'Mortgage principal reduced in the first year.',
+    calculation: 'Total debt service − interest within year one.',
+    importance: 'Shows how quickly equity builds from amortisation in early years.',
+    unit: 'currency',
+  },
+  roi: {
+    label: 'Total ROI',
+    groups: ['leverage', 'roiHeatmap'],
+    description: 'Total return on investment based on equity built relative to cash invested.',
+    calculation: 'Property net wealth at exit ÷ total cash required − 1.',
+    importance: 'Summarises overall growth of invested capital ignoring timing.',
+    unit: 'percent',
+  },
+  efficiency: {
+    label: 'IRR × profit efficiency',
+    groups: ['leverage'],
+    description: 'Product of IRR and after-tax profit to combine speed and scale of returns.',
+    calculation: 'IRR × property net after tax.',
+    importance: 'Highlights leverage points that deliver both high IRR and sizeable profit.',
+    unit: 'currency',
+  },
+  annualAppreciation: {
+    label: 'Capital growth rate',
+    groups: ['roiHeatmap'],
+    description: 'Assumed annual property price growth used in the projection.',
+    calculation: 'User-specified appreciation %.',
+    importance: 'Drives exit value and therefore total returns.',
+    unit: 'percent',
+  },
+  rentGrowth: {
+    label: 'Rent growth rate',
+    groups: ['roiHeatmap'],
+    description: 'Assumed annual change in market rent applied to projections.',
+    calculation: 'User-specified rent growth %.',
+    importance: 'Influences future cash flows and yield stress tests.',
+    unit: 'percent',
+  },
 };
 
 function personalAllowance(income) {
@@ -1498,6 +1935,11 @@ export default function App() {
     movingAverageWindow: 3,
     showZeroBaseline: true,
   });
+  const [knowledgeState, setKnowledgeState] = useState({ open: false, groupId: null, metricId: null });
+  const [knowledgeChatMessages, setKnowledgeChatMessages] = useState([]);
+  const [knowledgeChatInput, setKnowledgeChatInput] = useState('');
+  const [knowledgeChatStatus, setKnowledgeChatStatus] = useState('idle');
+  const [knowledgeChatError, setKnowledgeChatError] = useState('');
   const [performanceYear, setPerformanceYear] = useState(1);
   const [shareNotice, setShareNotice] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -2495,6 +2937,23 @@ export default function App() {
       return { ...prev, movingAverageWindow: nextWindow };
     });
   }, [rateRangeLength]);
+  useEffect(() => {
+    if (!knowledgeState.open) {
+      setKnowledgeChatMessages([]);
+      setKnowledgeChatInput('');
+      setKnowledgeChatStatus('idle');
+      setKnowledgeChatError('');
+    }
+  }, [knowledgeState.open]);
+  useEffect(() => {
+    if (!knowledgeState.open) {
+      return;
+    }
+    setKnowledgeChatMessages([]);
+    setKnowledgeChatInput('');
+    setKnowledgeChatStatus('idle');
+    setKnowledgeChatError('');
+  }, [knowledgeState.metricId]);
 
   useEffect(() => {
     if (!showChartModal) {
@@ -2912,6 +3371,321 @@ export default function App() {
       <div className="font-semibold">Total: {currency(equity.totalPropertyTax)}</div>
     </div>
   );
+  const knowledgeMetricSnapshots = useMemo(() => {
+    const depositValue = Number(equity.deposit) || 0;
+    const stampDutyValue = Number(equity.stampDuty) || 0;
+    const closingCostsValue = Number(equity.otherClosing) || 0;
+    const renovationValue = Number(inputs.renovationCost) || 0;
+    const bridgingAmountValue = Number(equity.bridgingLoanAmount) || 0;
+    const totalCashRequiredValue = Number(equity.cashIn) || 0;
+    const netCashInValue = Number.isFinite(equity.initialCashOutlay)
+      ? Number(equity.initialCashOutlay) || 0
+      : totalCashRequiredValue;
+    const grossRentValue = Number(selectedGrossRent) || 0;
+    const operatingExpensesValue = Number(selectedOperatingExpenses) || 0;
+    const noiValue = Number(selectedNoi) || 0;
+    const mortgageDebtValue = Number(selectedMortgageDebtService) || 0;
+    const bridgingDebtValue = Number(selectedBridgingDebtService) || 0;
+    const preTaxCashValue = Number(selectedCashPreTax) || 0;
+    const rentalTaxValue = Number(selectedRentalTax) || 0;
+    const afterTaxCashValue = Number(selectedCashAfterTax) || 0;
+    const capValue = Number(equity.cap) || 0;
+    const rentalYieldValue = Number(rentalYield) || 0;
+    const yieldOnCostValue = Number(equity.yoc) || 0;
+    const cocValue = Number(equity.coc) || 0;
+    const irrValue = Number(equity.irr) || 0;
+    const irrHurdleCurrent = Number.isFinite(inputs.irrHurdle) ? Number(inputs.irrHurdle) : 0;
+    const dscrValue = Number(equity.dscr) || 0;
+    const mortgagePaymentValue = Number(equity.mortgage) || 0;
+    const npvValue = Number(equity.npv) || 0;
+    const indexFundValue = Number(equity.indexValEnd) || 0;
+    const propertyGrossValue = Number(equity.propertyGrossWealthAtExit) || 0;
+    const propertyNetValue = Number(equity.propertyNetWealthAtExit) || 0;
+    const propertyNetAfterTaxValue = Number(equity.propertyNetWealthAfterTax) || 0;
+    const rentalTaxTotalValue = Number(equity.totalPropertyTax) || 0;
+    const futureValueValue = Number(equity.futureValue) || 0;
+    const remainingLoanValue = Number(equity.remaining) || 0;
+    const sellingCostsValue = Number(equity.sellingCosts) || 0;
+    const estimatedEquityValue = Number(estimatedExitEquity) || 0;
+    const reinvestFundSnapshot = Number(reinvestFundValue) || 0;
+    const annualInterest = Array.isArray(equity.annualInterest) ? equity.annualInterest : [];
+    const annualPrincipal = Array.isArray(equity.annualPrincipal) ? equity.annualPrincipal : [];
+    const annualDebtService = Array.isArray(equity.annualDebtService) ? equity.annualDebtService : [];
+    const interestYearOne = Number(annualInterest[0]) || 0;
+    const principalYearOne = Number(annualPrincipal[0]) || Math.max(0, (annualDebtService[0] || 0) - interestYearOne);
+    const currentLtv = 1 - (Number(inputs.depositPct) || 0);
+    const roiValue = totalCashRequiredValue > 0 ? propertyNetValue / totalCashRequiredValue - 1 : 0;
+    const efficiencyValue =
+      Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue) ? irrValue * propertyNetAfterTaxValue : 0;
+    const appreciationRateValue = Number(inputs.annualAppreciation) || 0;
+    const rentGrowthRateValue = Number(inputs.rentGrowth) || 0;
+
+    return {
+      deposit: { value: depositValue, formatted: currency(depositValue) },
+      ltv: { value: currentLtv, formatted: formatPercent(currentLtv) },
+      stampDuty: { value: stampDutyValue, formatted: currency(stampDutyValue) },
+      closingCosts: { value: closingCostsValue, formatted: currency(closingCostsValue) },
+      renovationCost: { value: renovationValue, formatted: currency(renovationValue) },
+      bridgingLoanAmount: { value: bridgingAmountValue, formatted: currency(bridgingAmountValue) },
+      netCashIn: { value: netCashInValue, formatted: currency(netCashInValue) },
+      totalCashRequired: { value: totalCashRequiredValue, formatted: currency(totalCashRequiredValue) },
+      grossRent: { value: grossRentValue, formatted: currency(grossRentValue) },
+      operatingExpenses: { value: operatingExpensesValue, formatted: currency(operatingExpensesValue) },
+      noi: { value: noiValue, formatted: currency(noiValue) },
+      mortgageDebtService: { value: mortgageDebtValue, formatted: currency(mortgageDebtValue) },
+      bridgingDebtService: { value: bridgingDebtValue, formatted: currency(bridgingDebtValue) },
+      cashflowPreTax: { value: preTaxCashValue, formatted: currency(preTaxCashValue) },
+      rentalTax: { value: rentalTaxValue, formatted: currency(rentalTaxValue), label: rentalTaxLabel },
+      cashflowAfterTax: { value: afterTaxCashValue, formatted: currency(afterTaxCashValue) },
+      cap: { value: capValue, formatted: formatPercent(capValue) },
+      rentalYield: { value: rentalYieldValue, formatted: formatPercent(rentalYieldValue) },
+      yoc: { value: yieldOnCostValue, formatted: formatPercent(yieldOnCostValue) },
+      coc: { value: cocValue, formatted: formatPercent(cocValue) },
+      irr: { value: irrValue, formatted: formatPercent(irrValue) },
+      irrHurdle: { value: irrHurdleCurrent, formatted: formatPercent(irrHurdleCurrent) },
+      dscr: { value: dscrValue, formatted: dscrValue > 0 ? dscrValue.toFixed(2) : '—' },
+      mortgagePayment: { value: mortgagePaymentValue, formatted: currency(mortgagePaymentValue) },
+      npvToDate: { value: npvValue, formatted: currency(npvValue) },
+      indexFundValue: { value: indexFundValue, formatted: currency(indexFundValue) },
+      propertyGross: { value: propertyGrossValue, formatted: currency(propertyGrossValue) },
+      propertyNet: { value: propertyNetValue, formatted: currency(propertyNetValue) },
+      propertyNetAfterTax: {
+        value: propertyNetAfterTaxValue,
+        formatted: currency(propertyNetAfterTaxValue),
+        label: propertyNetAfterTaxLabel,
+      },
+      rentalTaxTotal: {
+        value: rentalTaxTotalValue,
+        formatted: currency(rentalTaxTotalValue),
+        label: rentalTaxCumulativeLabel,
+      },
+      futureValue: { value: futureValueValue, formatted: currency(futureValueValue) },
+      remainingLoan: { value: remainingLoanValue, formatted: currency(remainingLoanValue) },
+      sellingCosts: { value: sellingCostsValue, formatted: currency(sellingCostsValue) },
+      estimatedEquity: { value: estimatedEquityValue, formatted: currency(estimatedEquityValue) },
+      propertyValue: { value: futureValueValue, formatted: currency(futureValueValue) },
+      reinvestFund: { value: reinvestFundSnapshot, formatted: currency(reinvestFundSnapshot) },
+      loanBalance: { value: remainingLoanValue, formatted: currency(remainingLoanValue) },
+      ownerEquity: { value: futureValueValue - remainingLoanValue, formatted: currency(futureValueValue - remainingLoanValue) },
+      interestPaidYear1: { value: interestYearOne, formatted: currency(interestYearOne) },
+      principalPaidYear1: { value: principalYearOne, formatted: currency(principalYearOne) },
+      roi: { value: roiValue, formatted: formatPercent(roiValue) },
+      efficiency: { value: efficiencyValue, formatted: currency(efficiencyValue) },
+      annualAppreciation: { value: appreciationRateValue, formatted: formatPercent(appreciationRateValue) },
+      rentGrowth: { value: rentGrowthRateValue, formatted: formatPercent(rentGrowthRateValue) },
+      yieldOnCost: { value: yieldOnCostValue, formatted: formatPercent(yieldOnCostValue) },
+    };
+  }, [
+    equity.deposit,
+    equity.stampDuty,
+    equity.otherClosing,
+    inputs.renovationCost,
+    equity.bridgingLoanAmount,
+    equity.cashIn,
+    equity.initialCashOutlay,
+    selectedGrossRent,
+    selectedOperatingExpenses,
+    selectedNoi,
+    selectedMortgageDebtService,
+    selectedBridgingDebtService,
+    selectedCashPreTax,
+    selectedRentalTax,
+    selectedCashAfterTax,
+    equity.cap,
+    rentalYield,
+    equity.yoc,
+    equity.coc,
+    equity.irr,
+    inputs.irrHurdle,
+    equity.dscr,
+    equity.mortgage,
+    equity.npv,
+    equity.indexValEnd,
+    equity.propertyGrossWealthAtExit,
+    equity.propertyNetWealthAtExit,
+    equity.propertyNetWealthAfterTax,
+    equity.totalPropertyTax,
+    equity.futureValue,
+    equity.remaining,
+    equity.sellingCosts,
+    estimatedExitEquity,
+    reinvestFundValue,
+    equity.annualInterest,
+    equity.annualPrincipal,
+    equity.annualDebtService,
+    inputs.depositPct,
+    inputs.annualAppreciation,
+    inputs.rentGrowth,
+    propertyNetAfterTaxLabel,
+    rentalTaxLabel,
+    rentalTaxCumulativeLabel,
+  ]);
+  const knowledgeMetricList = useMemo(
+    () =>
+      Object.entries(KNOWLEDGE_METRICS).map(([id, definition]) => ({
+        id,
+        ...definition,
+        label: knowledgeMetricSnapshots[id]?.label ?? definition.label,
+        snapshot: knowledgeMetricSnapshots[id] ?? null,
+      })),
+    [knowledgeMetricSnapshots]
+  );
+  const openKnowledgeBase = useCallback(
+    (key) => {
+      if (!key) return;
+      if (KNOWLEDGE_GROUPS[key]) {
+        const groupId = key;
+        const groupConfig = KNOWLEDGE_GROUPS[groupId];
+        const preferredIds = Array.isArray(groupConfig.metrics) ? groupConfig.metrics : [];
+        let defaultMetric = null;
+        for (const metricId of preferredIds) {
+          const candidate = knowledgeMetricList.find((item) => item.id === metricId);
+          if (candidate) {
+            defaultMetric = candidate.id;
+            break;
+          }
+        }
+        if (!defaultMetric) {
+          const fallback = knowledgeMetricList.find((item) => item.groups?.includes(groupId));
+          defaultMetric = fallback?.id ?? null;
+        }
+        setKnowledgeState({ open: true, groupId, metricId: defaultMetric });
+        return;
+      }
+      const metricEntry = knowledgeMetricList.find((item) => item.id === key);
+      if (metricEntry) {
+        const groupId = Array.isArray(metricEntry.groups) && metricEntry.groups.length > 0 ? metricEntry.groups[0] : null;
+        setKnowledgeState({ open: true, groupId, metricId: metricEntry.id });
+      }
+    },
+    [knowledgeMetricList]
+  );
+  const closeKnowledgeBase = useCallback(() => {
+    setKnowledgeState({ open: false, groupId: null, metricId: null });
+  }, []);
+  const handleSelectKnowledgeMetric = useCallback((metricId) => {
+    setKnowledgeState((prev) => {
+      if (!metricId || prev.metricId === metricId) {
+        return prev;
+      }
+      return { ...prev, metricId };
+    });
+  }, []);
+  const knowledgeGroupMetrics = useMemo(() => {
+    if (!knowledgeState.open || !knowledgeState.groupId) {
+      return [];
+    }
+    const groupId = knowledgeState.groupId;
+    const config = KNOWLEDGE_GROUPS[groupId];
+    const orderedIds = Array.isArray(config?.metrics) ? config.metrics : [];
+    const byId = new Map();
+    knowledgeMetricList
+      .filter((item) => Array.isArray(item.groups) && item.groups.includes(groupId))
+      .forEach((item) => {
+        byId.set(item.id, item);
+      });
+    if (orderedIds.length > 0) {
+      const ordered = [];
+      orderedIds.forEach((metricId) => {
+        const metric = byId.get(metricId);
+        if (metric) {
+          ordered.push(metric);
+          byId.delete(metricId);
+        }
+      });
+      ordered.push(...byId.values());
+      return ordered;
+    }
+    return Array.from(byId.values());
+  }, [knowledgeMetricList, knowledgeState.groupId, knowledgeState.open]);
+  const knowledgeGroupDefinition = knowledgeState.groupId ? KNOWLEDGE_GROUPS[knowledgeState.groupId] : null;
+  const knowledgeActiveMetric = knowledgeState.metricId ? KNOWLEDGE_METRICS[knowledgeState.metricId] : null;
+  const knowledgeActiveSnapshot = knowledgeState.metricId
+    ? knowledgeMetricSnapshots[knowledgeState.metricId] ?? null
+    : null;
+  const buildKnowledgeContextSummary = useCallback(
+    (groupId, metricId) => {
+      const lines = [];
+      const group = groupId ? KNOWLEDGE_GROUPS[groupId] : null;
+      const metric = metricId ? KNOWLEDGE_METRICS[metricId] : null;
+      const snapshot = metricId ? knowledgeMetricSnapshots[metricId] : null;
+      const displayLabel = snapshot?.label ?? metric?.label ?? metricId ?? 'Metric';
+      if (group) {
+        lines.push(`${group.label} context for ${displayLabel}.`);
+        if (group.description) {
+          lines.push(`Group overview: ${group.description}`);
+        }
+      } else {
+        lines.push(`Context for ${displayLabel}.`);
+      }
+      if (snapshot?.formatted) {
+        lines.push(`Current value: ${snapshot.formatted}`);
+      }
+      if (Number.isFinite(snapshot?.value)) {
+        lines.push(`Raw value: ${snapshot.value}`);
+      }
+      if (metric?.description) {
+        lines.push(`Definition: ${metric.description}`);
+      }
+      if (metric?.calculation) {
+        lines.push(`Calculation: ${metric.calculation}`);
+      }
+      if (metric?.importance) {
+        lines.push(`Why it matters: ${metric.importance}`);
+      }
+      if (groupId) {
+        const relatedMetrics = knowledgeMetricList.filter(
+          (item) => Array.isArray(item.groups) && item.groups.includes(groupId) && item.id !== metricId
+        );
+        if (relatedMetrics.length > 0) {
+          lines.push('Related metrics:');
+          relatedMetrics.forEach((related) => {
+            const relatedSnapshot = knowledgeMetricSnapshots[related.id];
+            const relatedLabel = relatedSnapshot?.label ?? related.label ?? related.id;
+            const formatted = relatedSnapshot?.formatted;
+            if (formatted) {
+              lines.push(`- ${relatedLabel}: ${formatted}`);
+            }
+          });
+        }
+      }
+      return lines.join('\n');
+    },
+    [knowledgeMetricList, knowledgeMetricSnapshots]
+  );
+  const buildKnowledgeContextPayload = useCallback(
+    (groupId, metricId) => {
+      const group = groupId ? KNOWLEDGE_GROUPS[groupId] : null;
+      const metric = metricId ? KNOWLEDGE_METRICS[metricId] : null;
+      const snapshot = metricId ? knowledgeMetricSnapshots[metricId] : null;
+      const related = groupId
+        ? knowledgeMetricList
+            .filter((item) => Array.isArray(item.groups) && item.groups.includes(groupId))
+            .map((item) => {
+              const snap = knowledgeMetricSnapshots[item.id];
+              return {
+                id: item.id,
+                label: snap?.label ?? item.label ?? item.id,
+                value: Number.isFinite(snap?.value) ? snap.value : null,
+                formatted: snap?.formatted ?? null,
+              };
+            })
+        : [];
+      return {
+        groupId,
+        groupLabel: group?.label ?? null,
+        metricId,
+        metricLabel: snapshot?.label ?? metric?.label ?? metricId ?? null,
+        metricValue: Number.isFinite(snapshot?.value) ? snapshot.value : null,
+        metricFormatted: snapshot?.formatted ?? null,
+        metricDescription: metric?.description ?? null,
+        metricCalculation: metric?.calculation ?? null,
+        metricImportance: metric?.importance ?? null,
+        relatedMetrics: related,
+      };
+    },
+    [knowledgeMetricList, knowledgeMetricSnapshots]
+  );
   const availableCashflowColumns = useMemo(
     () =>
       CASHFLOW_COLUMN_DEFINITIONS.map((column) =>
@@ -2948,6 +3722,15 @@ export default function App() {
     if (!key) return;
     setCashflowColumnKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
   };
+  const knowledgeBaseContextValue = useMemo(
+    () => ({
+      open: openKnowledgeBase,
+      isOpen: knowledgeState.open,
+      activeGroupId: knowledgeState.groupId,
+      activeMetricId: knowledgeState.metricId,
+    }),
+    [openKnowledgeBase, knowledgeState.groupId, knowledgeState.metricId, knowledgeState.open]
+  );
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
   const hasPropertyUrl = trimmedPropertyUrl !== '';
@@ -3076,7 +3859,7 @@ export default function App() {
     return lines.join('\n');
   };
 
-  const callCustomChat = async (question) => {
+  const callCustomChat = async (question, extraSummary = '', extraContext = null) => {
     const response = await fetch(`${CHAT_API_URL}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3099,6 +3882,8 @@ export default function App() {
           exitYear: equity.exitYear,
           indexFundGrowth: inputs.indexFundGrowth,
         },
+        extraSummary,
+        metricContext: extraContext,
       }),
     });
 
@@ -3120,16 +3905,19 @@ export default function App() {
     );
   };
 
-  const callGoogleChat = async (question) => {
+  const callGoogleChat = async (question, extraSummary = '') => {
     const scenarioSummary = buildChatScenarioSummary();
-    const prompt = [
+    const promptLines = [
       'You are an AI assistant helping evaluate UK property investments.',
       'Use the provided scenario data to answer the user\'s question with clear reasoning and cite any calculations you perform.',
       'Scenario data:',
       scenarioSummary,
-      '',
-      `Question: ${question}`,
-    ].join('\n');
+    ];
+    if (extraSummary && extraSummary.trim().length > 0) {
+      promptLines.push('', 'Metric context:', extraSummary.trim());
+    }
+    promptLines.push('', `Question: ${question}`);
+    const prompt = promptLines.join('\n');
 
     const response = await fetch(
       `${GOOGLE_API_BASE}/models/${encodeURIComponent(GOOGLE_MODEL)}:generateContent?key=${encodeURIComponent(GOOGLE_API_KEY)}`,
@@ -3232,6 +4020,73 @@ export default function App() {
   const handleClearChat = () => {
     setChatMessages([]);
     setChatError('');
+  };
+
+  const handleKnowledgeChatSubmit = async (event) => {
+    event.preventDefault();
+    const question = knowledgeChatInput.trim();
+    if (!question || !knowledgeState.open || !knowledgeState.metricId) {
+      return;
+    }
+    const timestamp = Date.now();
+    const userMessage = {
+      id: `kb-user-${timestamp}`,
+      role: 'user',
+      content: question,
+      createdAt: timestamp,
+    };
+    setKnowledgeChatMessages((prev) => [...prev, userMessage]);
+    setKnowledgeChatInput('');
+
+    if (!chatEnabled) {
+      setKnowledgeChatError('Chat service is not currently available.');
+      return;
+    }
+
+    setKnowledgeChatStatus('loading');
+    setKnowledgeChatError('');
+
+    const summary = buildKnowledgeContextSummary(knowledgeState.groupId, knowledgeState.metricId);
+    const payload = buildKnowledgeContextPayload(knowledgeState.groupId, knowledgeState.metricId);
+
+    try {
+      let answer = '';
+      if (GOOGLE_API_KEY) {
+        answer = await callGoogleChat(question, summary);
+      } else if (CHAT_API_URL) {
+        answer = await callCustomChat(question, summary, payload);
+      } else {
+        throw new Error('Chat service is not currently configured.');
+      }
+
+      const content = answer && answer.trim().length > 0 ? answer.trim() : 'The chat service returned an empty response.';
+      const assistantMessage = {
+        id: `kb-assistant-${timestamp}`,
+        role: 'assistant',
+        content,
+        createdAt: Date.now(),
+      };
+      setKnowledgeChatMessages((prev) => [...prev, assistantMessage]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to reach the chat service.';
+      setKnowledgeChatError(message);
+      setKnowledgeChatMessages((prev) => [
+        ...prev,
+        {
+          id: `kb-assistant-error-${Date.now()}`,
+          role: 'assistant',
+          content: 'Sorry, I was unable to fetch a response. Please try again shortly.',
+          createdAt: Date.now(),
+        },
+      ]);
+    } finally {
+      setKnowledgeChatStatus('idle');
+    }
+  };
+
+  const handleKnowledgeChatClear = () => {
+    setKnowledgeChatMessages([]);
+    setKnowledgeChatError('');
   };
 
   const handleExportCashflowCsv = () => {
@@ -3806,7 +4661,8 @@ export default function App() {
   };
 
   return (
-    <div ref={pageRef} data-export-root className="min-h-screen bg-slate-50 text-slate-900">
+    <KnowledgeBaseContext.Provider value={knowledgeBaseContextValue}>
+      <div ref={pageRef} data-export-root className="min-h-screen bg-slate-50 text-slate-900">
       {shouldShowAuthOverlay ? (
         <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 backdrop-blur-sm">
           <form
@@ -4312,15 +5168,32 @@ export default function App() {
       <section className="md:col-span-2 md:self-stretch">
         <div className="flex flex-col space-y-3 md:pr-2 md:pb-6">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <SummaryCard title="Cash needed" tooltip={SECTION_DESCRIPTIONS.cashNeeded}>
-                <Line label="Deposit" value={currency(equity.deposit)} />
-                <Line label="Stamp Duty (est.)" value={currency(equity.stampDuty)} />
-                <Line label="Other closing costs" value={currency(equity.otherClosing)} />
-                <Line label="Renovation (upfront)" value={currency(inputs.renovationCost)} />
+              <SummaryCard
+                title="Cash needed"
+                tooltip={SECTION_DESCRIPTIONS.cashNeeded}
+                knowledgeKey="cashNeeded"
+              >
+                <Line label="Deposit" value={currency(equity.deposit)} knowledgeKey="deposit" />
+                <Line
+                  label="Stamp Duty (est.)"
+                  value={currency(equity.stampDuty)}
+                  knowledgeKey="stampDuty"
+                />
+                <Line
+                  label="Other closing costs"
+                  value={currency(equity.otherClosing)}
+                  knowledgeKey="closingCosts"
+                />
+                <Line
+                  label="Renovation (upfront)"
+                  value={currency(inputs.renovationCost)}
+                  knowledgeKey="renovationCost"
+                />
                 {equity.bridgingLoanAmount > 0 ? (
                   <Line
                     label="Bridging loan (deposit financed)"
                     value={currency(-equity.bridgingLoanAmount)}
+                    knowledgeKey="bridgingLoanAmount"
                   />
                 ) : null}
                 <hr className="my-2" />
@@ -4336,9 +5209,14 @@ export default function App() {
                       : equity.cashIn
                   )}
                   bold
+                  knowledgeKey="netCashIn"
                 />
                 {equity.bridgingLoanAmount > 0 ? (
-                  <Line label="Total cash required" value={currency(equity.cashIn)} />
+                  <Line
+                    label="Total cash required"
+                    value={currency(equity.cashIn)}
+                    knowledgeKey="totalCashRequired"
+                  />
                 ) : null}
               </SummaryCard>
 
@@ -4349,6 +5227,7 @@ export default function App() {
                       label="Performance"
                       tooltip={SECTION_DESCRIPTIONS.performance}
                       className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="performance"
                     />
                     <div className="flex items-center gap-1 text-[11px] text-slate-500">
                       <span>Year</span>
@@ -4365,35 +5244,95 @@ export default function App() {
                   </div>
                 }
               >
-                <Line label="Gross rent (vacancy adj.)" value={currency(selectedGrossRent)} />
-                <Line label="Operating expenses" value={currency(selectedOperatingExpenses)} />
-                <Line label="NOI" value={currency(selectedNoi)} />
-                <Line label="Debt service" value={currency(selectedMortgageDebtService)} />
+                <Line
+                  label="Gross rent (vacancy adj.)"
+                  value={currency(selectedGrossRent)}
+                  knowledgeKey="grossRent"
+                />
+                <Line
+                  label="Operating expenses"
+                  value={currency(selectedOperatingExpenses)}
+                  knowledgeKey="operatingExpenses"
+                />
+                <Line label="NOI" value={currency(selectedNoi)} knowledgeKey="noi" />
+                <Line
+                  label="Debt service"
+                  value={currency(selectedMortgageDebtService)}
+                  knowledgeKey="mortgageDebtService"
+                />
                 {selectedBridgingDebtService !== 0 ? (
-                  <Line label="Debt service (bridging)" value={currency(selectedBridgingDebtService)} />
+                  <Line
+                    label="Debt service (bridging)"
+                    value={currency(selectedBridgingDebtService)}
+                    knowledgeKey="bridgingDebtService"
+                  />
                 ) : null}
-                <Line label="Cash flow (pre‑tax)" value={currency(selectedCashPreTax)} />
-                <Line label={rentalTaxLabel} value={currency(selectedRentalTax)} />
+                <Line
+                  label="Cash flow (pre‑tax)"
+                  value={currency(selectedCashPreTax)}
+                  knowledgeKey="cashflowPreTax"
+                />
+                <Line
+                  label={rentalTaxLabel}
+                  value={currency(selectedRentalTax)}
+                  knowledgeKey="rentalTax"
+                />
                 <hr className="my-2" />
-                <Line label="Cash flow (after tax)" value={currency(selectedCashAfterTax)} bold />
+                <Line
+                  label="Cash flow (after tax)"
+                  value={currency(selectedCashAfterTax)}
+                  bold
+                  knowledgeKey="cashflowAfterTax"
+                />
               </SummaryCard>
 
-              <SummaryCard title="Key ratios" tooltip={SECTION_DESCRIPTIONS.keyRatios}>
-                <Line label="Cap rate" value={formatPercent(equity.cap)} tooltip={KEY_RATIO_TOOLTIPS.cap} />
+              <SummaryCard
+                title="Key ratios"
+                tooltip={SECTION_DESCRIPTIONS.keyRatios}
+                knowledgeKey="keyRatios"
+              >
+                <Line
+                  label="Cap rate"
+                  value={formatPercent(equity.cap)}
+                  tooltip={KEY_RATIO_TOOLTIPS.cap}
+                  knowledgeKey="cap"
+                />
                 <Line
                   label="Rental yield"
                   value={formatPercent(rentalYield)}
                   tooltip={KEY_RATIO_TOOLTIPS.rentalYield}
+                  knowledgeKey="rentalYield"
                 />
-                <Line label="Yield on cost" value={formatPercent(equity.yoc)} tooltip={KEY_RATIO_TOOLTIPS.yoc} />
-                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} tooltip={KEY_RATIO_TOOLTIPS.coc} />
-                <Line label="IRR" value={formatPercent(equity.irr)} tooltip={KEY_RATIO_TOOLTIPS.irr} />
+                <Line
+                  label="Yield on cost"
+                  value={formatPercent(equity.yoc)}
+                  tooltip={KEY_RATIO_TOOLTIPS.yoc}
+                  knowledgeKey="yoc"
+                />
+                <Line
+                  label="Cash‑on‑cash"
+                  value={formatPercent(equity.coc)}
+                  tooltip={KEY_RATIO_TOOLTIPS.coc}
+                  knowledgeKey="coc"
+                />
+                <Line
+                  label="IRR"
+                  value={formatPercent(equity.irr)}
+                  tooltip={KEY_RATIO_TOOLTIPS.irr}
+                  knowledgeKey="irr"
+                />
                 <Line
                   label="DSCR"
                   value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
                   tooltip={KEY_RATIO_TOOLTIPS.dscr}
+                  knowledgeKey="dscr"
                 />
-                <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} tooltip={KEY_RATIO_TOOLTIPS.mortgage} />
+                <Line
+                  label="Mortgage pmt (mo)"
+                  value={currency(equity.mortgage)}
+                  tooltip={KEY_RATIO_TOOLTIPS.mortgage}
+                  knowledgeKey="mortgagePayment"
+                />
               </SummaryCard>
             </div>
 
@@ -4405,23 +5344,37 @@ export default function App() {
                   title={`Exit comparison (Year ${inputs.exitYear})`}
                   tooltip={SECTION_DESCRIPTIONS.exitComparison}
                   className="h-full"
+                  knowledgeKey="exitComparison"
                 >
-                  <Line label="Index fund value" value={currency(equity.indexValEnd)} tooltip={indexFundTooltip} />
+                  <Line
+                    label="Index fund value"
+                    value={currency(equity.indexValEnd)}
+                    tooltip={indexFundTooltip}
+                    knowledgeKey="indexFundValue"
+                  />
                   <Line
                     label="Property gross"
                     value={currency(equity.propertyGrossWealthAtExit)}
                     tooltip={propertyGrossTooltip}
+                    knowledgeKey="propertyGross"
                   />
-                  <Line label="Property net" value={currency(equity.propertyNetWealthAtExit)} tooltip={propertyNetTooltip} />
+                  <Line
+                    label="Property net"
+                    value={currency(equity.propertyNetWealthAtExit)}
+                    tooltip={propertyNetTooltip}
+                    knowledgeKey="propertyNet"
+                  />
                   <Line
                     label={propertyNetAfterTaxLabel}
                     value={currency(equity.propertyNetWealthAfterTax)}
                     tooltip={propertyNetAfterTaxTooltip}
+                    knowledgeKey="propertyNetAfterTax"
                   />
                   <Line
                     label={rentalTaxCumulativeLabel}
                     value={currency(equity.totalPropertyTax)}
                     tooltip={rentalTaxTooltip}
+                    knowledgeKey="rentalTaxTotal"
                   />
                 </SummaryCard>
               </div>
@@ -4431,16 +5384,33 @@ export default function App() {
                   title={`Equity at exit (Year ${inputs.exitYear})`}
                   tooltip={SECTION_DESCRIPTIONS.exit}
                   className="h-full"
+                  knowledgeKey="exit"
                 >
-                  <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
-                  <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
-                  <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
+                  <Line
+                    label="Future value"
+                    value={currency(equity.futureValue)}
+                    tooltip={futureValueTooltip}
+                    knowledgeKey="futureValue"
+                  />
+                  <Line
+                    label="Remaining loan"
+                    value={currency(equity.remaining)}
+                    tooltip={remainingLoanTooltip}
+                    knowledgeKey="remainingLoan"
+                  />
+                  <Line
+                    label="Selling costs"
+                    value={currency(equity.sellingCosts)}
+                    tooltip={sellingCostsTooltip}
+                    knowledgeKey="sellingCosts"
+                  />
                   <hr className="my-2" />
                   <Line
                     label="Estimated equity then"
                     value={currency(estimatedExitEquity)}
                     bold
                     tooltip={estimatedEquityTooltip}
+                    knowledgeKey="estimatedEquity"
                   />
                 </SummaryCard>
               </div>
@@ -4462,6 +5432,7 @@ export default function App() {
                     label="Wealth trajectory vs Index Fund"
                     tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
                     className="text-sm font-semibold text-slate-700"
+                    knowledgeKey="wealthTrajectory"
                   />
                 </div>
                 {!collapsedSections.wealthTrajectory ? (
@@ -4603,6 +5574,7 @@ export default function App() {
                       label="Return ratios over time"
                       tooltip={SECTION_DESCRIPTIONS.rateTrends}
                       className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="rateTrends"
                     />
                   </div>
                   {!collapsedSections.rateTrends ? (
@@ -4766,6 +5738,7 @@ export default function App() {
                       label="Equity growth over time"
                       tooltip={SECTION_DESCRIPTIONS.equityGrowth}
                       className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="equityGrowth"
                     />
                   </div>
                 </div>
@@ -4835,6 +5808,7 @@ export default function App() {
                       label="Annual cash flow"
                       tooltip={SECTION_DESCRIPTIONS.cashflowBars}
                       className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="cashflowBars"
                     />
                   </div>
                 </div>
@@ -4923,6 +5897,7 @@ export default function App() {
                       label="Interest vs principal split"
                       tooltip={SECTION_DESCRIPTIONS.interestSplit}
                       className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="interestSplit"
                     />
                   </div>
                 </div>
@@ -4986,6 +5961,7 @@ export default function App() {
                       label="Leverage multiplier"
                       tooltip={SECTION_DESCRIPTIONS.leverage}
                       className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="leverage"
                     />
                   </div>
                 </div>
@@ -5141,6 +6117,7 @@ export default function App() {
                       label="ROI vs rental yield heatmap"
                       tooltip={SECTION_DESCRIPTIONS.roiHeatmap}
                       className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="roiHeatmap"
                     />
                   </div>
                   {!collapsedSections.roiHeatmap ? (
@@ -5530,6 +6507,7 @@ export default function App() {
                     label="Wealth trajectory vs Index Fund"
                     tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
                     className="text-base font-semibold text-slate-700"
+                    knowledgeKey="wealthTrajectory"
                   />
                   <div className="text-[11px] text-slate-500">Years {chartRange.start} – {chartRange.end}</div>
                 </div>
@@ -6040,6 +7018,7 @@ export default function App() {
                     label="Return ratios over time"
                     tooltip={SECTION_DESCRIPTIONS.rateTrends}
                     className="text-base font-semibold text-slate-700"
+                    knowledgeKey="rateTrends"
                   />
                   <div className="text-[11px] text-slate-500">Years {rateChartRange.start} – {rateChartRange.end}</div>
                 </div>
@@ -6197,9 +7176,9 @@ export default function App() {
     )}
 
     {showTableModal && (
-        <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
-          <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+        <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
               <h2 className="text-base font-semibold text-slate-800">Saved scenarios overview</h2>
               <button
                 type="button"
@@ -6425,7 +7404,28 @@ export default function App() {
           </div>
         </div>
       )}
-    </div>
+
+      </div>
+
+      <KnowledgeBaseOverlay
+        open={knowledgeState.open}
+        onClose={closeKnowledgeBase}
+        groupDefinition={knowledgeGroupDefinition}
+        metrics={knowledgeGroupMetrics}
+        activeMetric={knowledgeActiveMetric}
+        activeSnapshot={knowledgeActiveSnapshot}
+        activeMetricId={knowledgeState.metricId}
+        onSelectMetric={handleSelectKnowledgeMetric}
+        chatMessages={knowledgeChatMessages}
+        chatInput={knowledgeChatInput}
+        chatStatus={knowledgeChatStatus}
+        chatError={knowledgeChatError}
+        onChatInputChange={setKnowledgeChatInput}
+        onChatSubmit={handleKnowledgeChatSubmit}
+        onChatClear={handleKnowledgeChatClear}
+        chatEnabled={chatEnabled}
+      />
+    </KnowledgeBaseContext.Provider>
   );
 }
 
@@ -6797,6 +7797,291 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
   return breakdowns;
 }
 
+function KnowledgeBaseOverlay({
+  open,
+  onClose,
+  groupDefinition,
+  metrics = [],
+  activeMetric,
+  activeSnapshot,
+  activeMetricId,
+  onSelectMetric,
+  chatMessages = [],
+  chatInput = '',
+  chatStatus = 'idle',
+  chatError = '',
+  onChatInputChange,
+  onChatSubmit,
+  onChatClear,
+  chatEnabled,
+}) {
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose?.();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
+  if (!open) {
+    return null;
+  }
+
+  const formatMetricValue = (snapshot, metricDefinition) => {
+    if (!snapshot) {
+      return 'Not available';
+    }
+    if (snapshot.formatted) {
+      return snapshot.formatted;
+    }
+    if (Number.isFinite(snapshot.value)) {
+      const unit = metricDefinition?.unit;
+      if (unit === 'percent') {
+        return formatPercent(snapshot.value);
+      }
+      if (unit === 'currency') {
+        return currency(snapshot.value);
+      }
+      if (unit === 'ratio') {
+        return snapshot.value.toFixed(2);
+      }
+      return snapshot.value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    }
+    return 'Not available';
+  };
+
+  const metricLabel = activeSnapshot?.label ?? activeMetric?.label ?? activeMetricId ?? 'Metric';
+  const metricValueDisplay = formatMetricValue(activeSnapshot, activeMetric);
+  const rawMetricValue = Number.isFinite(activeSnapshot?.value)
+    ? activeSnapshot.value.toLocaleString(undefined, {
+        maximumFractionDigits: activeMetric?.unit === 'percent' ? 4 : 2,
+      })
+    : null;
+  const description = activeMetric?.description ?? groupDefinition?.description ?? null;
+  const calculation = activeMetric?.calculation ?? null;
+  const importance = activeMetric?.importance ?? null;
+  const messages = Array.isArray(chatMessages) ? chatMessages : [];
+  const hasMessages = messages.length > 0;
+  const loading = chatStatus === 'loading';
+  const metricList = Array.isArray(metrics) && metrics.length > 0
+    ? metrics
+    : activeMetricId
+    ? [
+        {
+          id: activeMetricId,
+          label: metricLabel,
+          unit: activeMetric?.unit,
+          snapshot: activeSnapshot ?? null,
+        },
+      ]
+    : [];
+
+  const handleBackdropClick = (event) => {
+    if (event.target === event.currentTarget) {
+      onClose?.();
+    }
+  };
+
+  const handleMetricSelect = (metricId) => {
+    if (!metricId || metricId === activeMetricId) {
+      return;
+    }
+    onSelectMetric?.(metricId);
+  };
+
+  const headingId = 'knowledge-base-title';
+
+  return (
+    <div
+      className="no-print fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 px-4 py-6"
+      onClick={handleBackdropClick}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={headingId}
+    >
+      <div
+        className="relative flex h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+          <div>
+            <h2 id={headingId} className="text-base font-semibold text-slate-900">
+              Knowledge base
+            </h2>
+            <p className="text-xs text-slate-500">
+              {groupDefinition?.label ?? 'Deal metric insight'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+          >
+            Close
+          </button>
+        </div>
+        <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+          <aside className="w-full flex-shrink-0 border-b border-slate-200 bg-slate-50/70 px-5 py-5 text-sm text-slate-700 md:w-72 md:border-b-0 md:border-r md:px-6">
+            <div className="space-y-2">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  {groupDefinition?.label ?? 'Metric'}
+                </div>
+                {groupDefinition?.description ? (
+                  <p className="mt-1 text-[11px] leading-snug text-slate-600">{groupDefinition.description}</p>
+                ) : null}
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white/70">
+                {metricList.length > 0 ? (
+                  <ul className="max-h-64 overflow-y-auto py-2">
+                    {metricList.map((item) => {
+                      const isActive = item.id === activeMetricId;
+                      const displayValue = formatMetricValue(item.snapshot, item);
+                      return (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            onClick={() => handleMetricSelect(item.id)}
+                            className={`flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-[12px] transition ${
+                              isActive
+                                ? 'bg-indigo-50 font-semibold text-indigo-700'
+                                : 'hover:bg-slate-100'
+                            }`}
+                            aria-pressed={isActive}
+                          >
+                            <span className="flex-1 leading-snug">{item.label}</span>
+                            <span className="text-[11px] text-slate-500">{displayValue}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <div className="px-4 py-6 text-[11px] text-slate-500">
+                    No related metrics are available for this context yet.
+                  </div>
+                )}
+              </div>
+            </div>
+          </aside>
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <span className="text-[12px] font-semibold uppercase tracking-wide text-indigo-600">
+                  {groupDefinition?.label ?? 'Metric insight'}
+                </span>
+                <h3 className="text-xl font-semibold text-slate-900">{metricLabel}</h3>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Current value
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">{metricValueDisplay}</div>
+                  {rawMetricValue ? (
+                    <div className="text-[11px] text-slate-500">Raw value: {rawMetricValue}</div>
+                  ) : null}
+                </div>
+              </div>
+              {description ? (
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">What it measures</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">{description}</p>
+                </div>
+              ) : null}
+              {calculation ? (
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">How it’s calculated</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">{calculation}</p>
+                </div>
+              ) : null}
+              {importance ? (
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">Why it matters</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">{importance}</p>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-6 space-y-3 border-t border-slate-200 pt-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-slate-800">
+                  Ask Gemini about {metricLabel}
+                </h4>
+                {hasMessages ? (
+                  <button
+                    type="button"
+                    onClick={onChatClear}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+              {hasMessages ? (
+                <div className="max-h-60 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-[12px] text-slate-700">
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={
+                        message.role === 'user'
+                          ? 'ml-auto max-w-[85%] rounded-lg bg-indigo-100 px-3 py-2 text-indigo-800'
+                          : 'mr-auto max-w-[85%] rounded-lg bg-white px-3 py-2 text-slate-700 shadow-sm'
+                      }
+                    >
+                      {message.content}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[12px] leading-snug text-slate-500">
+                  Ask detailed questions about this metric, how it changes under different assumptions, or how it compares with other deals.
+                </p>
+              )}
+              {chatError ? (
+                <p className="text-[12px] text-rose-600" role="alert">
+                  {chatError}
+                </p>
+              ) : null}
+              {!chatEnabled ? (
+                <p className="text-[12px] text-slate-500">
+                  Provide a Gemini API key or chat endpoint in the settings to enable AI follow-ups.
+                </p>
+              ) : null}
+              <form onSubmit={onChatSubmit} className="space-y-2 text-[12px] text-slate-700">
+                <label className="flex flex-col gap-1">
+                  <span>Your question</span>
+                  <textarea
+                    value={chatInput}
+                    onChange={(event) => onChatInputChange?.(event.target.value)}
+                    className="min-h-[72px] w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    placeholder={`What should I consider about ${metricLabel}?`}
+                    disabled={loading}
+                  />
+                </label>
+                <div className="flex items-center justify-between text-[11px] text-slate-500">
+                  <span>Powered by Gemini</span>
+                  <button
+                    type="submit"
+                    className="rounded-full bg-slate-900 px-4 py-1.5 text-[12px] font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
+                    disabled={loading || !chatEnabled}
+                  >
+                    {loading ? 'Sending…' : 'Ask about this metric'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChatBubble({
   open,
   onToggle,
@@ -6931,32 +8216,72 @@ function ChartLegend({ payload = [], activeSeries, onToggle, excludedKeys = [] }
   );
 }
 
-function SectionTitle({ label, tooltip, className }) {
-  const classNames = ['group relative inline-flex items-center gap-1', className ?? 'text-sm font-semibold text-slate-700']
+function SectionTitle({ label, tooltip, className, knowledgeKey }) {
+  const knowledge = useContext(KnowledgeBaseContext);
+  const canOpen = Boolean(knowledgeKey && knowledge && typeof knowledge.open === 'function');
+  const isActive = Boolean(canOpen && knowledge.isOpen && knowledge.activeGroupId === knowledgeKey);
+  const classNames = [
+    'group relative inline-flex items-center gap-1',
+    className ?? 'text-sm font-semibold text-slate-700',
+    canOpen ? 'cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white' : '',
+    isActive ? 'text-indigo-700' : '',
+  ]
     .filter(Boolean)
     .join(' ');
 
-  if (!tooltip) {
-    return <span className={classNames}>{label}</span>;
-  }
+  const handleClick = () => {
+    if (canOpen) {
+      knowledge.open(knowledgeKey);
+    }
+  };
+
+  const handleKeyDown = (event) => {
+    if (!canOpen) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      knowledge.open(knowledgeKey);
+    }
+  };
 
   return (
-    <span className={classNames}>
-      <span>{label}</span>
-      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px] font-semibold text-slate-600">
-        i
-      </span>
-      <span className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block">
-        {tooltip}
-      </span>
+    <span
+      className={classNames}
+      role={canOpen ? 'button' : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      onClick={canOpen ? handleClick : undefined}
+      onKeyDown={canOpen ? handleKeyDown : undefined}
+    >
+      {canOpen ? (
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-0 rounded-lg transition ${
+            isActive ? 'bg-indigo-50' : 'bg-transparent group-hover:bg-slate-100 group-focus-within:bg-slate-100'
+          }`}
+        />
+      ) : null}
+      <span className={`relative z-10 ${isActive ? 'font-semibold' : ''}`}>{label}</span>
+      {tooltip ? (
+        <>
+          <span
+            className={`relative z-10 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px] font-semibold ${
+              isActive ? 'text-indigo-700' : 'text-slate-600'
+            }`}
+          >
+            i
+          </span>
+          <span className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block group-focus-within:block">
+            {tooltip}
+          </span>
+        </>
+      ) : null}
     </span>
   );
 }
 
-function SummaryCard({ title, children, tooltip, className }) {
+function SummaryCard({ title, children, tooltip, className, knowledgeKey }) {
   const titleNode =
     typeof title === 'string'
-      ? <SectionTitle label={title} tooltip={tooltip} />
+      ? <SectionTitle label={title} tooltip={tooltip} knowledgeKey={knowledgeKey} />
       : title;
 
   const cardClassName = ['rounded-2xl bg-white p-3 shadow-sm', className].filter(Boolean).join(' ');
@@ -6969,15 +8294,61 @@ function SummaryCard({ title, children, tooltip, className }) {
   );
 }
 
-function Line({ label, value, bold = false, tooltip }) {
+function Line({ label, value, bold = false, tooltip, knowledgeKey }) {
+  const knowledge = useContext(KnowledgeBaseContext);
   const hasTooltip = Boolean(tooltip);
+  const canOpen = Boolean(knowledgeKey && knowledge && typeof knowledge.open === 'function');
+  const isActive = Boolean(canOpen && knowledge.isOpen && knowledge.activeMetricId === knowledgeKey);
+
+  const classNames = [
+    'group relative flex items-center justify-between text-xs',
+    canOpen
+      ? 'cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white'
+      : hasTooltip
+      ? 'cursor-help'
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const handleClick = () => {
+    if (canOpen) {
+      knowledge.open(knowledgeKey);
+    }
+  };
+
+  const handleKeyDown = (event) => {
+    if (!canOpen) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      knowledge.open(knowledgeKey);
+    }
+  };
+
+  const labelClass = `relative z-10 ${isActive ? 'text-indigo-700' : 'text-slate-600'}`;
+  const valueColor = isActive ? 'text-indigo-700' : 'text-slate-800';
+  const valueClass = `relative z-10 ${bold ? 'font-semibold' : ''} ${valueColor}`;
 
   return (
-    <div className={`group relative flex items-center justify-between text-xs ${hasTooltip ? 'cursor-help' : ''}`}>
-      <span className="text-slate-600">{label}</span>
-      <span className={bold ? 'font-semibold text-slate-800' : 'text-slate-800'}>{value}</span>
+    <div
+      className={classNames}
+      role={canOpen ? 'button' : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      onClick={canOpen ? handleClick : undefined}
+      onKeyDown={canOpen ? handleKeyDown : undefined}
+    >
+      {canOpen ? (
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-0 rounded-lg transition ${
+            isActive ? 'bg-indigo-50' : 'bg-transparent group-hover:bg-slate-100 group-focus-within:bg-slate-100'
+          }`}
+        />
+      ) : null}
+      <span className={labelClass}>{label}</span>
+      <span className={valueClass}>{value}</span>
       {hasTooltip ? (
-        <div className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block">
+        <div className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block group-focus-within:block">
           {tooltip}
         </div>
       ) : null}
