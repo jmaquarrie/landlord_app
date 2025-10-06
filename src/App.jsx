@@ -258,7 +258,7 @@ const boundsToPolygon = (bounds) => {
   return points.map(([lat, lon]) => `${lat.toFixed(6)},${lon.toFixed(6)}`).join(':');
 };
 
-const samplePolygonPoints = (points, maxPoints = 50) => {
+const samplePolygonPoints = (points, maxPoints = 10) => {
   if (!Array.isArray(points) || points.length === 0) {
     return [];
   }
@@ -275,6 +275,22 @@ const samplePolygonPoints = (points, maxPoints = 50) => {
     sampled.push(lastPoint);
   }
   return sampled;
+};
+
+const formatCoordinate = (value) => {
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  return value.toFixed(6);
+};
+
+const distanceSquared = (lat1, lon1, lat2, lon2) => {
+  if (!Number.isFinite(lat1) || !Number.isFinite(lon1) || !Number.isFinite(lat2) || !Number.isFinite(lon2)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const latDiff = lat1 - lat2;
+  const lonDiff = lon1 - lon2;
+  return latDiff * latDiff + lonDiff * lonDiff;
 };
 
 const polygonPointsToSearchParam = (points) => {
@@ -461,7 +477,47 @@ const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, si
         continue;
       }
       const bounds = getBoundsFromPoints(points);
-      return { points, bounds, force, neighbourhood };
+
+      let locationId = '';
+      try {
+        const locationsResponse = await fetch(
+          `https://data.police.uk/api/locations?force=${encodeURIComponent(force)}&neighbourhood=${encodeURIComponent(
+            neighbourhood
+          )}`,
+          {
+            signal,
+            headers: { Accept: 'application/json' },
+          }
+        );
+        if (locationsResponse.ok) {
+          const locationsData = await locationsResponse.json();
+          if (Array.isArray(locationsData) && locationsData.length > 0) {
+            let closestId = '';
+            let closestDistance = Number.POSITIVE_INFINITY;
+            locationsData.forEach((location) => {
+              const locLat = Number.parseFloat(location?.latitude);
+              const locLon = Number.parseFloat(location?.longitude);
+              const id = typeof location?.id === 'string' ? location.id : '';
+              if (!id) {
+                return;
+              }
+              const distance = distanceSquared(lat, lon, locLat, locLon);
+              if (distance < closestDistance) {
+                closestDistance = distance;
+                closestId = id;
+              }
+            });
+            locationId = closestId;
+          }
+        }
+      } catch (locationsError) {
+        if (locationsError?.name === 'AbortError') {
+          throw locationsError;
+        }
+        console.warn('Unable to fetch neighbourhood locations for crime lookup:', locationsError);
+      }
+
+      return { points, bounds, force, neighbourhood, locationId };
     } catch (error) {
       if (error?.name === 'AbortError') {
         throw error;
@@ -2960,8 +3016,19 @@ export default function App() {
           const params = new URLSearchParams();
           if (entries && typeof entries === 'object') {
             Object.entries(entries).forEach(([key, value]) => {
-              if (typeof value === 'string' && value.trim() !== '') {
-                params.set(key, value);
+              if (value === null || value === undefined) {
+                return;
+              }
+              let normalized = '';
+              if (typeof value === 'string') {
+                normalized = value.trim();
+              } else if (typeof value === 'number') {
+                if (Number.isFinite(value)) {
+                  normalized = value.toString();
+                }
+              }
+              if (normalized !== '') {
+                params.set(key, normalized);
               }
             });
           }
@@ -2970,6 +3037,14 @@ export default function App() {
           }
           return params;
         };
+
+        const latParam = formatCoordinate(geocodeLat);
+        const lonParam = formatCoordinate(geocodeLon);
+
+        const baseParams = createCrimeParams({
+          lat: latParam,
+          lng: lonParam,
+        });
 
         const fetchCrimesWithParams = async (searchParams) => {
           const url = `https://data.police.uk/api/crimes-street/all-crime?${searchParams.toString()}`;
@@ -3042,11 +3117,6 @@ export default function App() {
           }
         };
 
-        const baseParams = createCrimeParams({
-          lat: geocodeLat.toString(),
-          lng: geocodeLon.toString(),
-        });
-
         finalCrimeData = await attemptFetch(baseParams, { boundsHint: geocodeBounds || null });
 
         if (!finalCrimeData && geocodeBounds) {
@@ -3067,14 +3137,20 @@ export default function App() {
               signal: controller.signal,
             });
             if (neighbourhood) {
-              const polygonParam = polygonPointsToSearchParam(neighbourhood.points);
-              if (polygonParam) {
-                const polyParams = createCrimeParams({ poly: polygonParam });
-                const boundsHint = neighbourhood.bounds ?? geocodeBounds ?? null;
-                finalCrimeData = await attemptFetch(polyParams, { boundsHint });
-                if (finalCrimeData && neighbourhood.bounds) {
-                  summaryBoundsHint = neighbourhood.bounds;
+              const boundsHint = neighbourhood.bounds ?? geocodeBounds ?? null;
+              if (!finalCrimeData && neighbourhood.locationId) {
+                const locationParams = createCrimeParams({ location_id: neighbourhood.locationId });
+                finalCrimeData = await attemptFetch(locationParams, { boundsHint });
+              }
+              if (!finalCrimeData) {
+                const polygonParam = polygonPointsToSearchParam(neighbourhood.points);
+                if (polygonParam) {
+                  const polyParams = createCrimeParams({ poly: polygonParam });
+                  finalCrimeData = await attemptFetch(polyParams, { boundsHint });
                 }
+              }
+              if (finalCrimeData && neighbourhood.bounds) {
+                summaryBoundsHint = neighbourhood.bounds;
               }
             }
           } catch (boundaryError) {
