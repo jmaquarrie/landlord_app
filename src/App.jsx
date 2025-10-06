@@ -284,6 +284,21 @@ const formatCoordinate = (value) => {
   return value.toFixed(6);
 };
 
+const normalizeCrimeMonth = (value) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const monthMatch = trimmed.match(/^(\d{4})-(\d{2})/);
+  if (!monthMatch) {
+    return '';
+  }
+  return `${monthMatch[1]}-${monthMatch[2]}`;
+};
+
 const distanceSquared = (lat1, lon1, lat2, lon2) => {
   if (!Number.isFinite(lat1) || !Number.isFinite(lon1) || !Number.isFinite(lat2) || !Number.isFinite(lon2)) {
     return Number.POSITIVE_INFINITY;
@@ -2994,6 +3009,7 @@ export default function App() {
     (async () => {
       try {
         let lastUpdatedDate = '';
+        let lastUpdatedMonth = '';
         try {
           const lastUpdatedResponse = await fetch('https://data.police.uk/api/crime-last-updated', {
             signal: controller.signal,
@@ -3003,6 +3019,7 @@ export default function App() {
             const lastUpdatedData = await lastUpdatedResponse.json();
             if (lastUpdatedData && typeof lastUpdatedData.date === 'string') {
               lastUpdatedDate = lastUpdatedData.date;
+              lastUpdatedMonth = normalizeCrimeMonth(lastUpdatedData.date);
             }
           }
         } catch (error) {
@@ -3032,8 +3049,9 @@ export default function App() {
               }
             });
           }
-          if (lastUpdatedDate) {
-            params.set('date', lastUpdatedDate);
+          const dateParam = normalizeCrimeMonth(lastUpdatedMonth || lastUpdatedDate);
+          if (dateParam) {
+            params.set('date', dateParam);
           }
           return params;
         };
@@ -3174,13 +3192,14 @@ export default function App() {
           throw new Error(fallbackErrorMessage);
         }
 
-        const month =
-          lastUpdatedDate || (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '');
+        const month = normalizeCrimeMonth(
+          lastUpdatedMonth || (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '')
+        );
         const summary = summarizeCrimeData(finalCrimeData, {
           lat: geocodeLat,
           lon: geocodeLon,
           month,
-          lastUpdated: lastUpdatedDate,
+          lastUpdated: normalizeCrimeMonth(lastUpdatedDate) || lastUpdatedDate,
           fallbackLocationName: geocodeLocationSummary || geocodeDisplayName || propertyAddress,
           mapBoundsOverride: summaryBoundsHint ?? geocodeBounds,
           mapCenterOverride:
