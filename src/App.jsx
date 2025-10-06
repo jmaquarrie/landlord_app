@@ -907,6 +907,9 @@ const normalizeScenarioList = (list) =>
 const DEFAULT_INPUTS = {
   propertyAddress: '',
   propertyUrl: '',
+  propertyLatitude: null,
+  propertyLongitude: null,
+  propertyDisplayName: '',
   bedrooms: 3,
   bathrooms: 1,
   purchasePrice: 70000,
@@ -2411,6 +2414,7 @@ export default function App() {
     () => SCENARIO_RATIO_PERCENT_COLUMNS[1]?.key ?? SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'irr'
   );
   const [scenarioAlignInputs, setScenarioAlignInputs] = useState(false);
+  const [scenarioOverviewMode, setScenarioOverviewMode] = useState('scatter');
   const [scenarioSort, setScenarioSort] = useState({ key: 'savedAt', direction: 'desc' });
   const [previewActive, setPreviewActive] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
@@ -2584,6 +2588,7 @@ export default function App() {
       rateChartSettings: rateSettingsValue,
       performanceYear: performanceYearValue,
       scenarioAlignInputs: alignValue,
+      scenarioOverviewMode: overviewMode,
       scenarioScatterXAxis: scatterX,
       scenarioScatterYAxis: scatterY,
       scenarioSort: sortValue,
@@ -2605,6 +2610,9 @@ export default function App() {
     }
     if (typeof metric === 'string' && (metric === 'irr' || metric === 'roi')) {
       setRoiHeatmapMetric(metric);
+    }
+    if (overviewMode === 'map' || overviewMode === 'scatter') {
+      setScenarioOverviewMode(overviewMode === 'map' ? 'map' : 'scatter');
     }
     if (chartRangeValue && typeof chartRangeValue === 'object') {
       const start = Number(chartRangeValue.start);
@@ -2971,6 +2979,54 @@ export default function App() {
       }
     };
   }, [inputs.propertyAddress]);
+
+  useEffect(() => {
+    const status = geocodeState.status;
+    const data = geocodeState.data;
+    if (status === 'success' && data) {
+      const lat = Number(data.lat);
+      const lon = Number(data.lon);
+      const nextLat = Number.isFinite(lat) ? lat : null;
+      const nextLon = Number.isFinite(lon) ? lon : null;
+      const displayName =
+        typeof data.displayName === 'string' && data.displayName.trim() !== '' ? data.displayName : '';
+      setInputs((prev) => {
+        const currentDisplay = typeof prev.propertyDisplayName === 'string' ? prev.propertyDisplayName : '';
+        if (
+          prev.propertyLatitude === nextLat &&
+          prev.propertyLongitude === nextLon &&
+          currentDisplay === displayName
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          propertyLatitude: nextLat,
+          propertyLongitude: nextLon,
+          propertyDisplayName: displayName,
+        };
+      });
+      return;
+    }
+    if ((status === 'idle' || status === 'error') && !data) {
+      setInputs((prev) => {
+        const currentDisplay = typeof prev.propertyDisplayName === 'string' ? prev.propertyDisplayName : '';
+        if (
+          (prev.propertyLatitude === null || prev.propertyLatitude === undefined) &&
+          (prev.propertyLongitude === null || prev.propertyLongitude === undefined) &&
+          currentDisplay === ''
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          propertyLatitude: null,
+          propertyLongitude: null,
+          propertyDisplayName: '',
+        };
+      });
+    }
+  }, [geocodeState.status, geocodeState.data]);
 
   useEffect(() => {
     if (crimeAbortRef.current) {
@@ -3368,6 +3424,17 @@ export default function App() {
         const bathroomsValue = Number(
           evaluationInputs.bathrooms ?? scenarioDefaults.bathrooms ?? DEFAULT_INPUTS.bathrooms
         );
+        const propertyLatValue = Number(
+          scenarioDefaults.propertyLatitude ?? evaluationInputs.propertyLatitude
+        );
+        const propertyLonValue = Number(
+          scenarioDefaults.propertyLongitude ?? evaluationInputs.propertyLongitude
+        );
+        const propertyDisplayName =
+          typeof scenarioDefaults.propertyDisplayName === 'string'
+            ? scenarioDefaults.propertyDisplayName.trim()
+            : '';
+        const propertyAddressLabel = (scenarioDefaults.propertyAddress ?? '').trim();
         const rentalYieldValue = purchasePrice > 0 ? grossRentYear1 / purchasePrice : 0;
         return {
           scenario,
@@ -3376,6 +3443,12 @@ export default function App() {
           monthlyRent,
           bedrooms: Number.isFinite(bedroomsValue) ? bedroomsValue : null,
           bathrooms: Number.isFinite(bathroomsValue) ? bathroomsValue : null,
+          location: {
+            lat: Number.isFinite(propertyLatValue) ? propertyLatValue : null,
+            lon: Number.isFinite(propertyLonValue) ? propertyLonValue : null,
+            label: propertyDisplayName !== '' ? propertyDisplayName : propertyAddressLabel,
+            address: propertyAddressLabel,
+          },
           ratios: {
             cap: Number.isFinite(metrics.cap) ? metrics.cap : 0,
             rentalYield: Number.isFinite(rentalYieldValue) ? rentalYieldValue : 0,
@@ -3444,10 +3517,16 @@ export default function App() {
       return [];
     }
     return scenarioTableData
-      .map(({ scenario, metrics, ratios, purchasePrice, monthlyRent, bedrooms, bathrooms }) => {
+      .map(({ scenario, metrics, ratios, purchasePrice, monthlyRent, bedrooms, bathrooms, location }) => {
         const x = ratios?.[scenarioScatterXAxis];
         const y = ratios?.[scenarioScatterYAxis];
         const propertyNetAfterTax = Number(metrics.propertyNetWealthAfterTax) || 0;
+        const lat = Number(location?.lat);
+        const lon = Number(location?.lon);
+        const locationLabel =
+          typeof location?.label === 'string' && location.label.trim() !== '' ? location.label : '';
+        const addressLabel =
+          typeof location?.address === 'string' && location.address.trim() !== '' ? location.address : '';
         return {
           id: scenario.id,
           name: scenario.name,
@@ -3458,6 +3537,10 @@ export default function App() {
           monthlyRent: Number.isFinite(monthlyRent) ? monthlyRent : null,
           bedrooms: Number.isFinite(bedrooms) ? bedrooms : null,
           bathrooms: Number.isFinite(bathrooms) ? bathrooms : null,
+          lat: Number.isFinite(lat) ? lat : null,
+          lon: Number.isFinite(lon) ? lon : null,
+          locationLabel,
+          addressLabel,
           savedAt: scenario.savedAt,
           isActive: scenario.id === selectedScenarioId,
         };
@@ -3477,6 +3560,40 @@ export default function App() {
       SCENARIO_RATIO_PERCENT_COLUMNS[0],
     [scenarioScatterYAxis]
   );
+  const scenarioMapPoints = useMemo(() => {
+    if (scenarioTableData.length === 0) {
+      return [];
+    }
+    return scenarioTableData
+      .map(({ scenario, metrics, purchasePrice, monthlyRent, location }) => {
+        const lat = Number(location?.lat);
+        const lon = Number(location?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          return null;
+        }
+        const label =
+          typeof location?.label === 'string' && location.label.trim() !== ''
+            ? location.label
+            : scenario.name;
+        const address =
+          typeof location?.address === 'string' && location.address.trim() !== ''
+            ? location.address
+            : '';
+        return {
+          id: scenario.id,
+          name: scenario.name,
+          lat,
+          lon,
+          label,
+          address,
+          propertyNetAfterTax: Number(metrics.propertyNetWealthAfterTax) || 0,
+          purchasePrice: Number.isFinite(purchasePrice) ? purchasePrice : null,
+          monthlyRent: Number.isFinite(monthlyRent) ? monthlyRent : null,
+          isActive: scenario.id === selectedScenarioId,
+        };
+      })
+      .filter(Boolean);
+  }, [scenarioTableData, selectedScenarioId]);
 
   const exitYearCount = Math.max(1, Math.floor(Number(equity.exitYear) || 1));
 
@@ -4774,7 +4891,7 @@ export default function App() {
         },
       });
       const imageData = canvasToJpeg(canvas, { quality: 0.6, maxWidth: 1400, maxHeight: 2000 });
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4', compress: true });
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const marginX = 12;
@@ -5235,6 +5352,59 @@ export default function App() {
     </div>
   );
 
+  const stepperInput = (key, label, { min = 0, max = Number.POSITIVE_INFINITY, step = 1 } = {}) => {
+    const rawValue = Number.isFinite(inputs[key]) ? inputs[key] : min;
+    const value = Number.isFinite(rawValue) ? rawValue : 0;
+    const hasMin = Number.isFinite(min);
+    const hasMax = Number.isFinite(max);
+    const clampValue = (next) => {
+      let candidate = next;
+      if (hasMin) {
+        candidate = Math.max(min, candidate);
+      }
+      if (hasMax) {
+        candidate = Math.min(max, candidate);
+      }
+      return candidate;
+    };
+    const adjust = (delta) => {
+      const target = clampValue(value + delta);
+      if (target !== value) {
+        onNum(key, target, 0);
+      }
+    };
+    const decreaseDisabled = hasMin ? value <= min : false;
+    const increaseDisabled = hasMax ? value >= max : false;
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-medium text-slate-600">{label}</label>
+        <div className="flex items-center justify-between rounded-xl border border-slate-300 bg-white px-1 py-1">
+          <button
+            type="button"
+            onClick={() => adjust(-step)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-lg font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+            aria-label={`Decrease ${label}`}
+            disabled={decreaseDisabled}
+          >
+            −
+          </button>
+          <div className="min-w-[3rem] text-center text-sm font-semibold text-slate-700" aria-live="polite">
+            {roundTo(value, 0)}
+          </div>
+          <button
+            type="button"
+            onClick={() => adjust(step)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-lg font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+            aria-label={`Increase ${label}`}
+            disabled={increaseDisabled}
+          >
+            +
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const textInput = (key, label, type = 'text') => (
     <div className="flex flex-col gap-1">
       <label className="text-xs font-medium text-slate-600">{label}</label>
@@ -5301,6 +5471,7 @@ export default function App() {
       },
       performanceYear: Math.max(1, Math.round(Number(performanceYear) || 1)),
       scenarioAlignInputs: Boolean(scenarioAlignInputs),
+      scenarioOverviewMode: scenarioOverviewMode === 'map' ? 'map' : 'scatter',
       scenarioScatterXAxis,
       scenarioScatterYAxis,
       scenarioSort: {
@@ -5806,8 +5977,8 @@ export default function App() {
                 >
                   <div className="grid gap-2 md:grid-cols-2">
                     <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
-                    <div>{smallInput('bedrooms', 'Bedrooms', 1, 0)}</div>
-                    <div>{smallInput('bathrooms', 'Bathrooms', 1, 0)}</div>
+                    <div>{stepperInput('bedrooms', 'Bedrooms', { min: 0, step: 1 })}</div>
+                    <div>{stepperInput('bathrooms', 'Bathrooms', { min: 0, step: 1 })}</div>
                     <div className="flex flex-col gap-1 md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Property URL</label>
                     <div className="flex items-center gap-2">
@@ -8399,36 +8570,69 @@ export default function App() {
                 <div className="space-y-6">
                   <div className="space-y-3">
                     <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
-                      <label className="flex items-center gap-1" htmlFor="scenario-scatter-x-axis">
-                        <span className="font-semibold text-slate-700">X-axis</span>
-                        <select
-                          id="scenario-scatter-x-axis"
-                          value={scenarioScatterXAxis}
-                          onChange={(event) => setScenarioScatterXAxis(event.target.value)}
-                          className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
-                        >
-                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => (
-                            <option key={`scatter-x-${option.key}`} value={option.key}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="flex items-center gap-1" htmlFor="scenario-scatter-y-axis">
-                        <span className="font-semibold text-slate-700">Y-axis</span>
-                        <select
-                          id="scenario-scatter-y-axis"
-                          value={scenarioScatterYAxis}
-                          onChange={(event) => setScenarioScatterYAxis(event.target.value)}
-                          className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
-                        >
-                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => (
-                            <option key={`scatter-y-${option.key}`} value={option.key}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="flex items-center gap-2 rounded-full border border-slate-300 px-2.5 py-1">
+                        <span className="font-semibold text-slate-700">View</span>
+                        <div className="inline-flex overflow-hidden rounded-full border border-slate-200">
+                          <button
+                            type="button"
+                            onClick={() => setScenarioOverviewMode('scatter')}
+                            className={`px-3 py-1 text-xs font-semibold transition ${
+                              scenarioOverviewMode === 'scatter'
+                                ? 'bg-slate-700 text-white'
+                                : 'bg-white text-slate-600 hover:bg-slate-100'
+                            }`}
+                            aria-pressed={scenarioOverviewMode === 'scatter'}
+                          >
+                            Scatter
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setScenarioOverviewMode('map')}
+                            className={`px-3 py-1 text-xs font-semibold transition ${
+                              scenarioOverviewMode === 'map'
+                                ? 'bg-slate-700 text-white'
+                                : 'bg-white text-slate-600 hover:bg-slate-100'
+                            }`}
+                            aria-pressed={scenarioOverviewMode === 'map'}
+                          >
+                            Map
+                          </button>
+                        </div>
+                      </div>
+                      {scenarioOverviewMode === 'scatter' ? (
+                        <>
+                          <label className="flex items-center gap-1" htmlFor="scenario-scatter-x-axis">
+                            <span className="font-semibold text-slate-700">X-axis</span>
+                            <select
+                              id="scenario-scatter-x-axis"
+                              value={scenarioScatterXAxis}
+                              onChange={(event) => setScenarioScatterXAxis(event.target.value)}
+                              className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                            >
+                              {SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => (
+                                <option key={`scatter-x-${option.key}`} value={option.key}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex items-center gap-1" htmlFor="scenario-scatter-y-axis">
+                            <span className="font-semibold text-slate-700">Y-axis</span>
+                            <select
+                              id="scenario-scatter-y-axis"
+                              value={scenarioScatterYAxis}
+                              onChange={(event) => setScenarioScatterYAxis(event.target.value)}
+                              className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                            >
+                              {SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => (
+                                <option key={`scatter-y-${option.key}`} value={option.key}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </>
+                      ) : null}
                       <label className="flex items-center gap-2 rounded-full border border-slate-300 px-2.5 py-1">
                         <input
                           type="checkbox"
@@ -8439,7 +8643,24 @@ export default function App() {
                       </label>
                     </div>
                     <div className="h-72 w-full">
-                      {scenarioScatterData.length === 0 ? (
+                      {scenarioOverviewMode === 'map' ? (
+                        scenarioMapPoints.length === 0 ? (
+                          <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-500">
+                            Add property locations to your saved scenarios to view them on the map.
+                          </div>
+                        ) : (
+                          <ScenarioMapView
+                            points={scenarioMapPoints}
+                            activeScenarioId={selectedScenarioId}
+                            onSelectScenario={(id) =>
+                              handleLoadScenario(id, {
+                                preserveLoadPanel: true,
+                              })
+                            }
+                            propertyNetAfterTaxLabel={propertyNetAfterTaxLabel}
+                          />
+                        )
+                      ) : scenarioScatterData.length === 0 ? (
                         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-500">
                           Saved scenarios with valid ratios will appear here.
                         </div>
@@ -8636,6 +8857,186 @@ export default function App() {
         chatEnabled={chatEnabled}
       />
     </KnowledgeBaseContext.Provider>
+  );
+}
+
+function ScenarioMapView({ points = [], onSelectScenario, activeScenarioId, propertyNetAfterTaxLabel }) {
+  const initialLeafletReady = typeof window !== 'undefined' && !!window.L;
+  const [leafletReady, setLeafletReady] = useState(initialLeafletReady);
+  const [loading, setLoading] = useState(!initialLeafletReady);
+  const [error, setError] = useState('');
+  const containerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef([]);
+  const netLabel =
+    typeof propertyNetAfterTaxLabel === 'string' && propertyNetAfterTaxLabel.trim() !== ''
+      ? propertyNetAfterTaxLabel
+      : 'Property net after tax';
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    if (leafletReady) {
+      setLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    const ensureStyles = () => {
+      if (!document.querySelector('link[data-leaflet-styles]')) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+        link.dataset.leafletStyles = 'true';
+        document.head.appendChild(link);
+      }
+    };
+    ensureStyles();
+    const handleLoaded = () => {
+      if (cancelled) return;
+      setError('');
+      setLeafletReady(true);
+      setLoading(false);
+    };
+    const handleError = () => {
+      if (cancelled) return;
+      setError('Map library failed to load.');
+      setLoading(false);
+    };
+    if (window.L) {
+      handleLoaded();
+      return undefined;
+    }
+    let script = document.querySelector('script[data-leaflet]');
+    if (!script) {
+      script = document.createElement('script');
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.async = true;
+      script.dataset.leaflet = 'true';
+      document.body.appendChild(script);
+    }
+    script.addEventListener('load', handleLoaded);
+    script.addEventListener('error', handleError);
+    return () => {
+      cancelled = true;
+      script.removeEventListener('load', handleLoaded);
+      script.removeEventListener('error', handleError);
+    };
+  }, [leafletReady]);
+
+  useEffect(() => {
+    return () => {
+      markersRef.current.forEach((marker) => marker.remove());
+      markersRef.current = [];
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!leafletReady || !containerRef.current) {
+      return undefined;
+    }
+    markersRef.current.forEach((marker) => marker.remove());
+    markersRef.current = [];
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+    if (!Array.isArray(points) || points.length === 0) {
+      return undefined;
+    }
+    const { L } = window;
+    if (!L) {
+      return undefined;
+    }
+    const map = L.map(containerRef.current, { preferCanvas: true, attributionControl: true });
+    mapRef.current = map;
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+    const bounds = [];
+    let activeMarker = null;
+    points.forEach((point) => {
+      const marker = L.circleMarker([point.lat, point.lon], {
+        radius: point.id === activeScenarioId ? 9 : 7,
+        color: point.id === activeScenarioId ? '#16a34a' : '#2563eb',
+        fillColor: point.id === activeScenarioId ? '#16a34a' : '#2563eb',
+        fillOpacity: 0.85,
+        weight: 2,
+        bubblingMouseEvents: false,
+      });
+      const popup = document.createElement('div');
+      popup.className = 'space-y-1 text-xs text-slate-700';
+      const title = document.createElement('div');
+      title.className = 'font-semibold text-slate-800';
+      title.textContent = point.name || 'Saved scenario';
+      popup.appendChild(title);
+      if (point.address) {
+        const addressLine = document.createElement('div');
+        addressLine.className = 'text-slate-500';
+        addressLine.textContent = point.address;
+        popup.appendChild(addressLine);
+      }
+      if (Number.isFinite(point.purchasePrice)) {
+        const priceLine = document.createElement('div');
+        priceLine.textContent = `Purchase price: ${currency(point.purchasePrice)}`;
+        popup.appendChild(priceLine);
+      }
+      if (Number.isFinite(point.monthlyRent)) {
+        const rentLine = document.createElement('div');
+        rentLine.textContent = `Monthly rent: ${currency(point.monthlyRent)}`;
+        popup.appendChild(rentLine);
+      }
+      const netLine = document.createElement('div');
+      netLine.textContent = `${netLabel}: ${currency(point.propertyNetAfterTax)}`;
+      popup.appendChild(netLine);
+      marker.bindPopup(popup);
+      marker.on('click', () => {
+        if (typeof onSelectScenario === 'function') {
+          onSelectScenario(point.id);
+        }
+      });
+      marker.addTo(map);
+      markersRef.current.push(marker);
+      bounds.push([point.lat, point.lon]);
+      if (point.id === activeScenarioId) {
+        activeMarker = marker;
+      }
+    });
+    if (bounds.length === 1) {
+      map.setView(bounds[0], 13);
+    } else if (bounds.length > 1) {
+      map.fitBounds(bounds, { padding: [32, 32] });
+    }
+    if (activeMarker) {
+      activeMarker.openPopup();
+    }
+    return () => {
+      markersRef.current.forEach((marker) => marker.remove());
+      markersRef.current = [];
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [leafletReady, points, onSelectScenario, activeScenarioId, propertyNetAfterTaxLabel]);
+
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full rounded-xl border border-slate-200" aria-label="Saved scenarios map" />
+      {loading ? (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-white/80 text-xs text-slate-500">
+          Loading map…
+        </div>
+      ) : null}
+      {error ? (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-white/80 text-xs text-rose-600">
+          {error}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
