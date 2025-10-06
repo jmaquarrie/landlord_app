@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
   Area,
+  LineChart,
+  ComposedChart,
+  Bar,
   XAxis,
   YAxis,
   Tooltip,
@@ -10,12 +13,29 @@ import {
   CartesianGrid,
   ReferenceLine,
   ReferenceDot,
+  ReferenceArea,
   Line as RechartsLine,
+  ScatterChart,
+  Scatter,
+  Cell,
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
+const currencyThousands = (value) => {
+  if (!isFinite(value)) {
+    return '–';
+  }
+  const negative = value < 0;
+  const absoluteThousands = Math.abs(value) / 1000;
+  const maximumFractionDigits = absoluteThousands >= 100 ? 0 : absoluteThousands >= 10 ? 1 : 2;
+  const formatted = absoluteThousands.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  });
+  return `${negative ? '−' : ''}£${formatted}k`;
+};
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
@@ -35,7 +55,7 @@ const CHAT_API_URL =
     ? VITE_CHAT_API_URL.replace(/\/$/, '')
     : '';
 const GOOGLE_API_KEY = 'AIzaSyB9K7pla_JX_vy-d5zGXikxD9sJ1pglH94';
-const GOOGLE_DEFAULT_MODEL = 'gemini-flash-latest';
+const GOOGLE_DEFAULT_MODEL = 'gemini-2.5-flash';
 const GOOGLE_MODEL =
   typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
     ? VITE_GOOGLE_MODEL.trim()
@@ -52,6 +72,7 @@ let shortIoDomainCache = SHORT_IO_CONFIGURED_DOMAIN;
 let shortIoDomainLookupPromise = null;
 const SHORT_IO_ENABLED = SHORT_IO_API_KEY !== '';
 const GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const KnowledgeBaseContext = createContext(null);
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
@@ -73,6 +94,8 @@ const SERIES_COLORS = {
   yieldRate: '#0369a1',
   cashOnCash: '#0f766e',
   irrSeries: '#7c3aed',
+  irrHurdle: '#f43f5e',
+  npvToDate: '#0f172a',
 };
 
 const SERIES_LABELS = {
@@ -90,7 +113,548 @@ const SERIES_LABELS = {
   yieldRate: 'Yield rate',
   cashOnCash: 'Cash on cash',
   irrSeries: 'IRR',
+  irrHurdle: 'IRR hurdle',
+  npvToDate: 'Net present value',
 };
+
+const CASHFLOW_BAR_COLORS = {
+  rentIncome: '#0ea5e9',
+  operatingExpenses: '#ef4444',
+  mortgagePayments: '#7c3aed',
+  netCashflow: '#10b981',
+};
+
+const ROI_HEATMAP_OFFSETS = [-0.02, -0.01, 0, 0.01, 0.02];
+const HEATMAP_COLOR_START = [248, 113, 113];
+const HEATMAP_COLOR_END = [34, 197, 94];
+const HEATMAP_COLOR_NEUTRAL = [148, 163, 184];
+const LEVERAGE_LTV_OPTIONS = Array.from({ length: 18 }, (_, index) =>
+  Number((0.1 + index * 0.05).toFixed(2))
+);
+const LEVERAGE_SAFE_MAX_LTV = 0.75;
+const LEVERAGE_MAX_LTV = LEVERAGE_LTV_OPTIONS[LEVERAGE_LTV_OPTIONS.length - 1];
+const CRIME_SERIES_LIMIT = 400;
+
+const formatCrimeCategory = (value) => {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return 'Other';
+  }
+  return value
+    .split('-')
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(' ');
+};
+
+const formatCrimeMonth = (value) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const [yearString, monthString] = value.split('-');
+  const year = Number(yearString);
+  const monthIndex = Number(monthString) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || monthIndex < 0 || monthIndex > 11) {
+    return value;
+  }
+  const date = new Date(year, monthIndex, 1);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric' }).format(date);
+};
+
+const getAddressComponent = (address, keys) => {
+  if (!address || typeof address !== 'object') {
+    return '';
+  }
+  for (const key of keys) {
+    const value = address[key];
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value.trim();
+    }
+  }
+  return '';
+};
+
+const parseBoundingBox = (boundingBox) => {
+  if (!Array.isArray(boundingBox) || boundingBox.length !== 4) {
+    return null;
+  }
+  const south = Number.parseFloat(boundingBox[0]);
+  const north = Number.parseFloat(boundingBox[1]);
+  const west = Number.parseFloat(boundingBox[2]);
+  const east = Number.parseFloat(boundingBox[3]);
+  if (!Number.isFinite(south) || !Number.isFinite(north) || !Number.isFinite(west) || !Number.isFinite(east)) {
+    return null;
+  }
+  const minLat = Math.min(south, north);
+  const maxLat = Math.max(south, north);
+  const minLon = Math.min(west, east);
+  const maxLon = Math.max(west, east);
+  return [
+    [minLat, minLon],
+    [maxLat, maxLon],
+  ];
+};
+
+const getBoundsFromPoints = (points) => {
+  if (!Array.isArray(points) || points.length === 0) {
+    return null;
+  }
+  let minLat = Infinity;
+  let minLon = Infinity;
+  let maxLat = -Infinity;
+  let maxLon = -Infinity;
+  points.forEach((point) => {
+    if (!point) {
+      return;
+    }
+    const lat = Number.parseFloat(point.lat ?? point.latitude);
+    const lon = Number.parseFloat(point.lon ?? point.longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      minLat = Math.min(minLat, lat);
+      maxLat = Math.max(maxLat, lat);
+      minLon = Math.min(minLon, lon);
+      maxLon = Math.max(maxLon, lon);
+    }
+  });
+  if (
+    !Number.isFinite(minLat) ||
+    !Number.isFinite(maxLat) ||
+    !Number.isFinite(minLon) ||
+    !Number.isFinite(maxLon) ||
+    minLat === Infinity ||
+    maxLat === -Infinity ||
+    minLon === Infinity ||
+    maxLon === -Infinity
+  ) {
+    return null;
+  }
+  return [
+    [minLat, minLon],
+    [maxLat, maxLon],
+  ];
+};
+
+const boundsToPolygon = (bounds) => {
+  if (!Array.isArray(bounds) || bounds.length !== 2) {
+    return '';
+  }
+  const [[minLat, minLon], [maxLat, maxLon]] = bounds;
+  if (
+    !Number.isFinite(minLat) ||
+    !Number.isFinite(minLon) ||
+    !Number.isFinite(maxLat) ||
+    !Number.isFinite(maxLon)
+  ) {
+    return '';
+  }
+  const points = [
+    [minLat, minLon],
+    [minLat, maxLon],
+    [maxLat, maxLon],
+    [maxLat, minLon],
+    [minLat, minLon],
+  ];
+  return points.map(([lat, lon]) => `${lat.toFixed(6)},${lon.toFixed(6)}`).join(':');
+};
+
+const samplePolygonPoints = (points, maxPoints = 50) => {
+  if (!Array.isArray(points) || points.length === 0) {
+    return [];
+  }
+  if (points.length <= maxPoints) {
+    return points;
+  }
+  const step = Math.max(1, Math.floor(points.length / maxPoints));
+  const sampled = [];
+  for (let index = 0; index < points.length; index += step) {
+    sampled.push(points[index]);
+  }
+  const lastPoint = points[points.length - 1];
+  if (sampled[sampled.length - 1] !== lastPoint) {
+    sampled.push(lastPoint);
+  }
+  return sampled;
+};
+
+const polygonPointsToSearchParam = (points) => {
+  if (!Array.isArray(points) || points.length === 0) {
+    return '';
+  }
+  const cleaned = points
+    .map((point) => {
+      if (!point) {
+        return null;
+      }
+      const lat = Number.parseFloat(point.lat ?? point.latitude);
+      const lon = Number.parseFloat(point.lon ?? point.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        return null;
+      }
+      return { lat, lon };
+    })
+    .filter(Boolean);
+  if (cleaned.length === 0) {
+    return '';
+  }
+  const sampled = samplePolygonPoints(cleaned);
+  if (sampled.length === 0) {
+    return '';
+  }
+  const closed = sampled[0];
+  const needsClosure =
+    sampled[sampled.length - 1].lat !== closed.lat || sampled[sampled.length - 1].lon !== closed.lon;
+  const sequence = needsClosure ? [...sampled, closed] : sampled;
+  return sequence.map((point) => `${point.lat.toFixed(6)},${point.lon.toFixed(6)}`).join(':');
+};
+
+const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
+  if (!geocodeData) {
+    const fallback = typeof fallbackAddress === 'string' ? fallbackAddress : '';
+    return { summary: fallback, query: fallback, bounds: null, postcode: '', city: '', county: '' };
+  }
+  const address = geocodeData.address ?? null;
+  const displayName = typeof geocodeData.displayName === 'string' ? geocodeData.displayName : '';
+  const bounds = parseBoundingBox(geocodeData.boundingBox);
+
+  if (!address) {
+    const fallback = displayName || fallbackAddress || '';
+    return { summary: fallback, query: fallback, bounds, postcode: '', city: '', county: '' };
+  }
+
+  const building = getAddressComponent(address, ['house_number', 'house_name', 'building']);
+  const road = getAddressComponent(address, [
+    'road',
+    'pedestrian',
+    'residential',
+    'footway',
+    'path',
+    'cycleway',
+    'service',
+  ]);
+  const locality = getAddressComponent(address, ['suburb', 'neighbourhood', 'neighborhood']);
+  const city = getAddressComponent(address, ['city', 'town', 'village', 'hamlet', 'municipality']);
+  const county = getAddressComponent(address, ['county', 'state_district']);
+  const state = getAddressComponent(address, ['state']);
+  const postcode = getAddressComponent(address, ['postcode']);
+  const country = getAddressComponent(address, ['country']);
+
+  const propertyLine = [building, road].filter(Boolean).join(' ').trim();
+  const localityLine = locality ? locality : '';
+
+  const summaryParts = [];
+  if (propertyLine) {
+    summaryParts.push(propertyLine);
+  } else if (road) {
+    summaryParts.push(road);
+  }
+  if (localityLine) {
+    summaryParts.push(localityLine);
+  }
+  if (city) {
+    summaryParts.push(city);
+  }
+  if (postcode) {
+    summaryParts.push(postcode);
+  }
+
+  const queryParts = [];
+  if (propertyLine) {
+    queryParts.push(propertyLine);
+  }
+  if (localityLine) {
+    queryParts.push(localityLine);
+  }
+  if (city) {
+    queryParts.push(city);
+  }
+  if (county) {
+    queryParts.push(county);
+  }
+  if (state && state !== county) {
+    queryParts.push(state);
+  }
+  if (postcode) {
+    queryParts.push(postcode);
+  }
+  if (country) {
+    queryParts.push(country);
+  }
+
+  const summaryFallback = displayName || fallbackAddress || '';
+  const summary = summaryParts.length > 0 ? summaryParts.join(', ') : summaryFallback;
+  const query = queryParts.length > 0 ? queryParts.join(', ') : summary || summaryFallback;
+
+  return { summary, query, bounds, postcode, city, county };
+};
+
+const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, signal }) => {
+  const queries = [];
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    queries.push(`${lat},${lon}`);
+  }
+  if (typeof postcode === 'string' && postcode.trim() !== '') {
+    queries.push(postcode.trim());
+  }
+  if (typeof addressQuery === 'string' && addressQuery.trim() !== '') {
+    queries.push(addressQuery.trim());
+  }
+
+  const attempted = new Set();
+
+  for (const query of queries) {
+    const normalized = query.toLowerCase();
+    if (attempted.has(normalized)) {
+      continue;
+    }
+    attempted.add(normalized);
+
+    try {
+      const locateResponse = await fetch(
+        `https://data.police.uk/api/locate-neighbourhood?q=${encodeURIComponent(query)}`,
+        {
+          signal,
+          headers: { Accept: 'application/json' },
+        }
+      );
+      if (!locateResponse.ok) {
+        continue;
+      }
+      const locateData = await locateResponse.json();
+      const force = typeof locateData?.force === 'string' ? locateData.force : '';
+      const neighbourhood =
+        typeof locateData?.neighbourhood === 'string' ? locateData.neighbourhood : '';
+      if (!force || !neighbourhood) {
+        continue;
+      }
+
+      const boundaryResponse = await fetch(
+        `https://data.police.uk/api/${encodeURIComponent(force)}/${encodeURIComponent(
+          neighbourhood
+        )}/boundary`,
+        {
+          signal,
+          headers: { Accept: 'application/json' },
+        }
+      );
+      if (!boundaryResponse.ok) {
+        continue;
+      }
+      const boundaryData = await boundaryResponse.json();
+      if (!Array.isArray(boundaryData) || boundaryData.length === 0) {
+        continue;
+      }
+      const points = boundaryData
+        .map((point) => {
+          if (!point) {
+            return null;
+          }
+          const latValue = Number.parseFloat(point.latitude);
+          const lonValue = Number.parseFloat(point.longitude);
+          if (!Number.isFinite(latValue) || !Number.isFinite(lonValue)) {
+            return null;
+          }
+          return { lat: latValue, lon: lonValue };
+        })
+        .filter(Boolean);
+      if (points.length < 3) {
+        continue;
+      }
+      const bounds = getBoundsFromPoints(points);
+      return { points, bounds, force, neighbourhood };
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw error;
+      }
+      console.warn('Unable to resolve police neighbourhood boundary:', error);
+    }
+  }
+
+  return null;
+};
+
+const summarizeCrimeData = (
+  crimes,
+  { lat, lon, month, lastUpdated, fallbackLocationName, mapBoundsOverride, mapCenterOverride }
+) => {
+  const totalIncidents = Array.isArray(crimes) ? crimes.length : 0;
+  const safeLat = Number.isFinite(lat) ? lat : 0;
+  const safeLon = Number.isFinite(lon) ? lon : 0;
+  const categoryCounts = new Map();
+  const outcomeCounts = new Map();
+  const streetCounts = new Map();
+  const mapCrimes = [];
+  let truncated = false;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+
+  if (Array.isArray(crimes)) {
+    crimes.forEach((crime) => {
+      const categoryLabel = formatCrimeCategory(crime?.category);
+      categoryCounts.set(categoryLabel, (categoryCounts.get(categoryLabel) ?? 0) + 1);
+
+      const outcomeLabel =
+        typeof crime?.outcome_status?.category === 'string' ? crime.outcome_status.category : '';
+      if (outcomeLabel) {
+        outcomeCounts.set(outcomeLabel, (outcomeCounts.get(outcomeLabel) ?? 0) + 1);
+      }
+
+      const streetLabel =
+        typeof crime?.location?.street?.name === 'string' ? crime.location.street.name.trim() : '';
+      if (streetLabel) {
+        streetCounts.set(streetLabel, (streetCounts.get(streetLabel) ?? 0) + 1);
+      }
+
+      const pointLat = Number.parseFloat(crime?.location?.latitude);
+      const pointLon = Number.parseFloat(crime?.location?.longitude);
+      if (Number.isFinite(pointLat) && Number.isFinite(pointLon)) {
+        minLat = Math.min(minLat, pointLat);
+        maxLat = Math.max(maxLat, pointLat);
+        minLon = Math.min(minLon, pointLon);
+        maxLon = Math.max(maxLon, pointLon);
+        if (mapCrimes.length < CRIME_SERIES_LIMIT) {
+          mapCrimes.push({
+            id: crime?.id ?? crime?.persistent_id ?? `${pointLat},${pointLon},${mapCrimes.length}`,
+            lat: pointLat,
+            lon: pointLon,
+            category: categoryLabel,
+            street: streetLabel || fallbackLocationName || 'Nearby street',
+            outcome: outcomeLabel || 'Outcome not yet available',
+            month: typeof crime?.month === 'string' ? crime.month : month,
+          });
+        } else {
+          truncated = true;
+        }
+      }
+    });
+  }
+
+  const topCategories = Array.from(categoryCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([label, count]) => ({
+      label,
+      count,
+      share: totalIncidents > 0 ? count / totalIncidents : 0,
+    }));
+
+  const topOutcomes = Array.from(outcomeCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([label, count]) => ({
+      label,
+      count,
+    }));
+
+  const mostCommonStreet = Array.from(streetCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  const hasBoundsFromData =
+    Number.isFinite(minLat) &&
+    Number.isFinite(maxLat) &&
+    Number.isFinite(minLon) &&
+    Number.isFinite(maxLon) &&
+    minLat !== Infinity &&
+    maxLat !== -Infinity &&
+    minLon !== Infinity &&
+    maxLon !== -Infinity &&
+    (Math.abs(maxLat - minLat) > 0 || Math.abs(maxLon - minLon) > 0);
+
+  const boundsFromData = hasBoundsFromData ? [[minLat, minLon], [maxLat, maxLon]] : null;
+  const overrideBounds =
+    Array.isArray(mapBoundsOverride) &&
+    mapBoundsOverride.length === 2 &&
+    Number.isFinite(mapBoundsOverride[0]?.[0]) &&
+    Number.isFinite(mapBoundsOverride[0]?.[1]) &&
+    Number.isFinite(mapBoundsOverride[1]?.[0]) &&
+    Number.isFinite(mapBoundsOverride[1]?.[1])
+      ? mapBoundsOverride
+      : null;
+
+  let combinedBounds = boundsFromData;
+  if (overrideBounds) {
+    if (!combinedBounds) {
+      combinedBounds = overrideBounds;
+    } else {
+      const minLatCombined = Math.min(
+        combinedBounds[0][0],
+        combinedBounds[1][0],
+        overrideBounds[0][0],
+        overrideBounds[1][0]
+      );
+      const maxLatCombined = Math.max(
+        combinedBounds[0][0],
+        combinedBounds[1][0],
+        overrideBounds[0][0],
+        overrideBounds[1][0]
+      );
+      const minLonCombined = Math.min(
+        combinedBounds[0][1],
+        combinedBounds[1][1],
+        overrideBounds[0][1],
+        overrideBounds[1][1]
+      );
+      const maxLonCombined = Math.max(
+        combinedBounds[0][1],
+        combinedBounds[1][1],
+        overrideBounds[0][1],
+        overrideBounds[1][1]
+      );
+      combinedBounds = [
+        [minLatCombined, minLonCombined],
+        [maxLatCombined, maxLonCombined],
+      ];
+    }
+  }
+
+  const hasBounds = Array.isArray(combinedBounds);
+  const spanLat = hasBounds ? Math.abs(combinedBounds[1][0] - combinedBounds[0][0]) : 0;
+  const spanLon = hasBounds ? Math.abs(combinedBounds[1][1] - combinedBounds[0][1]) : 0;
+  const span = Math.max(spanLat, spanLon);
+  let zoom = 15;
+  if (span > 0.2) {
+    zoom = 11;
+  } else if (span > 0.1) {
+    zoom = 12;
+  } else if (span > 0.05) {
+    zoom = 13;
+  } else if (span > 0.02) {
+    zoom = 14;
+  }
+
+  const overrideCenterLat = Number.isFinite(mapCenterOverride?.lat) ? mapCenterOverride.lat : null;
+  const overrideCenterLon = Number.isFinite(mapCenterOverride?.lon) ? mapCenterOverride.lon : null;
+
+  const centerLat =
+    overrideCenterLat ?? (hasBounds ? (combinedBounds[0][0] + combinedBounds[1][0]) / 2 : safeLat);
+  const centerLon =
+    overrideCenterLon ?? (hasBounds ? (combinedBounds[0][1] + combinedBounds[1][1]) / 2 : safeLon);
+
+  return {
+    month,
+    monthLabel: month ? formatCrimeMonth(month) : '',
+    lastUpdated,
+    totalIncidents,
+    topCategories,
+    topOutcomes,
+    locationSummary: mostCommonStreet || fallbackLocationName || '',
+    mapCrimes,
+    incidentsOnMap: mapCrimes.length,
+    mapLimited: truncated,
+    mapCenter: {
+      lat: Number.isFinite(centerLat) ? centerLat : safeLat,
+      lon: Number.isFinite(centerLon) ? centerLon : safeLon,
+      zoom,
+    },
+    mapBounds: hasBounds ? combinedBounds : null,
+    mapKey: `${Number.isFinite(centerLat) ? centerLat.toFixed(4) : safeLat.toFixed(4)}|${
+      Number.isFinite(centerLon) ? centerLon.toFixed(4) : safeLon.toFixed(4)
+    }|${month ?? ''}|${totalIncidents}`,
+  };
+};
+
+const INITIAL_CRIME_STATE = { status: 'idle', data: null, error: '' };
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -103,13 +667,14 @@ const EXPANDED_SERIES_ORDER = [
   'indexFund1_5x',
   'indexFund2x',
   'indexFund4x',
-  'capRate',
-  'yieldRate',
-  'cashOnCash',
-  'irrSeries',
 ];
 
-const PERCENT_SERIES_KEYS = new Set(['capRate', 'yieldRate', 'cashOnCash', 'irrSeries']);
+const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
+const RATE_STATIC_PERCENT_KEYS = ['irrHurdle'];
+const RATE_PERCENT_SERIES = [...RATE_PERCENT_KEYS, ...RATE_STATIC_PERCENT_KEYS];
+const RATE_VALUE_KEYS = ['npvToDate'];
+const RATE_SERIES_KEYS = [...RATE_PERCENT_SERIES, ...RATE_VALUE_KEYS];
+const PERCENT_SERIES_KEYS = new Set(RATE_PERCENT_SERIES);
 
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
@@ -159,10 +724,18 @@ const sanitizeCashflowColumns = (keys, fallbackKeys = DEFAULT_CASHFLOW_COLUMN_OR
   if (fallbackOutput.length > 0) {
     return fallbackOutput;
   }
-  return Array.from(CASHFLOW_COLUMN_KEY_SET);
+  return DEFAULT_CASHFLOW_COLUMN_ORDER;
 };
 
 const DEFAULT_CASHFLOW_COLUMNS = sanitizeCashflowColumns(DEFAULT_CASHFLOW_COLUMN_ORDER);
+const SCENARIO_RATIO_PERCENT_COLUMNS = [
+  { key: 'cap', label: 'Cap rate' },
+  { key: 'rentalYield', label: 'Rental yield' },
+  { key: 'yoc', label: 'Yield on cost' },
+  { key: 'coc', label: 'Cash-on-cash' },
+  { key: 'irr', label: 'IRR' },
+];
+const SCENARIO_RATIO_KEY_SET = new Set(SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => option.key));
 const CASHFLOW_COLUMNS_STORAGE_KEY = 'qc_cashflow_columns';
 const DEFAULT_AUTH_CREDENTIALS = { username: SCENARIO_USERNAME, password: SCENARIO_PASSWORD };
 
@@ -191,6 +764,24 @@ const sortScenarios = (list) =>
       })
     : [];
 
+const mergeBooleanMap = (current, overrides) => {
+  if (!current || typeof current !== 'object') {
+    return current;
+  }
+  if (!overrides || typeof overrides !== 'object') {
+    return current;
+  }
+  let changed = false;
+  const next = { ...current };
+  Object.keys(current).forEach((key) => {
+    if (typeof overrides[key] === 'boolean' && next[key] !== overrides[key]) {
+      next[key] = overrides[key];
+      changed = true;
+    }
+  });
+  return changed ? next : current;
+};
+
 const normalizeScenarioRecord = (scenario) => {
   if (!scenario || typeof scenario !== 'object') {
     return null;
@@ -210,6 +801,12 @@ const normalizeScenarioRecord = (scenario) => {
     scenario.preview && typeof scenario.preview === 'object'
       ? { active: Boolean(scenario.preview.active) }
       : { active: false };
+  const rawUiState =
+    scenario.uiState ?? (typeof scenario.ui_state === 'object' ? scenario.ui_state : undefined);
+  const uiState =
+    rawUiState && typeof rawUiState === 'object'
+      ? JSON.parse(JSON.stringify(rawUiState))
+      : null;
   const normalized = {
     id: scenario.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     name,
@@ -221,6 +818,9 @@ const normalizeScenarioRecord = (scenario) => {
       scenario.cashflowColumns ?? scenario.data?.cashflowColumns ?? DEFAULT_CASHFLOW_COLUMNS
     ),
   };
+  if (uiState) {
+    normalized.uiState = uiState;
+  }
   return normalized;
 };
 
@@ -236,14 +836,18 @@ const normalizeScenarioList = (list) =>
 const DEFAULT_INPUTS = {
   propertyAddress: '',
   propertyUrl: '',
-  purchasePrice: 250000,
+  bedrooms: 3,
+  purchasePrice: 70000,
   depositPct: 0.25,
   closingCostsPct: 0.01,
   renovationCost: 0,
   interestRate: 0.055,
   mortgageYears: 30,
   loanType: 'repayment',
-  monthlyRent: 1400,
+  useBridgingLoan: false,
+  bridgingLoanTermMonths: 12,
+  bridgingLoanInterestRate: 0.008,
+  monthlyRent: 800,
   vacancyPct: 0.05,
   mgmtPct: 0.1,
   repairsPct: 0.08,
@@ -251,9 +855,10 @@ const DEFAULT_INPUTS = {
   otherOpexPerYear: 300,
   annualAppreciation: 0.03,
   rentGrowth: 0.02,
-  exitYear: 10,
+  exitYear: 20,
   sellingCostsPct: 0.02,
   discountRate: 0.07,
+  irrHurdle: 0.12,
   buyerType: 'individual',
   propertiesOwned: 0,
   indexFundGrowth: DEFAULT_INDEX_GROWTH,
@@ -280,6 +885,25 @@ const formatPercent = (value) => {
 };
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const mixColorChannel = (start, end, t) => Math.round(start + (end - start) * t);
+
+const getHeatmapColor = (value, min, max) => {
+  if (!Number.isFinite(value)) {
+    return 'rgba(226,232,240,0.6)';
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+    const [r, g, b] = HEATMAP_COLOR_NEUTRAL;
+    return `rgba(${r}, ${g}, ${b}, 0.35)`;
+  }
+  const ratio = clamp((value - min) / (max - min), 0, 1);
+  const [rs, gs, bs] = HEATMAP_COLOR_START;
+  const [re, ge, be] = HEATMAP_COLOR_END;
+  const r = mixColorChannel(rs, re, ratio);
+  const g = mixColorChannel(gs, ge, ratio);
+  const b = mixColorChannel(bs, be, ratio);
+  return `rgba(${r}, ${g}, ${b}, 0.85)`;
+};
 
 const encodeSharePayload = (payload) => {
   try {
@@ -318,7 +942,7 @@ const decodeSharePayload = (value) => {
 
 const SCORE_TOOLTIPS = {
   overall:
-    'Overall score combines cash-on-cash, cap rate, DSCR, NPV, and first-year cash flow. Higher is better (0-100).',
+    'Score blends cash-on-cash return, cap rate, debt service coverage, discounted net present value, and year-one after-tax cash flow into a 0-100 composite.',
   delta:
     'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
   deltaAfterTax:
@@ -338,19 +962,468 @@ const SECTION_DESCRIPTIONS = {
     'Discounts annual cash flows (including sale proceeds) through the selected exit year back to today at your chosen discount rate.',
   wealthTrajectory:
     'Plots property value, property gross and net wealth, and the index fund alternative across the hold period.',
+  rateTrends:
+    'Track cap rate, rental yield, cash-on-cash, IRR, and net present value across the hold period to compare return profiles over time.',
   exitComparison:
     'Compares exit-year totals for the property and the index fund, including after-tax wealth and cumulative rental tax.',
-  sensitivity:
-    'Adjust the rent sensitivity to see how Year 1 after-tax cash flow shifts when rents move up or down.',
+  cashflowBars:
+    'Visualises annual rent, expenses, debt service, and after-tax cash flow to highlight lean years or sudden swings.',
+  roiHeatmap:
+    'Stress-tests total ROI or IRR outcomes across a grid of rental yields and capital growth rates.',
+  equityGrowth:
+    'Shows how property equity builds relative to the outstanding loan balance across the investment horizon.',
+  interestSplit:
+    'Highlights how each year’s mortgage payment splits between interest and principal to visualise amortisation.',
+  leverage:
+    'Stress-tests IRR and total ROI outcomes across different loan-to-value ratios to gauge the impact of leverage.',
+  crime:
+    'Summarises recent police-reported crime around the property and plots the incidents on an interactive map.',
 };
 
 const KEY_RATIO_TOOLTIPS = {
   cap: 'First-year net operating income divided by the purchase price.',
+  rentalYield: 'First-year rent collected after vacancy divided by the purchase price.',
   yoc: 'First-year net operating income divided by total project cost (price + closing + renovation).',
   coc: 'Year 1 after-debt cash flow divided by total cash invested.',
   dscr: 'Debt service coverage ratio: Year 1 NOI divided by annual debt service.',
   mortgage: 'Estimated monthly mortgage payment for the modeled loan.',
   irr: 'Internal rate of return based on annual cash flows and sale proceeds through the modeled exit year.',
+};
+
+const KNOWLEDGE_GROUPS = {
+  cashNeeded: {
+    label: 'Cash needed',
+    description: 'Upfront cash requirements to acquire and prepare the property.',
+    metrics: [
+      'deposit',
+      'ltv',
+      'stampDuty',
+      'closingCosts',
+      'renovationCost',
+      'bridgingLoanAmount',
+      'netCashIn',
+      'totalCashRequired',
+    ],
+  },
+  performance: {
+    label: 'Annual performance',
+    description: 'Income, operating costs, financing costs, and after-tax cash flow for the selected year.',
+    metrics: [
+      'grossRent',
+      'operatingExpenses',
+      'noi',
+      'mortgageDebtService',
+      'bridgingDebtService',
+      'cashflowPreTax',
+      'rentalTax',
+      'cashflowAfterTax',
+    ],
+  },
+  keyRatios: {
+    label: 'Key ratios',
+    description: 'Return and coverage ratios that summarise deal quality.',
+    metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrHurdle', 'dscr', 'mortgagePayment'],
+  },
+  exitComparison: {
+    label: 'Exit comparison',
+    description: 'Compares exit-year wealth between the property and the index fund alternative.',
+    metrics: ['indexFundValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'rentalTaxTotal'],
+  },
+  exit: {
+    label: 'Equity at exit',
+    description: 'Breakdown of sale proceeds and remaining debt at the chosen exit year.',
+    metrics: ['futureValue', 'remainingLoan', 'sellingCosts', 'estimatedEquity'],
+  },
+  wealthTrajectory: {
+    label: 'Wealth trajectory',
+    description: 'Tracks how equity builds relative to the index fund over time.',
+    metrics: ['propertyValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'reinvestFund', 'indexFundValue'],
+  },
+  rateTrends: {
+    label: 'Return ratios over time',
+    description: 'Shows how return ratios evolve through the hold period.',
+    metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrHurdle', 'npvToDate'],
+  },
+  cashflowBars: {
+    label: 'Annual cash flow',
+    description: 'Highlights how rent covers expenses, debt service, and tax each year.',
+    metrics: ['grossRent', 'operatingExpenses', 'mortgageDebtService', 'bridgingDebtService', 'cashflowAfterTax'],
+  },
+  equityGrowth: {
+    label: 'Equity growth',
+    description: 'Splits the property value between lender balance and owned equity.',
+    metrics: ['propertyValue', 'loanBalance', 'ownerEquity'],
+  },
+  interestSplit: {
+    label: 'Interest vs principal split',
+    description: 'Illustrates how each year’s payment shifts from interest to principal.',
+    metrics: ['interestPaidYear1', 'principalPaidYear1'],
+  },
+  leverage: {
+    label: 'Leverage multiplier',
+    description: 'Stress-tests how returns and profit change with different loan-to-value ratios.',
+    metrics: ['ltv', 'irr', 'roi', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+  },
+  roiHeatmap: {
+    label: 'ROI vs rental yield heatmap',
+    description: 'Shows how rent yield and capital growth assumptions impact IRR and ROI.',
+    metrics: ['rentalYield', 'yieldOnCost', 'irr', 'roi', 'annualAppreciation', 'rentGrowth'],
+  },
+};
+
+const KNOWLEDGE_METRICS = {
+  deposit: {
+    label: 'Deposit',
+    groups: ['cashNeeded'],
+    description: 'Equity paid upfront toward the purchase price.',
+    calculation: 'Purchase price × deposit %.',
+    importance: 'Sets the initial equity stake and determines the loan-to-value ratio offered by lenders.',
+    unit: 'currency',
+  },
+  ltv: {
+    label: 'Loan-to-value (LTV)',
+    groups: ['cashNeeded', 'leverage'],
+    description: 'Share of the purchase that is financed by debt instead of cash.',
+    calculation: '1 − deposit %.',
+    importance: 'Higher leverage boosts returns when the deal performs but increases risk and borrowing costs.',
+    unit: 'percent',
+  },
+  stampDuty: {
+    label: 'Stamp Duty Land Tax',
+    groups: ['cashNeeded'],
+    description: 'Estimated SDLT payable on completion based on buyer profile and purchase price.',
+    calculation: 'Band-based SDLT calculation for the property value and buyer type.',
+    importance: 'A major upfront cost that differs for companies, additional properties, and first-time buyers.',
+    unit: 'currency',
+  },
+  closingCosts: {
+    label: 'Other closing costs',
+    groups: ['cashNeeded'],
+    description: 'Legal fees, broker charges, surveys, and miscellaneous transaction costs.',
+    calculation: 'Purchase price × closing cost %.',
+    importance: 'Accounts for frictional costs that need to be funded alongside the deposit.',
+    unit: 'currency',
+  },
+  renovationCost: {
+    label: 'Renovation budget',
+    groups: ['cashNeeded'],
+    description: 'Upfront capital allocated to refurbishment or initial works.',
+    calculation: 'User-specified renovation spend before any financing.',
+    importance: 'Impacts total project cost and the pace at which the property can be rented.',
+    unit: 'currency',
+  },
+  bridgingLoanAmount: {
+    label: 'Bridging loan cover',
+    groups: ['cashNeeded'],
+    description: 'Short-term finance used to fund the deposit until the long-term mortgage completes.',
+    calculation: 'Deposit amount when bridging finance is enabled.',
+    importance: 'Reduces cash required on day one but adds temporary interest costs that must be budgeted.',
+    unit: 'currency',
+  },
+  netCashIn: {
+    label: 'Net cash in',
+    groups: ['cashNeeded'],
+    description: 'Investor cash committed after accounting for any bridging funds.',
+    calculation: 'Total cash required − bridging loan amount.',
+    importance: 'Represents the equity tied up in the project until the bridge is refinanced.',
+    unit: 'currency',
+  },
+  totalCashRequired: {
+    label: 'Total cash required',
+    groups: ['cashNeeded'],
+    description: 'Sum of deposit, stamp duty, closing costs, and renovation spend before financing.',
+    calculation: 'Deposit + stamp duty + other closing costs + renovation budget.',
+    importance: 'Sets the total capital needed to complete the purchase and works.',
+    unit: 'currency',
+  },
+  grossRent: {
+    label: 'Gross rent (vacancy adjusted)',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Expected rent collected in the selected year after accounting for vacancy.',
+    calculation: 'Monthly rent × 12 × (1 − vacancy %).',
+    importance: 'Primary income stream that must cover operating costs and debt service.',
+    unit: 'currency',
+  },
+  operatingExpenses: {
+    label: 'Operating expenses',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Management, repairs, insurance, and other annual running costs.',
+    calculation: 'Variable operating % of rent plus fixed annual expenses.',
+    importance: 'Higher expenses reduce net operating income and available cash flow.',
+    unit: 'currency',
+  },
+  noi: {
+    label: 'Net operating income (NOI)',
+    groups: ['performance'],
+    description: 'Income after operating expenses but before debt service and tax.',
+    calculation: 'Gross rent − operating expenses.',
+    importance: 'Foundation for cap rate, DSCR, and cash flow analysis.',
+    unit: 'currency',
+  },
+  mortgageDebtService: {
+    label: 'Debt service',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Annual mortgage payments on the long-term loan.',
+    calculation: 'Total annual debt service − bridging interest payments.',
+    importance: 'Key cash outflow that determines leverage sustainability and DSCR.',
+    unit: 'currency',
+  },
+  bridgingDebtService: {
+    label: 'Debt service (bridging)',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Interest-only payments on the bridging loan prior to refinancing.',
+    calculation: 'Bridging balance × monthly bridge rate × term months within the year.',
+    importance: 'Temporary cost that can erode early-year cash flow until permanent financing begins.',
+    unit: 'currency',
+  },
+  cashflowPreTax: {
+    label: 'Cash flow (pre-tax)',
+    groups: ['performance'],
+    description: 'Net income after expenses and debt service but before tax.',
+    calculation: 'NOI − total debt service.',
+    importance: 'Indicates the property’s ability to generate distributable cash prior to taxes.',
+    unit: 'currency',
+  },
+  rentalTax: {
+    label: 'Rental income tax',
+    groups: ['performance'],
+    description: 'Income or corporation tax due on rental profits for the selected year.',
+    calculation: 'Taxed on annual cash flow according to buyer type and personal allowances.',
+    importance: 'Reduces distributable cash and varies materially between company and personal ownership.',
+    unit: 'currency',
+  },
+  cashflowAfterTax: {
+    label: 'Cash flow (after tax)',
+    groups: ['performance', 'cashflowBars'],
+    description: 'Net cash retained after servicing debt and paying tax.',
+    calculation: 'Pre-tax cash flow − rental tax.',
+    importance: 'Shows real cash yield to the investor for the selected year.',
+    unit: 'currency',
+  },
+  cap: {
+    label: 'Cap rate',
+    groups: ['keyRatios', 'rateTrends'],
+    description: 'Income yield relative to purchase price ignoring financing.',
+    calculation: 'Year 1 NOI ÷ purchase price.',
+    importance: 'Benchmark for comparing property income streams across markets.',
+    unit: 'percent',
+  },
+  rentalYield: {
+    label: 'Rental yield',
+    groups: ['keyRatios', 'rateTrends', 'roiHeatmap'],
+    description: 'Rent collected after vacancy as a share of purchase price.',
+    calculation: 'Gross rent after vacancy ÷ purchase price.',
+    importance: 'Quick indicator of income intensity and sensitivity to rent changes.',
+    unit: 'percent',
+  },
+  yoc: {
+    label: 'Yield on cost',
+    groups: ['keyRatios', 'rateTrends', 'roiHeatmap'],
+    description: 'NOI relative to the total project cost including works.',
+    calculation: 'Year 1 NOI ÷ (purchase price + closing + renovation).',
+    importance: 'Captures the return after considering improvement spend.',
+    unit: 'percent',
+  },
+  coc: {
+    label: 'Cash-on-cash return',
+    groups: ['keyRatios', 'rateTrends'],
+    description: 'Year-one cash flow after debt divided by total cash invested.',
+    calculation: 'Year 1 after-tax cash flow ÷ total cash required.',
+    importance: 'Measures how quickly invested cash is recouped through annual distributions.',
+    unit: 'percent',
+  },
+  irr: {
+    label: 'Internal rate of return (IRR)',
+    groups: ['keyRatios', 'rateTrends', 'leverage', 'roiHeatmap'],
+    description: 'Discount rate that sets the net present value of projected cash flows and sale proceeds to zero.',
+    calculation: 'Solve for IRR using annual cash flows and exit proceeds through the hold period.',
+    importance: 'Captures time value of money and overall deal efficiency.',
+    unit: 'percent',
+  },
+  irrHurdle: {
+    label: 'IRR hurdle',
+    groups: ['keyRatios', 'rateTrends', 'leverage'],
+    description: 'Target IRR threshold used to benchmark performance.',
+    calculation: 'User-defined hurdle rate.',
+    importance: 'Helps decide whether projected returns compensate for the risk taken.',
+    unit: 'percent',
+  },
+  dscr: {
+    label: 'Debt service coverage ratio (DSCR)',
+    groups: ['keyRatios'],
+    description: 'Measures headroom between NOI and annual debt obligations.',
+    calculation: 'Year 1 NOI ÷ annual debt service.',
+    importance: 'Key underwriting metric for lenders and a signal of cash flow resilience.',
+    unit: 'ratio',
+  },
+  mortgagePayment: {
+    label: 'Monthly mortgage payment',
+    groups: ['keyRatios'],
+    description: 'Estimated monthly payment on the long-term mortgage.',
+    calculation: 'Amortising or interest-only payment based on loan terms.',
+    importance: 'Determines ongoing debt obligations and affordability.',
+    unit: 'currency',
+  },
+  indexFundValue: {
+    label: 'Index fund value',
+    groups: ['exitComparison', 'wealthTrajectory'],
+    description: 'Value of investing upfront cash into the chosen index fund alternative.',
+    calculation: 'Initial cash invested × (1 + index growth)^{years}.',
+    importance: 'Provides an opportunity-cost benchmark versus the property.',
+    unit: 'currency',
+  },
+  propertyGross: {
+    label: 'Property gross wealth',
+    groups: ['exitComparison', 'wealthTrajectory'],
+    description: 'Property value plus cumulative cash retained before tax and reinvested balances.',
+    calculation: 'Future value + cumulative pre-tax cash retained + reinvested fund.',
+    importance: 'Shows the property’s total economic footprint without tax drag.',
+    unit: 'currency',
+  },
+  propertyNet: {
+    label: 'Property net wealth',
+    groups: ['exitComparison', 'wealthTrajectory'],
+    description: 'Net sale proceeds plus cumulative pre-tax cash retained and reinvested balance.',
+    calculation: 'Net sale proceeds + cumulative pre-tax cash kept + reinvested fund.',
+    importance: 'Represents investor wealth before tax when exiting the property.',
+    unit: 'currency',
+  },
+  propertyNetAfterTax: {
+    label: 'Property net after tax',
+    groups: ['exitComparison', 'wealthTrajectory', 'leverage'],
+    description: 'Net sale proceeds plus cumulative after-tax cash retained and reinvested balance.',
+    calculation: 'Net sale proceeds + cumulative after-tax cash kept + reinvested fund.',
+    importance: 'Illustrates investor wealth after paying rental taxes and selling costs.',
+    unit: 'currency',
+  },
+  rentalTaxTotal: {
+    label: 'Rental tax (cumulative)',
+    groups: ['exitComparison'],
+    description: 'Total income or corporation tax paid on rental profits through exit.',
+    calculation: 'Sum of annual property tax liabilities.',
+    importance: 'Highlights the drag of taxation on portfolio cash flow.',
+    unit: 'currency',
+  },
+  futureValue: {
+    label: 'Future value',
+    groups: ['exit', 'wealthTrajectory'],
+    description: 'Projected market value at the selected exit year.',
+    calculation: 'Purchase price compounded by annual appreciation for the hold period.',
+    importance: 'Sets the basis for sale proceeds and equity build-up.',
+    unit: 'currency',
+  },
+  remainingLoan: {
+    label: 'Remaining loan balance',
+    groups: ['exit', 'equityGrowth'],
+    description: 'Outstanding mortgage principal at exit after scheduled amortisation.',
+    calculation: 'Amortised balance after the number of months in the hold period.',
+    importance: 'Determines how much of the sale price repays debt before equity is realised.',
+    unit: 'currency',
+  },
+  sellingCosts: {
+    label: 'Selling costs',
+    groups: ['exit'],
+    description: 'Estimated agency and legal costs deducted on sale.',
+    calculation: 'Future value × selling cost %.',
+    importance: 'Reduces net proceeds and must be budgeted in exit planning.',
+    unit: 'currency',
+  },
+  estimatedEquity: {
+    label: 'Estimated equity then',
+    groups: ['exit'],
+    description: 'Projected equity released after paying selling costs and clearing the loan.',
+    calculation: 'Future value − selling costs − remaining loan.',
+    importance: 'Represents the cash lump sum available at exit before tax.',
+    unit: 'currency',
+  },
+  propertyValue: {
+    label: 'Property value',
+    groups: ['wealthTrajectory', 'equityGrowth'],
+    description: 'Estimated market value of the property at the analysis horizon.',
+    calculation: 'Purchase price grown by annual appreciation.',
+    importance: 'Combines market growth assumptions with hold period to show headline value.',
+    unit: 'currency',
+  },
+  reinvestFund: {
+    label: 'Reinvested fund balance',
+    groups: ['wealthTrajectory'],
+    description: 'Value of after-tax cash reinvested each year per the reinvestment setting.',
+    calculation: 'Compounded balance of reinvested cash flows.',
+    importance: 'Captures additional wealth created by recycling surplus cash.',
+    unit: 'currency',
+  },
+  loanBalance: {
+    label: 'Loan balance',
+    groups: ['equityGrowth'],
+    description: 'Share of the property value still financed by debt.',
+    calculation: 'Remaining loan balance at the selected point in the hold period.',
+    importance: 'Shows how leverage falls over time as principal is repaid.',
+    unit: 'currency',
+  },
+  ownerEquity: {
+    label: 'Owner equity',
+    groups: ['equityGrowth'],
+    description: 'Portion of the property value owned outright after debt.',
+    calculation: 'Property value − loan balance.',
+    importance: 'Illustrates wealth accumulation from amortisation and appreciation.',
+    unit: 'currency',
+  },
+  npvToDate: {
+    label: 'Net present value',
+    groups: ['rateTrends'],
+    description: 'Discounted value of cash flows and sale proceeds up to each year.',
+    calculation: 'NPV of annual after-tax cash flows and exit value using the discount rate.',
+    importance: 'Shows whether returns exceed the chosen discount rate over time.',
+    unit: 'currency',
+  },
+  interestPaidYear1: {
+    label: 'Interest paid (year 1)',
+    groups: ['interestSplit'],
+    description: 'Interest portion of debt service in the first year, including any bridge interest.',
+    calculation: 'Sum of interest portions of monthly payments during year one.',
+    importance: 'Indicates initial cash drag from borrowing before amortisation accelerates.',
+    unit: 'currency',
+  },
+  principalPaidYear1: {
+    label: 'Principal repaid (year 1)',
+    groups: ['interestSplit'],
+    description: 'Mortgage principal reduced in the first year.',
+    calculation: 'Total debt service − interest within year one.',
+    importance: 'Shows how quickly equity builds from amortisation in early years.',
+    unit: 'currency',
+  },
+  roi: {
+    label: 'Total ROI',
+    groups: ['leverage', 'roiHeatmap'],
+    description: 'Total return on investment based on equity built relative to cash invested.',
+    calculation: 'Property net wealth at exit ÷ total cash required − 1.',
+    importance: 'Summarises overall growth of invested capital ignoring timing.',
+    unit: 'percent',
+  },
+  efficiency: {
+    label: 'IRR × profit efficiency',
+    groups: ['leverage'],
+    description: 'Product of IRR and after-tax profit to combine speed and scale of returns.',
+    calculation: 'IRR × property net after tax.',
+    importance: 'Highlights leverage points that deliver both high IRR and sizeable profit.',
+    unit: 'currency',
+  },
+  annualAppreciation: {
+    label: 'Capital growth rate',
+    groups: ['roiHeatmap'],
+    description: 'Assumed annual property price growth used in the projection.',
+    calculation: 'User-specified appreciation %.',
+    importance: 'Drives exit value and therefore total returns.',
+    unit: 'percent',
+  },
+  rentGrowth: {
+    label: 'Rent growth rate',
+    groups: ['roiHeatmap'],
+    description: 'Assumed annual change in market rent applied to projections.',
+    calculation: 'User-specified rent growth %.',
+    importance: 'Influences future cash flows and yield stress tests.',
+    unit: 'percent',
+  },
 };
 
 function personalAllowance(income) {
@@ -663,32 +1736,6 @@ function csvEscape(value) {
   return stringValue;
 }
 
-function normaliseForCsv(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      return '';
-    }
-    return String(roundTo(value, 6));
-  }
-  if (typeof value === 'boolean') {
-    return value ? 'true' : 'false';
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (typeof value === 'object') {
-    try {
-      return JSON.stringify(value);
-    } catch (error) {
-      return String(value);
-    }
-  }
-  return String(value);
-}
-
 function getControlDisplayValue(node) {
   const tag = node.tagName.toLowerCase();
   if (tag === 'select') {
@@ -799,10 +1846,29 @@ function calculateEquity(rawInputs) {
   const closing = otherClosing + stampDuty;
 
   const loan = inputs.purchasePrice - deposit;
+  const irrHurdleValue = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
   const mortgageMonthly =
     inputs.loanType === 'interest_only'
       ? (loan * inputs.interestRate) / 12
       : monthlyMortgagePayment({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears });
+
+  const bridgingEnabled = Boolean(inputs.useBridgingLoan);
+  const rawBridgingTerm = Number(inputs.bridgingLoanTermMonths ?? 0);
+  const bridgingLoanTermMonths =
+    bridgingEnabled && Number.isFinite(rawBridgingTerm)
+      ? Math.max(0, Math.round(rawBridgingTerm))
+      : 0;
+  const rawBridgingRate = Number(inputs.bridgingLoanInterestRate ?? 0);
+  // Bridging lenders typically quote monthly interest rates, so we treat the
+  // stored percentage as a per-month decimal.
+  const bridgingMonthlyRate =
+    bridgingEnabled && Number.isFinite(rawBridgingRate)
+      ? Math.max(0, rawBridgingRate)
+      : 0;
+  const bridgingAmount = bridgingEnabled ? deposit : 0;
+  const totalCashRequired = deposit + closing + inputs.renovationCost;
+  const initialCashOutlay = Math.max(totalCashRequired - bridgingAmount, 0);
+  const indexInitialInvestment = bridgingEnabled ? deposit : initialCashOutlay;
 
   const baseIncome1 = isCompanyBuyer ? 0 : (inputs.incomePerson1 ?? 0);
   const baseIncome2 = isCompanyBuyer ? 0 : (inputs.incomePerson2 ?? 0);
@@ -814,15 +1880,25 @@ function calculateEquity(rawInputs) {
 
   const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
   const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
+  const annualPrincipal = Array.from({ length: inputs.exitYear }, () => 0);
+  const annualBridgingDebtService = Array.from({ length: inputs.exitYear }, () => 0);
   const monthlyRate = inputs.interestRate / 12;
   let balance = loan;
   const totalMonths = inputs.exitYear * 12;
 
   for (let month = 1; month <= totalMonths; month++) {
+    const mortgageMonth = bridgingEnabled ? month - bridgingLoanTermMonths : month;
+    if (bridgingEnabled && mortgageMonth <= 0) {
+      continue;
+    }
+
     const yearIndex = Math.ceil(month / 12) - 1;
     if (yearIndex >= annualDebtService.length) break;
 
-    if (inputs.loanType !== 'interest_only' && (month > inputs.mortgageYears * 12 || balance <= 0)) {
+    if (
+      inputs.loanType !== 'interest_only' &&
+      (mortgageMonth > inputs.mortgageYears * 12 || balance <= 0)
+    ) {
       break;
     }
 
@@ -846,6 +1922,30 @@ function calculateEquity(rawInputs) {
 
     annualInterest[yearIndex] += interestPayment;
     annualDebtService[yearIndex] += payment;
+    annualPrincipal[yearIndex] += principalPaid;
+  }
+
+  if (bridgingEnabled && bridgingAmount > 0 && bridgingLoanTermMonths > 0) {
+    const monthsToModel = Math.min(bridgingLoanTermMonths, inputs.exitYear * 12);
+    const monthlyInterest =
+      bridgingMonthlyRate > 0 ? bridgingAmount * bridgingMonthlyRate : 0;
+    for (let month = 1; month <= monthsToModel; month++) {
+      const yearIndex = Math.ceil(month / 12) - 1;
+      if (yearIndex < 0 || yearIndex >= annualDebtService.length) {
+        continue;
+      }
+      if (monthlyInterest !== 0) {
+        annualDebtService[yearIndex] += monthlyInterest;
+        annualInterest[yearIndex] += monthlyInterest;
+        annualBridgingDebtService[yearIndex] += monthlyInterest;
+      }
+      if (month === monthsToModel) {
+        // The bridging principal is refinanced into the long-term mortgage at the
+        // end of the term, so it should not be treated as an investor cash
+        // outflow in the annual debt service totals. We still keep the
+        // interest for the term above but skip adding the principal here.
+      }
+    }
   }
 
   const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
@@ -857,9 +1957,9 @@ function calculateEquity(rawInputs) {
   const cashflowYear1 = noiYear1 - debtServiceYear1;
 
   const cap = noiYear1 / inputs.purchasePrice;
-  const cashIn = deposit + closing + inputs.renovationCost;
+  const cashIn = totalCashRequired;
   const projectCost = inputs.purchasePrice + closing + inputs.renovationCost;
-  const coc = cashflowYear1 / cashIn;
+  const coc = cashIn === 0 ? 0 : cashflowYear1 / cashIn;
   const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
 
   const months = Math.min(inputs.exitYear * 12, inputs.mortgageYears * 12);
@@ -872,7 +1972,7 @@ function calculateEquity(rawInputs) {
   const sellingCosts = futureValue * inputs.sellingCostsPct;
 
   const cf = [];
-  const initialOutlay = -cashIn;
+  const initialOutlay = -initialCashOutlay;
   cf.push(initialOutlay);
   const irrCashflows = [initialOutlay];
 
@@ -884,10 +1984,10 @@ function calculateEquity(rawInputs) {
   let exitCumCash = 0;
   let exitCumCashAfterTax = 0;
   let exitNetSaleProceeds = 0;
-  let indexVal = cashIn;
+  let indexVal = indexInitialInvestment;
   let reinvestFundValue = 0;
   let investedRentValue = 0;
-  const indexBasis = cashIn;
+  const indexBasis = indexInitialInvestment;
   const reinvestShare = inputs.reinvestIncome
     ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
     : 0;
@@ -947,18 +2047,27 @@ function calculateEquity(rawInputs) {
       purchasePrice: inputs.purchasePrice,
       projectCost,
       cashInvested: cashIn,
+      netInitialOutlay: initialCashOutlay,
+      totalCashRequired,
+      bridgingLoanAmount: bridgingAmount,
+      bridgingLoanTermMonths,
+      bridgingLoanInterestRate: bridgingMonthlyRate,
       initialOutlay,
       yearly: {
         gross: 0,
         operatingExpenses: 0,
         noi: 0,
         debtService: 0,
+        debtServiceMortgage: 0,
+        debtServiceBridging: 0,
         cashPreTax: 0,
         cashAfterTax: 0,
         cashAfterTaxRetained: 0,
         tax: 0,
         reinvestContribution: 0,
         investedRentGrowth: 0,
+        interest: 0,
+        principal: 0,
       },
     },
   });
@@ -972,11 +2081,14 @@ function calculateEquity(rawInputs) {
     const fixed = inputs.insurancePerYear + inputs.otherOpexPerYear;
     const noi = gross - (varOpex + fixed);
     const debtService = annualDebtService[y - 1] ?? 0;
+    const bridgingDebtService = annualBridgingDebtService[y - 1] ?? 0;
+    const mortgageDebtService = Math.max(0, debtService - bridgingDebtService);
     const cash = noi - debtService;
     irrCashflows.push(cash);
     cumulativeCashPreTax += cash;
 
     const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
+    const principalPaid = annualPrincipal[y - 1] ?? (inputs.loanType === 'interest_only' ? 0 : debtService - interestPaid);
     const taxableProfit = noi - interestPaid;
     let propertyTax = 0;
     if (isCompanyBuyer) {
@@ -1008,7 +2120,8 @@ function calculateEquity(rawInputs) {
     annualCashflowsPreTax.push(cash);
     annualCashflowsAfterTax.push(afterTaxCash);
 
-    const monthsPaid = Math.min(y * 12, inputs.mortgageYears * 12);
+    const monthsPaidRaw = Math.max(0, y * 12 - (bridgingEnabled ? bridgingLoanTermMonths : 0));
+    const monthsPaid = Math.min(monthsPaidRaw, inputs.mortgageYears * 12);
     const remainingLoanYear =
       inputs.loanType === 'interest_only'
         ? loan
@@ -1035,6 +2148,7 @@ function calculateEquity(rawInputs) {
     const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
     const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
 
+    let yearCashflowForCf = cash;
     if (y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
@@ -1043,13 +2157,13 @@ function calculateEquity(rawInputs) {
           ? loan
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
-      cf.push(cash + netSaleProceeds);
+      yearCashflowForCf = cash + netSaleProceeds;
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
       exitNetSaleProceeds = netSaleProceeds;
-    } else {
-      cf.push(cash);
     }
+    cf.push(yearCashflowForCf);
+    const npvToDate = npv(inputs.discountRate, cf);
 
     indexVal = indexVal * (1 + indexGrowth);
     const cumulativeCashAfterTaxKept = shouldReinvest
@@ -1078,6 +2192,8 @@ function calculateEquity(rawInputs) {
       yieldRate: yieldRateYear,
       cashOnCash: cashOnCashYear,
       irrSeries: irrToDate,
+      irrHurdle: irrHurdleValue,
+      npvToDate,
       meta: {
         propertyValue: vt,
         saleValue: vt,
@@ -1114,12 +2230,16 @@ function calculateEquity(rawInputs) {
           operatingExpenses: varOpex + fixed,
           noi,
           debtService,
+          debtServiceMortgage: mortgageDebtService,
+          debtServiceBridging: bridgingDebtService,
           cashPreTax: cash,
           cashAfterTax: afterTaxCash,
           cashAfterTaxRetained: shouldReinvest ? afterTaxCash - reinvestContribution : afterTaxCash,
           tax: propertyTax,
           reinvestContribution,
           investedRentGrowth: reinvestGrowthThisYear,
+          interest: interestPaid,
+          principal: principalPaid,
         },
       },
     });
@@ -1168,6 +2288,11 @@ function calculateEquity(rawInputs) {
     cf,
     chart,
     cashIn,
+    initialCashOutlay,
+    totalCashRequired,
+    bridgingLoanAmount: bridgingAmount,
+    bridgingLoanTermMonths,
+    bridgingLoanInterestRate: bridgingMonthlyRate,
     projectCost,
     yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
     indexValEnd: indexVal,
@@ -1193,7 +2318,11 @@ function calculateEquity(rawInputs) {
     annualCashflowsPreTax,
     annualCashflowsAfterTax,
     annualDebtService,
+    annualBridgingDebtService,
+    annualInterest,
+    annualPrincipal,
     irr: irrValue,
+    irrHurdle: irrHurdleValue,
   };
 }
 
@@ -1203,11 +2332,20 @@ export default function App() {
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
+  const [scenarioScatterXAxis, setScenarioScatterXAxis] = useState(
+    () => SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'cap'
+  );
+  const [scenarioScatterYAxis, setScenarioScatterYAxis] = useState(
+    () => SCENARIO_RATIO_PERCENT_COLUMNS[1]?.key ?? SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'irr'
+  );
+  const [scenarioAlignInputs, setScenarioAlignInputs] = useState(false);
+  const [scenarioSort, setScenarioSort] = useState({ key: 'savedAt', direction: 'desc' });
   const [previewActive, setPreviewActive] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewStatus, setPreviewStatus] = useState('idle');
   const [previewError, setPreviewError] = useState('');
   const [previewKey, setPreviewKey] = useState(0);
+  const [isMapModalOpen, setIsMapModalOpen] = useState(false);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [authCredentials, setAuthCredentials] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1237,7 +2375,16 @@ export default function App() {
     householdIncome: false,
     purchaseCosts: false,
     rentalCashflow: false,
-    cashflowDetail: false,
+    extraSettings: true,
+    cashflowDetail: true,
+    crime: true,
+    wealthTrajectory: false,
+    rateTrends: true,
+    cashflowBars: true,
+    roiHeatmap: true,
+    equityGrowth: true,
+    interestSplit: true,
+    leverage: true,
   });
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1265,36 +2412,202 @@ export default function App() {
     indexFund1_5x: false,
     indexFund2x: false,
     indexFund4x: false,
-    propertyValue: true,
-    propertyGross: true,
-    propertyNet: true,
+    propertyValue: false,
+    propertyGross: false,
+    propertyNet: false,
     propertyNetAfterTax: true,
-    cashflow: true,
+    cashflow: false,
     investedRent: false,
+  });
+  const [rateSeriesActive, setRateSeriesActive] = useState({
     capRate: false,
     yieldRate: false,
     cashOnCash: false,
-    irrSeries: false,
+    irrSeries: true,
+    irrHurdle: true,
+    npvToDate: true,
   });
+  const [cashflowSeriesActive, setCashflowSeriesActive] = useState({
+    rentIncome: true,
+    operatingExpenses: true,
+    mortgagePayments: true,
+    netCashflow: true,
+  });
+  const [leverageSeriesActive, setLeverageSeriesActive] = useState({
+    irr: true,
+    roi: true,
+    propertyNetAfterTax: true,
+    efficiency: true,
+    irrHurdle: true,
+  });
+  const [roiHeatmapMetric, setRoiHeatmapMetric] = useState('irr');
   const [showChartModal, setShowChartModal] = useState(false);
+  const [showRatesModal, setShowRatesModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
+  const [rateChartRange, setRateChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
+  const [rateRangeTouched, setRateRangeTouched] = useState(false);
   const [chartFocus, setChartFocus] = useState(null);
   const [chartFocusLocked, setChartFocusLocked] = useState(false);
   const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
   const chartAreaRef = useRef(null);
   const chartOverlayRef = useRef(null);
   const chartModalContentRef = useRef(null);
+  const geocodeDebounceRef = useRef(null);
+  const geocodeAbortRef = useRef(null);
+  const crimeAbortRef = useRef(null);
+  const lastGeocodeQueryRef = useRef('');
+  const [rateChartSettings, setRateChartSettings] = useState({
+    showMovingAverage: false,
+    movingAverageWindow: 3,
+    showZeroBaseline: true,
+  });
+  const [knowledgeState, setKnowledgeState] = useState({ open: false, groupId: null, metricId: null });
+  const [knowledgeChatMessages, setKnowledgeChatMessages] = useState([]);
+  const [knowledgeChatInput, setKnowledgeChatInput] = useState('');
+  const [knowledgeChatStatus, setKnowledgeChatStatus] = useState('idle');
+  const [knowledgeChatError, setKnowledgeChatError] = useState('');
   const [performanceYear, setPerformanceYear] = useState(1);
-  const [sensitivityPct, setSensitivityPct] = useState(0.1);
   const [shareNotice, setShareNotice] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const pageRef = useRef(null);
   const iframeRef = useRef(null);
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
+  const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
+  const [crimeState, setCrimeState] = useState(INITIAL_CRIME_STATE);
+  const [urlSyncReady, setUrlSyncReady] = useState(false);
+  const urlSyncLastValueRef = useRef('');
+  const propertyAddress = (inputs.propertyAddress ?? '').trim();
+  const hasPropertyAddress = propertyAddress !== '';
+  const geocodeLat = Number(geocodeState.data?.lat);
+  const geocodeLon = Number(geocodeState.data?.lon);
+  const geocodeDisplayName = geocodeState.data?.displayName ?? '';
+  const geocodeAddressDetails = useMemo(
+    () => resolveGeocodeAddressDetails(geocodeState.data, propertyAddress),
+    [geocodeState.data, propertyAddress]
+  );
+  const geocodeLocationSummary = geocodeAddressDetails.summary;
+  const geocodeAddressQuery = geocodeAddressDetails.query;
+  const geocodeBounds = geocodeAddressDetails.bounds;
+  const geocodePostcode = geocodeAddressDetails.postcode;
 
   const remoteAvailable = remoteEnabled && authStatus === 'ready';
+
+  function applyUiState(uiState) {
+    if (!uiState || typeof uiState !== 'object') {
+      return;
+    }
+    const {
+      collapsedSections: collapsed,
+      activeSeries: active,
+      rateSeriesActive: rateActive,
+      cashflowSeriesActive: cashActive,
+      leverageSeriesActive: leverageActive,
+      roiHeatmapMetric: metric,
+      chartRange: chartRangeValue,
+      chartRangeTouched: chartRangeTouchedValue,
+      rateChartRange: rateChartRangeValue,
+      rateRangeTouched: rateRangeTouchedValue,
+      rateChartSettings: rateSettingsValue,
+      performanceYear: performanceYearValue,
+      scenarioAlignInputs: alignValue,
+      scenarioScatterXAxis: scatterX,
+      scenarioScatterYAxis: scatterY,
+      scenarioSort: sortValue,
+    } = uiState;
+    if (collapsed && typeof collapsed === 'object') {
+      setCollapsedSections((prev) => mergeBooleanMap(prev, collapsed));
+    }
+    if (active && typeof active === 'object') {
+      setActiveSeries((prev) => mergeBooleanMap(prev, active));
+    }
+    if (rateActive && typeof rateActive === 'object') {
+      setRateSeriesActive((prev) => mergeBooleanMap(prev, rateActive));
+    }
+    if (cashActive && typeof cashActive === 'object') {
+      setCashflowSeriesActive((prev) => mergeBooleanMap(prev, cashActive));
+    }
+    if (leverageActive && typeof leverageActive === 'object') {
+      setLeverageSeriesActive((prev) => mergeBooleanMap(prev, leverageActive));
+    }
+    if (typeof metric === 'string' && (metric === 'irr' || metric === 'roi')) {
+      setRoiHeatmapMetric(metric);
+    }
+    if (chartRangeValue && typeof chartRangeValue === 'object') {
+      const start = Number(chartRangeValue.start);
+      const end = Number(chartRangeValue.end);
+      if (Number.isFinite(start) && Number.isFinite(end)) {
+        setChartRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+      }
+    }
+    if (typeof chartRangeTouchedValue === 'boolean') {
+      setChartRangeTouched(chartRangeTouchedValue);
+    }
+    if (rateChartRangeValue && typeof rateChartRangeValue === 'object') {
+      const start = Number(rateChartRangeValue.start);
+      const end = Number(rateChartRangeValue.end);
+      if (Number.isFinite(start) && Number.isFinite(end)) {
+        setRateChartRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+      }
+    }
+    if (typeof rateRangeTouchedValue === 'boolean') {
+      setRateRangeTouched(rateRangeTouchedValue);
+    }
+    if (rateSettingsValue && typeof rateSettingsValue === 'object') {
+      setRateChartSettings((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        if (
+          typeof rateSettingsValue.showMovingAverage === 'boolean' &&
+          next.showMovingAverage !== rateSettingsValue.showMovingAverage
+        ) {
+          next.showMovingAverage = rateSettingsValue.showMovingAverage;
+          changed = true;
+        }
+        if (Number.isFinite(Number(rateSettingsValue.movingAverageWindow))) {
+          const windowValue = Number(rateSettingsValue.movingAverageWindow);
+          if (next.movingAverageWindow !== windowValue) {
+            next.movingAverageWindow = windowValue;
+            changed = true;
+          }
+        }
+        if (
+          typeof rateSettingsValue.showZeroBaseline === 'boolean' &&
+          next.showZeroBaseline !== rateSettingsValue.showZeroBaseline
+        ) {
+          next.showZeroBaseline = rateSettingsValue.showZeroBaseline;
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }
+    if (Number.isFinite(Number(performanceYearValue))) {
+      const sanitizedYear = Math.max(1, Math.round(Number(performanceYearValue)));
+      setPerformanceYear((prev) => (prev === sanitizedYear ? prev : sanitizedYear));
+    }
+    if (typeof alignValue === 'boolean') {
+      setScenarioAlignInputs(alignValue);
+    }
+    if (typeof scatterX === 'string' && SCENARIO_RATIO_KEY_SET.has(scatterX)) {
+      setScenarioScatterXAxis(scatterX);
+    }
+    if (typeof scatterY === 'string' && SCENARIO_RATIO_KEY_SET.has(scatterY)) {
+      setScenarioScatterYAxis(scatterY);
+    }
+    if (sortValue && typeof sortValue === 'object') {
+      const nextKey = typeof sortValue.key === 'string' ? sortValue.key : scenarioSort.key;
+      const nextDirection =
+        sortValue.direction === 'asc' || sortValue.direction === 'desc'
+          ? sortValue.direction
+          : scenarioSort.direction;
+      setScenarioSort((prev) =>
+        prev.key === nextKey && prev.direction === nextDirection
+          ? prev
+          : { key: nextKey, direction: nextDirection }
+      );
+    }
+  }
 
   const apiFetch = useCallback(
     async (path, options = {}, credentialsOverride) => {
@@ -1373,30 +2686,101 @@ export default function App() {
     return true;
   };
 
+  const handleResetInputs = () => {
+    setInputs({ ...DEFAULT_INPUTS });
+    clearPreview();
+    setGeocodeState({ status: 'idle', data: null, error: '' });
+  };
+
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') {
+      setUrlSyncReady(true);
+      return;
+    }
     const url = new URL(window.location.href);
     const encoded = url.searchParams.get('scenario');
-    if (!encoded) return;
-    const payload = decodeSharePayload(encoded);
-    if (payload && typeof payload === 'object' && payload.inputs) {
-      setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
-      setCashflowColumnKeys(sanitizeCashflowColumns(payload.cashflowColumns));
-      const targetUrl = payload.inputs?.propertyUrl ?? '';
-      const shouldActivatePreview =
-        (payload.preview && payload.preview.active) || (typeof targetUrl === 'string' && targetUrl.trim() !== '');
-      if (shouldActivatePreview) {
-        openPreviewForUrl(targetUrl, { force: true });
-      } else {
-        clearPreview();
+    if (encoded) {
+      const payload = decodeSharePayload(encoded);
+      if (payload && typeof payload === 'object') {
+        if (payload.inputs && typeof payload.inputs === 'object') {
+          setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
+        }
+        if (payload.cashflowColumns) {
+          setCashflowColumnKeys(sanitizeCashflowColumns(payload.cashflowColumns));
+        }
+        applyUiState(payload.uiState);
+        const targetUrl = payload.inputs?.propertyUrl ?? '';
+        const shouldActivatePreview =
+          (payload.preview && payload.preview.active) || (typeof targetUrl === 'string' && targetUrl.trim() !== '');
+        if (shouldActivatePreview) {
+          openPreviewForUrl(targetUrl, { force: true });
+        } else {
+          clearPreview();
+        }
+        if (payload.inputs) {
+          setShareNotice('Loaded shared scenario');
+        }
+        urlSyncLastValueRef.current = encoded;
       }
-      setShareNotice('Loaded shared scenario');
     }
-    url.searchParams.delete('scenario');
+    setUrlSyncReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!urlSyncReady) return;
+    if (typeof window === 'undefined') return;
+    const snapshot = buildScenarioSnapshot();
+    const payload = {
+      inputs: snapshot.data,
+      preview: snapshot.preview,
+      cashflowColumns: snapshot.cashflowColumns,
+      uiState: snapshot.uiState,
+    };
+    const encoded = encodeSharePayload(payload);
+    if (!encoded) return;
+    if (urlSyncLastValueRef.current === encoded) {
+      const current = new URL(window.location.href);
+      if (current.searchParams.get('scenario') === encoded) {
+        return;
+      }
+    }
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('scenario') === encoded) {
+      urlSyncLastValueRef.current = encoded;
+      return;
+    }
+    url.searchParams.set('scenario', encoded);
     const nextSearch = url.searchParams.toString();
     const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
     window.history.replaceState({}, document.title, nextUrl);
-  }, []);
+    urlSyncLastValueRef.current = encoded;
+  }, [
+    urlSyncReady,
+    inputs,
+    cashflowColumnKeys,
+    collapsedSections,
+    activeSeries,
+    rateSeriesActive,
+    cashflowSeriesActive,
+    leverageSeriesActive,
+    roiHeatmapMetric,
+    chartRange.start,
+    chartRange.end,
+    chartRangeTouched,
+    rateChartRange.start,
+    rateChartRange.end,
+    rateRangeTouched,
+    rateChartSettings.showMovingAverage,
+    rateChartSettings.movingAverageWindow,
+    rateChartSettings.showZeroBaseline,
+    performanceYear,
+    scenarioAlignInputs,
+    scenarioScatterXAxis,
+    scenarioScatterYAxis,
+    scenarioSort.key,
+    scenarioSort.direction,
+    previewActive,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1419,6 +2803,357 @@ export default function App() {
       password: authCredentials.password ?? '',
     });
   }, [authCredentials.username, authCredentials.password]);
+
+  useEffect(() => {
+    const rawAddress = (inputs.propertyAddress ?? '').trim();
+    const normalizedQuery = rawAddress.toLowerCase();
+
+    if (geocodeDebounceRef.current) {
+      clearTimeout(geocodeDebounceRef.current);
+      geocodeDebounceRef.current = null;
+    }
+    if (geocodeAbortRef.current) {
+      geocodeAbortRef.current.abort();
+      geocodeAbortRef.current = null;
+    }
+
+    if (normalizedQuery.length === 0) {
+      lastGeocodeQueryRef.current = '';
+      setGeocodeState({ status: 'idle', data: null, error: '' });
+      return;
+    }
+
+    if (normalizedQuery.length < 3) {
+      setGeocodeState((prev) => ({ ...prev, status: 'idle', error: '' }));
+      return;
+    }
+
+    geocodeDebounceRef.current = window.setTimeout(() => {
+      const controller = new AbortController();
+      geocodeAbortRef.current = controller;
+      setGeocodeState((prev) => ({ status: 'loading', data: prev.data ?? null, error: '' }));
+      const params = new URLSearchParams({ q: rawAddress, limit: '1' });
+      fetch(`https://geocode.maps.co/search?${params.toString()}`, {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error('Geocoding request failed');
+          }
+          return response.json();
+        })
+        .then((results) => {
+          if (!Array.isArray(results) || results.length === 0) {
+            setGeocodeState({ status: 'error', data: null, error: 'No matching location found.' });
+            lastGeocodeQueryRef.current = '';
+            return;
+          }
+          const result = results[0];
+          const lat = Number.parseFloat(result.lat);
+          const lon = Number.parseFloat(result.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+            setGeocodeState({ status: 'error', data: null, error: 'Location lookup returned invalid coordinates.' });
+            lastGeocodeQueryRef.current = '';
+            return;
+          }
+          lastGeocodeQueryRef.current = normalizedQuery;
+          const addressDetails =
+            result && typeof result.address === 'object' && result.address !== null ? result.address : null;
+          const boundingBox = Array.isArray(result?.boundingbox) ? result.boundingbox : null;
+
+          setGeocodeState({
+            status: 'success',
+            data: {
+              lat,
+              lon,
+              displayName: typeof result.display_name === 'string' && result.display_name.trim() !== ''
+                ? result.display_name
+                : rawAddress,
+              address: addressDetails,
+              boundingBox,
+            },
+            error: '',
+          });
+        })
+        .catch((error) => {
+          if (error.name === 'AbortError') {
+            return;
+          }
+          setGeocodeState({ status: 'error', data: null, error: 'Unable to load map preview.' });
+          lastGeocodeQueryRef.current = '';
+        })
+        .finally(() => {
+          geocodeAbortRef.current = null;
+        });
+    }, 600);
+
+    return () => {
+      if (geocodeDebounceRef.current) {
+        clearTimeout(geocodeDebounceRef.current);
+        geocodeDebounceRef.current = null;
+      }
+      if (geocodeAbortRef.current) {
+        geocodeAbortRef.current.abort();
+        geocodeAbortRef.current = null;
+      }
+    };
+  }, [inputs.propertyAddress]);
+
+  useEffect(() => {
+    if (crimeAbortRef.current) {
+      crimeAbortRef.current.abort();
+      crimeAbortRef.current = null;
+    }
+
+    if (!hasPropertyAddress) {
+      setCrimeState(INITIAL_CRIME_STATE);
+      return;
+    }
+
+    if (!Number.isFinite(geocodeLat) || !Number.isFinite(geocodeLon)) {
+      if (geocodeState.status === 'error') {
+        setCrimeState({
+          status: 'error',
+          data: null,
+          error:
+            geocodeState.error || 'Unable to resolve the property location for crime statistics.',
+        });
+      } else if (geocodeState.status === 'loading') {
+        setCrimeState((prev) =>
+          prev.status === 'loading' && prev.data === null && prev.error === ''
+            ? prev
+            : { status: 'loading', data: null, error: '' }
+        );
+      } else {
+        setCrimeState(INITIAL_CRIME_STATE);
+      }
+      return;
+    }
+
+    const controller = new AbortController();
+    crimeAbortRef.current = controller;
+    setCrimeState({ status: 'loading', data: null, error: '' });
+
+    (async () => {
+      try {
+        let lastUpdatedDate = '';
+        try {
+          const lastUpdatedResponse = await fetch('https://data.police.uk/api/crime-last-updated', {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' },
+          });
+          if (lastUpdatedResponse.ok) {
+            const lastUpdatedData = await lastUpdatedResponse.json();
+            if (lastUpdatedData && typeof lastUpdatedData.date === 'string') {
+              lastUpdatedDate = lastUpdatedData.date;
+            }
+          }
+        } catch (error) {
+          if (error.name === 'AbortError') {
+            return;
+          }
+          console.warn('Unable to fetch crime last-updated metadata:', error);
+        }
+
+        const createCrimeParams = (entries) => {
+          const params = new URLSearchParams();
+          if (entries && typeof entries === 'object') {
+            Object.entries(entries).forEach(([key, value]) => {
+              if (typeof value === 'string' && value.trim() !== '') {
+                params.set(key, value);
+              }
+            });
+          }
+          if (lastUpdatedDate) {
+            params.set('date', lastUpdatedDate);
+          }
+          return params;
+        };
+
+        const fetchCrimesWithParams = async (searchParams) => {
+          const url = `https://data.police.uk/api/crimes-street/all-crime?${searchParams.toString()}`;
+          const response = await fetch(url, {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' },
+          });
+          if (!response.ok) {
+            let errorMessage = 'Unable to load local crime statistics.';
+            try {
+              const raw = await response.text();
+              if (raw) {
+                try {
+                  const parsed = JSON.parse(raw);
+                  if (parsed && typeof parsed.error === 'string' && parsed.error.trim().length > 0) {
+                    errorMessage = parsed.error.trim();
+                  } else if (parsed && typeof parsed.message === 'string' && parsed.message.trim().length > 0) {
+                    errorMessage = parsed.message.trim();
+                  }
+                } catch (jsonError) {
+                  if (raw.trim().length > 0) {
+                    errorMessage = raw.trim();
+                  }
+                }
+              }
+            } catch (readError) {
+              console.warn('Unable to parse crime error response:', readError);
+            }
+            if (response.status === 404) {
+              errorMessage = 'Local crime statistics are not available for this location.';
+            } else if (response.status >= 500) {
+              errorMessage = 'Crime data service is temporarily unavailable. Please try again later.';
+            }
+            const failure = new Error(errorMessage);
+            failure.status = response.status;
+            throw failure;
+          }
+          const payload = await response.json();
+          if (!Array.isArray(payload)) {
+            const invalidError = new Error('Crime data unavailable');
+            invalidError.status = response.status ?? 500;
+            throw invalidError;
+          }
+          return payload;
+        };
+
+        let summaryBoundsHint = geocodeBounds || null;
+        let finalCrimeData = null;
+        let finalError = null;
+
+        const attemptFetch = async (params, { boundsHint } = {}) => {
+          try {
+            const data = await fetchCrimesWithParams(params);
+            if (Array.isArray(data)) {
+              if (boundsHint) {
+                summaryBoundsHint = boundsHint;
+              }
+              return data;
+            }
+            return null;
+          } catch (error) {
+            if (error?.name === 'AbortError') {
+              throw error;
+            }
+            finalError = error;
+            if (typeof error?.status === 'number' && error.status !== 404) {
+              throw error;
+            }
+            return null;
+          }
+        };
+
+        const baseParams = createCrimeParams({
+          lat: geocodeLat.toString(),
+          lng: geocodeLon.toString(),
+        });
+
+        finalCrimeData = await attemptFetch(baseParams, { boundsHint: geocodeBounds || null });
+
+        if (!finalCrimeData && geocodeBounds) {
+          const boundingPolygon = boundsToPolygon(geocodeBounds);
+          if (boundingPolygon) {
+            const polyParams = createCrimeParams({ poly: boundingPolygon });
+            finalCrimeData = await attemptFetch(polyParams, { boundsHint: geocodeBounds });
+          }
+        }
+
+        if (!finalCrimeData) {
+          try {
+            const neighbourhood = await fetchNeighbourhoodBoundary({
+              lat: geocodeLat,
+              lon: geocodeLon,
+              postcode: geocodePostcode,
+              addressQuery: geocodeAddressQuery,
+              signal: controller.signal,
+            });
+            if (neighbourhood) {
+              const polygonParam = polygonPointsToSearchParam(neighbourhood.points);
+              if (polygonParam) {
+                const polyParams = createCrimeParams({ poly: polygonParam });
+                const boundsHint = neighbourhood.bounds ?? geocodeBounds ?? null;
+                finalCrimeData = await attemptFetch(polyParams, { boundsHint });
+                if (finalCrimeData && neighbourhood.bounds) {
+                  summaryBoundsHint = neighbourhood.bounds;
+                }
+              }
+            }
+          } catch (boundaryError) {
+            if (boundaryError?.name === 'AbortError') {
+              throw boundaryError;
+            }
+            if (!finalError) {
+              finalError =
+                boundaryError instanceof Error
+                  ? boundaryError
+                  : new Error('Unable to load local crime statistics.');
+            }
+          }
+        }
+
+        if (!finalCrimeData) {
+          const fallbackErrorMessage =
+            finalError && typeof finalError.message === 'string' && finalError.message.trim() !== ''
+              ? finalError.message.trim()
+              : 'Local crime statistics are not available for this location.';
+          throw new Error(fallbackErrorMessage);
+        }
+
+        const month =
+          lastUpdatedDate || (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '');
+        const summary = summarizeCrimeData(finalCrimeData, {
+          lat: geocodeLat,
+          lon: geocodeLon,
+          month,
+          lastUpdated: lastUpdatedDate,
+          fallbackLocationName: geocodeLocationSummary || geocodeDisplayName || propertyAddress,
+          mapBoundsOverride: summaryBoundsHint ?? geocodeBounds,
+          mapCenterOverride:
+            Number.isFinite(geocodeLat) && Number.isFinite(geocodeLon)
+              ? { lat: geocodeLat, lon: geocodeLon }
+              : null,
+        });
+        if (!controller.signal.aborted) {
+          setCrimeState({ status: 'success', data: summary, error: '' });
+        }
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          return;
+        }
+        console.warn('Unable to fetch crime statistics:', error);
+        setCrimeState({
+          status: 'error',
+          data: null,
+          error:
+            error && typeof error.message === 'string'
+              ? error.message
+              : 'Unable to load local crime statistics.',
+        });
+      } finally {
+        if (crimeAbortRef.current === controller) {
+          crimeAbortRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      if (crimeAbortRef.current === controller) {
+        crimeAbortRef.current = null;
+      }
+    };
+  }, [
+    hasPropertyAddress,
+    geocodeLat,
+    geocodeLon,
+    geocodeDisplayName,
+    geocodeLocationSummary,
+    propertyAddress,
+    geocodeAddressQuery,
+    geocodePostcode,
+    geocodeBounds,
+    geocodeState.status,
+    geocodeState.error,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1514,11 +3249,132 @@ export default function App() {
 
   const scenarioTableData = useMemo(
     () =>
-      savedScenarios.map((scenario) => ({
-        scenario,
-        metrics: calculateEquity({ ...DEFAULT_INPUTS, ...scenario.data }),
-      })),
-    [savedScenarios]
+      savedScenarios.map((scenario) => {
+        const scenarioDefaults = { ...DEFAULT_INPUTS, ...scenario.data };
+        const basePurchasePrice =
+          scenarioDefaults.purchasePrice ?? inputs.purchasePrice ?? DEFAULT_INPUTS.purchasePrice;
+        const baseMonthlyRent =
+          scenarioDefaults.monthlyRent ?? inputs.monthlyRent ?? DEFAULT_INPUTS.monthlyRent;
+        const evaluationInputs = scenarioAlignInputs
+          ? {
+              ...inputs,
+              purchasePrice: basePurchasePrice,
+              monthlyRent: baseMonthlyRent,
+            }
+          : scenarioDefaults;
+        const metrics = calculateEquity(evaluationInputs);
+        const grossRentYear1 = Number(metrics.grossRentYear1) || 0;
+        const purchasePrice = Number(evaluationInputs.purchasePrice ?? basePurchasePrice) || 0;
+        const monthlyRent = Number(evaluationInputs.monthlyRent ?? baseMonthlyRent) || 0;
+        const bedroomsValue = Number(
+          evaluationInputs.bedrooms ?? scenarioDefaults.bedrooms ?? DEFAULT_INPUTS.bedrooms
+        );
+        const rentalYieldValue = purchasePrice > 0 ? grossRentYear1 / purchasePrice : 0;
+        return {
+          scenario,
+          metrics,
+          purchasePrice,
+          monthlyRent,
+          bedrooms: Number.isFinite(bedroomsValue) ? bedroomsValue : null,
+          ratios: {
+            cap: Number.isFinite(metrics.cap) ? metrics.cap : 0,
+            rentalYield: Number.isFinite(rentalYieldValue) ? rentalYieldValue : 0,
+            yoc: Number.isFinite(metrics.yoc) ? metrics.yoc : 0,
+            coc: Number.isFinite(metrics.coc) ? metrics.coc : 0,
+            irr: Number.isFinite(metrics.irr) ? metrics.irr : 0,
+          },
+        };
+      }),
+    [inputs, savedScenarios, scenarioAlignInputs]
+  );
+  const scenarioTableSorted = useMemo(() => {
+    if (scenarioTableData.length === 0) {
+      return [];
+    }
+    const rows = [...scenarioTableData];
+    const { key, direction } = scenarioSort;
+    const multiplier = direction === 'asc' ? 1 : -1;
+    const getTimestamp = (row) => {
+      const source = row?.scenario?.savedAt ?? row?.scenario?.createdAt ?? '';
+      if (!source) {
+        return 0;
+      }
+      const value = new Date(source).getTime();
+      return Number.isFinite(value) ? value : 0;
+    };
+    rows.sort((a, b) => {
+      if (key === 'name') {
+        const aName = (a?.scenario?.name ?? '').toLowerCase();
+        const bName = (b?.scenario?.name ?? '').toLowerCase();
+        if (aName === bName) {
+          return getTimestamp(b) - getTimestamp(a);
+        }
+        return aName.localeCompare(bName) * multiplier;
+      }
+      if (key === 'savedAt') {
+        const diff = getTimestamp(a) - getTimestamp(b);
+        if (diff === 0) {
+          const aName = (a?.scenario?.name ?? '').toLowerCase();
+          const bName = (b?.scenario?.name ?? '').toLowerCase();
+          return aName.localeCompare(bName);
+        }
+        return diff * multiplier;
+      }
+      if (key === 'propertyNetAfterTax') {
+        const aValue = Number(a?.metrics?.propertyNetWealthAfterTax) || 0;
+        const bValue = Number(b?.metrics?.propertyNetWealthAfterTax) || 0;
+        const diff = aValue - bValue;
+        if (diff === 0) {
+          return getTimestamp(b) - getTimestamp(a);
+        }
+        return diff * multiplier;
+      }
+      const aValue = Number(a?.ratios?.[key]) || 0;
+      const bValue = Number(b?.ratios?.[key]) || 0;
+      const diff = aValue - bValue;
+      if (diff === 0) {
+        return getTimestamp(b) - getTimestamp(a);
+      }
+      return diff * multiplier;
+    });
+    return rows;
+  }, [scenarioTableData, scenarioSort]);
+  const scenarioScatterData = useMemo(() => {
+    if (scenarioTableData.length === 0) {
+      return [];
+    }
+    return scenarioTableData
+      .map(({ scenario, metrics, ratios, purchasePrice, monthlyRent, bedrooms }) => {
+        const x = ratios?.[scenarioScatterXAxis];
+        const y = ratios?.[scenarioScatterYAxis];
+        const propertyNetAfterTax = Number(metrics.propertyNetWealthAfterTax) || 0;
+        return {
+          id: scenario.id,
+          name: scenario.name,
+          x: Number.isFinite(x) ? x : null,
+          y: Number.isFinite(y) ? y : null,
+          propertyNetAfterTax,
+          purchasePrice: Number.isFinite(purchasePrice) ? purchasePrice : null,
+          monthlyRent: Number.isFinite(monthlyRent) ? monthlyRent : null,
+          bedrooms: Number.isFinite(bedrooms) ? bedrooms : null,
+          savedAt: scenario.savedAt,
+          isActive: scenario.id === selectedScenarioId,
+        };
+      })
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  }, [scenarioScatterXAxis, scenarioScatterYAxis, scenarioTableData, selectedScenarioId]);
+  const scenarioScatterXAxisOption = useMemo(
+    () =>
+      SCENARIO_RATIO_PERCENT_COLUMNS.find((option) => option.key === scenarioScatterXAxis) ??
+      SCENARIO_RATIO_PERCENT_COLUMNS[0],
+    [scenarioScatterXAxis]
+  );
+  const scenarioScatterYAxisOption = useMemo(
+    () =>
+      SCENARIO_RATIO_PERCENT_COLUMNS.find((option) => option.key === scenarioScatterYAxis) ??
+      SCENARIO_RATIO_PERCENT_COLUMNS[SCENARIO_RATIO_PERCENT_COLUMNS.length - 1] ??
+      SCENARIO_RATIO_PERCENT_COLUMNS[0],
+    [scenarioScatterYAxis]
   );
 
   const exitYearCount = Math.max(1, Math.floor(Number(equity.exitYear) || 1));
@@ -1536,6 +3392,12 @@ export default function App() {
   const selectedOperatingExpenses = equity.annualOperatingExpenses[performanceYearIndex] ?? 0;
   const selectedNoi = equity.annualNoiValues[performanceYearIndex] ?? 0;
   const selectedDebtService = equity.annualDebtService[performanceYearIndex] ?? 0;
+  const selectedBridgingDebtService =
+    equity.annualBridgingDebtService?.[performanceYearIndex] ?? 0;
+  const selectedMortgageDebtService = Math.max(
+    0,
+    selectedDebtService - selectedBridgingDebtService
+  );
   const selectedCashPreTax = equity.annualCashflowsPreTax[performanceYearIndex] ?? 0;
   const selectedCashAfterTax = equity.annualCashflowsAfterTax[performanceYearIndex] ?? 0;
   const selectedRentalTax = equity.propertyTaxes[performanceYearIndex] ?? 0;
@@ -1572,6 +3434,23 @@ export default function App() {
     });
   }, [chartRangeTouched, maxChartYear]);
 
+  useEffect(() => {
+    setRateChartRange((prev) => {
+      let safeStart = Math.max(0, Math.min(prev.start, maxChartYear));
+      let safeEnd = Math.max(safeStart, Math.min(prev.end, maxChartYear));
+      if (!rateRangeTouched) {
+        safeStart = 0;
+        safeEnd = maxChartYear;
+      } else if (maxChartYear > 0 && safeEnd === 0) {
+        safeEnd = maxChartYear;
+      }
+      if (safeStart === prev.start && safeEnd === prev.end) {
+        return prev;
+      }
+      return { start: safeStart, end: safeEnd };
+    });
+  }, [rateRangeTouched, maxChartYear]);
+
   const filteredChartData = useMemo(() => {
     const data = Array.isArray(equity.chart) ? equity.chart : [];
     if (data.length === 0) {
@@ -1584,6 +3463,415 @@ export default function App() {
       return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
     });
   }, [equity.chart, chartRange]);
+
+  const rateChartData = useMemo(() => {
+    const data = Array.isArray(equity.chart) ? equity.chart : [];
+    if (data.length === 0) {
+      return data;
+    }
+    const startYear = Math.max(0, Math.min(rateChartRange.start, rateChartRange.end));
+    const endYear = Math.max(startYear, rateChartRange.end);
+    return data.filter((point) => {
+      const year = Number(point?.year);
+      return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
+    });
+  }, [equity.chart, rateChartRange]);
+
+  const rateChartDataWithMovingAverage = useMemo(() => {
+    if (!rateChartSettings.showMovingAverage) {
+      return rateChartData;
+    }
+    const windowSize = Math.max(
+      1,
+      Math.min(Math.round(rateChartSettings.movingAverageWindow) || 1, rateChartData.length)
+    );
+    if (windowSize <= 1) {
+      return rateChartData;
+    }
+    return rateChartData.map((point, index) => {
+      const startIndex = Math.max(0, index - windowSize + 1);
+      const slice = rateChartData.slice(startIndex, index + 1);
+      const averages = RATE_PERCENT_KEYS.reduce((acc, key) => {
+        const total = slice.reduce((sum, entry) => sum + (Number(entry?.[key]) || 0), 0);
+        acc[`${key}MA`] = slice.length > 0 ? total / slice.length : 0;
+        return acc;
+      }, {});
+      return { ...point, ...averages };
+    });
+  }, [rateChartData, rateChartSettings.showMovingAverage, rateChartSettings.movingAverageWindow]);
+
+  const rateRangeLength = Math.max(1, rateChartRange.end - rateChartRange.start + 1);
+
+  const annualCashflowChartData = useMemo(() => {
+    if (!Array.isArray(equity.chart)) {
+      return [];
+    }
+    return equity.chart
+      .map((point) => {
+        const year = Number(point?.year);
+        if (!Number.isFinite(year) || year <= 0) {
+          return null;
+        }
+        const yearly = point.meta?.yearly ?? {};
+        return {
+          year,
+          rentIncome: Number(yearly.gross) || 0,
+          operatingExpenses: -(Number(yearly.operatingExpenses) || 0),
+          mortgagePayments: -(Number(yearly.debtService) || 0),
+          netCashflow: Number(yearly.cashAfterTax) || 0,
+        };
+      })
+      .filter(Boolean);
+  }, [equity.chart]);
+
+  const interestSplitChartData = useMemo(() => {
+    const payments = Array.isArray(equity.annualDebtService) ? equity.annualDebtService : [];
+    const interest = Array.isArray(equity.annualInterest) ? equity.annualInterest : [];
+    const principal = Array.isArray(equity.annualPrincipal) ? equity.annualPrincipal : [];
+    const years = Math.max(exitYearCount, payments.length, interest.length, principal.length);
+    if (years === 0) {
+      return [];
+    }
+    return Array.from({ length: years }, (_, index) => {
+      const payment = Number(payments[index]) || 0;
+      const interestPaid = Number(interest[index]) || 0;
+      const principalPaid = Number(principal[index]) || Math.max(0, payment - interestPaid);
+      return {
+        year: index + 1,
+        interestPaid,
+        principalPaid,
+      };
+    });
+  }, [equity.annualDebtService, equity.annualInterest, equity.annualPrincipal, exitYearCount]);
+
+  const equityGrowthChartData = useMemo(() => {
+    if (!Array.isArray(equity.chart)) {
+      return [];
+    }
+    return equity.chart.map((point) => {
+      const year = Number(point?.year) || 0;
+      const propertyValue = Math.max(0, Number(point?.propertyValue) || 0);
+      const remainingLoan = Math.max(0, Number(point?.meta?.remainingLoan) || 0);
+      const loanShare = Math.min(remainingLoan, propertyValue);
+      const ownerEquity = Math.max(0, propertyValue - loanShare);
+      return {
+        year,
+        ownerEquity,
+        loanBalance: loanShare,
+        totalValue: propertyValue,
+      };
+    });
+  }, [equity.chart]);
+
+  const rentalYield = useMemo(() => {
+    const grossRentYear1 = Number(equity.grossRentYear1) || 0;
+    const purchasePrice = Number(inputs.purchasePrice) || 0;
+    if (!Number.isFinite(grossRentYear1) || !Number.isFinite(purchasePrice) || purchasePrice <= 0) {
+      return 0;
+    }
+    return grossRentYear1 / purchasePrice;
+  }, [equity.grossRentYear1, inputs.purchasePrice]);
+
+  const locationPreview = useMemo(() => {
+    if (!geocodeState?.data) {
+      return null;
+    }
+    const lat = Number(geocodeState.data.lat);
+    const lon = Number(geocodeState.data.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return null;
+    }
+    const latFixed = lat.toFixed(6);
+    const lonFixed = lon.toFixed(6);
+    const padding = 0.01;
+    const south = (lat - padding).toFixed(6);
+    const west = (lon - padding).toFixed(6);
+    const north = (lat + padding).toFixed(6);
+    const east = (lon + padding).toFixed(6);
+    const bbox = `${west},${south},${east},${north}`;
+    return {
+      lat,
+      lon,
+      displayName: geocodeState.data.displayName,
+      embedUrl: `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${latFixed}%2C${lonFixed}`,
+      viewUrl: `https://www.openstreetmap.org/?mlat=${latFixed}&mlon=${lonFixed}#map=15/${latFixed}/${lonFixed}`,
+    };
+  }, [geocodeState.data]);
+
+  useEffect(() => {
+    if (!locationPreview) {
+      setIsMapModalOpen(false);
+    }
+  }, [locationPreview]);
+
+
+  const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
+  const appreciationRate = Number(inputs.annualAppreciation) || 0;
+  const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
+  const appreciationFactor = 1 + appreciationRate;
+  const appreciationFactorDisplay = appreciationFactor.toFixed(4);
+  const appreciationPower = Math.pow(appreciationFactor, exitYears);
+  const appreciationPowerDisplay = appreciationPower.toFixed(4);
+  const baselineHeatmapYield = useMemo(() => {
+    if (Number.isFinite(rentalYield) && rentalYield > 0) {
+      return rentalYield;
+    }
+    const price = Number(inputs.purchasePrice) || 0;
+    const rent = Number(inputs.monthlyRent) || 0;
+    const vacancy = Math.max(0, Math.min(1, Number(inputs.vacancyPct) || 0));
+    if (!Number.isFinite(price) || price <= 0) {
+      return 0;
+    }
+    return (rent * 12 * (1 - vacancy)) / price;
+  }, [inputs.monthlyRent, inputs.purchasePrice, inputs.vacancyPct, rentalYield]);
+  const roiHeatmapYieldOptions = useMemo(
+    () => ROI_HEATMAP_OFFSETS.map((offset) => Math.max(baselineHeatmapYield + offset, 0)),
+    [baselineHeatmapYield]
+  );
+  const roiHeatmapGrowthOptions = useMemo(
+    () => ROI_HEATMAP_OFFSETS.map((offset) => appreciationRate + offset),
+    [appreciationRate]
+  );
+
+  const roiHeatmapData = useMemo(() => {
+    const purchasePrice = Number(inputs.purchasePrice) || 0;
+    if (!Number.isFinite(purchasePrice) || purchasePrice <= 0) {
+      return { rows: [], roiRange: [0, 0], irrRange: [0, 0] };
+    }
+    const rows = [];
+    const actualMonthlyRent = Number(inputs.monthlyRent) || 0;
+    const vacancyPct = Number(inputs.vacancyPct) || 0;
+    const occupancyFactor = Math.max(0, 1 - vacancyPct);
+    let roiMin = Infinity;
+    let roiMax = -Infinity;
+    let irrMin = Infinity;
+    let irrMax = -Infinity;
+    roiHeatmapGrowthOptions.forEach((growthRate, rowIndex) => {
+      const cells = [];
+      roiHeatmapYieldOptions.forEach((yieldRate, columnIndex) => {
+        const targetYield = Math.max(yieldRate, 0);
+        let monthlyRent = actualMonthlyRent;
+        if (
+          Math.abs(targetYield - baselineHeatmapYield) > 1e-8 &&
+          purchasePrice > 0 &&
+          occupancyFactor > 0
+        ) {
+          const targetAnnualRent = targetYield * purchasePrice;
+          monthlyRent = targetAnnualRent / (12 * occupancyFactor);
+        }
+        monthlyRent = Math.max(0, roundTo(monthlyRent, 2));
+        const metrics = calculateEquity({
+          ...inputs,
+          annualAppreciation: growthRate,
+          monthlyRent,
+        });
+        const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
+        const irrValue = Number(metrics.irr) || 0;
+        const computedYield =
+          purchasePrice > 0 && occupancyFactor > 0
+            ? (monthlyRent * 12 * occupancyFactor) / purchasePrice
+            : targetYield;
+        if (Number.isFinite(roiValue)) {
+          roiMin = Math.min(roiMin, roiValue);
+          roiMax = Math.max(roiMax, roiValue);
+        }
+        if (Number.isFinite(irrValue)) {
+          irrMin = Math.min(irrMin, irrValue);
+          irrMax = Math.max(irrMax, irrValue);
+        }
+        cells.push({
+          yieldRate: computedYield,
+          columnIndex,
+          roi: Number.isFinite(roiValue) ? roiValue : 0,
+          irr: irrValue,
+        });
+      });
+      rows.push({ growthRate, rowIndex, cells });
+    });
+    if (roiMin === Infinity || roiMax === -Infinity) {
+      roiMin = 0;
+      roiMax = 0;
+    }
+    if (irrMin === Infinity || irrMax === -Infinity) {
+      irrMin = 0;
+      irrMax = 0;
+    }
+    return { rows, roiRange: [roiMin, roiMax], irrRange: [irrMin, irrMax] };
+  }, [baselineHeatmapYield, inputs, roiHeatmapGrowthOptions, roiHeatmapYieldOptions]);
+
+  const waitingForGeocode = hasPropertyAddress && geocodeState.status === 'loading';
+  const crimeSummary = crimeState.data;
+  const hasCrimeIncidents = crimeState.status === 'success' && Boolean(crimeSummary);
+  const crimeLoading = crimeState.status === 'loading';
+  const crimeError = crimeState.status === 'error' ? crimeState.error : '';
+  const crimeMonthLabel = crimeSummary?.monthLabel ?? '';
+  const crimeIncidentsCount = crimeSummary?.totalIncidents ?? 0;
+  const crimeHasRecordedIncidents = crimeIncidentsCount > 0;
+  const crimeMapSrcDoc = useMemo(() => {
+    if (!crimeSummary) {
+      return '';
+    }
+    const centerLat = Number.isFinite(crimeSummary.mapCenter?.lat)
+      ? crimeSummary.mapCenter.lat
+      : Number.isFinite(geocodeLat)
+      ? geocodeLat
+      : 0;
+    const centerLon = Number.isFinite(crimeSummary.mapCenter?.lon)
+      ? crimeSummary.mapCenter.lon
+      : Number.isFinite(geocodeLon)
+      ? geocodeLon
+      : 0;
+    const config = {
+      center: [centerLat, centerLon],
+      zoom: Number.isFinite(crimeSummary.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14,
+      bounds: Array.isArray(crimeSummary.mapBounds) ? crimeSummary.mapBounds : null,
+      points: Array.isArray(crimeSummary.mapCrimes)
+        ? crimeSummary.mapCrimes
+            .filter(
+              (crime) =>
+                crime &&
+                Number.isFinite(crime.lat) &&
+                Number.isFinite(crime.lon)
+            )
+            .map((crime) => ({
+              lat: crime.lat,
+              lon: crime.lon,
+              category: crime.category,
+              street: crime.street,
+              outcome: crime.outcome,
+            }))
+        : [],
+    };
+    const serialized = JSON.stringify(config).replace(/<\/script/gi, '<\\/script');
+    return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha512-xwE/Az9zrjDBXn1n6A2C1BzAMo7icbLZL9Z9Z0Z2mTq7kBxKuX3sI5Gucs5cjox96D65ZjU5yBkP0O0MquTQ=="
+      crossorigin=""
+    />
+    <style>
+      html, body, #map { height: 100%; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha512-XQoYMqMTK8LvdlxU8nB3bZK7t7C22Jks6R7/g3tE1hbbfceuiN3j5f9+t5p0gT1pYDs2prX7XKz5+6R7g8JdKw=="
+      crossorigin=""
+    ></script>
+    <script>
+      const config = ${serialized};
+      const map = L.map('map', { zoomControl: true });
+      if (config.bounds && Array.isArray(config.bounds) && config.bounds.length === 2) {
+        map.fitBounds(config.bounds);
+      } else if (Array.isArray(config.center) && config.center.length === 2) {
+        map.setView(config.center, config.zoom || 14);
+      }
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+      if (Array.isArray(config.points)) {
+        config.points.forEach((point) => {
+          if (
+            point &&
+            Number.isFinite(point.lat) &&
+            Number.isFinite(point.lon)
+          ) {
+            const marker = L.circleMarker([point.lat, point.lon], {
+              radius: 5,
+              color: '#ef4444',
+              weight: 1,
+              fillColor: '#ef4444',
+              fillOpacity: 0.6
+            });
+            const popupLines = [point.category, point.street, point.outcome]
+              .filter(Boolean)
+              .join('<br />');
+            marker.addTo(map);
+            if (popupLines) {
+              marker.bindPopup(popupLines);
+            }
+          }
+        });
+      }
+    </script>
+  </body>
+</html>`;
+  }, [crimeSummary, geocodeLat, geocodeLon]);
+
+  const leverageChartData = useMemo(() => {
+    const price = Number(inputs.purchasePrice) || 0;
+    if (!Number.isFinite(price) || price <= 0) {
+      return [];
+    }
+    const irrHurdleBaseline = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
+    return LEVERAGE_LTV_OPTIONS.map((ltv) => {
+      const depositPct = clamp(1 - ltv, 0, 1);
+      const metrics = calculateEquity({
+        ...inputs,
+        depositPct,
+      });
+      const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
+      const irrValue = Number(metrics.irr) || 0;
+      const propertyNetAfterTaxValue = Number.isFinite(metrics.propertyNetWealthAfterTax)
+        ? metrics.propertyNetWealthAfterTax
+        : 0;
+      const efficiencyValue =
+        Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue)
+          ? irrValue * propertyNetAfterTaxValue
+          : 0;
+      const irrHurdleValue = Number.isFinite(metrics.irrHurdle) ? metrics.irrHurdle : irrHurdleBaseline;
+      return {
+        ltv,
+        roi: Number.isFinite(roiValue) ? roiValue : 0,
+        irr: Number.isFinite(irrValue) ? irrValue : 0,
+        propertyNetAfterTax: propertyNetAfterTaxValue,
+        efficiency: efficiencyValue,
+        irrHurdle: irrHurdleValue,
+      };
+    });
+  }, [inputs]);
+
+  const hasInterestSplitData = interestSplitChartData.some(
+    (point) => Math.abs(point.interestPaid) > 1e-2 || Math.abs(point.principalPaid) > 1e-2
+  );
+  const hasLeverageData = leverageChartData.some(
+    (point) => Number.isFinite(point.irr) || Number.isFinite(point.roi)
+  );
+
+  useEffect(() => {
+    setRateChartSettings((prev) => {
+      const maxWindow = Math.max(1, rateRangeLength);
+      const nextWindow = Math.min(Math.max(1, prev.movingAverageWindow || 1), maxWindow);
+      if (nextWindow === prev.movingAverageWindow) {
+        return prev;
+      }
+      return { ...prev, movingAverageWindow: nextWindow };
+    });
+  }, [rateRangeLength]);
+  useEffect(() => {
+    if (!knowledgeState.open) {
+      setKnowledgeChatMessages([]);
+      setKnowledgeChatInput('');
+      setKnowledgeChatStatus('idle');
+      setKnowledgeChatError('');
+    }
+  }, [knowledgeState.open]);
+  useEffect(() => {
+    if (!knowledgeState.open) {
+      return;
+    }
+    setKnowledgeChatMessages([]);
+    setKnowledgeChatInput('');
+    setKnowledgeChatStatus('idle');
+    setKnowledgeChatError('');
+  }, [knowledgeState.metricId]);
 
   useEffect(() => {
     if (!showChartModal) {
@@ -1639,6 +3927,33 @@ export default function App() {
     (key, value) => {
       setChartRangeTouched(true);
       setChartRange((prev) => {
+        const sanitized = Number.isFinite(value) ? Math.round(value) : 0;
+        const clamped = Math.max(0, Math.min(sanitized, maxChartYear));
+        if (key === 'start') {
+          const nextStart = clamped;
+          const nextEnd = Math.max(nextStart, Math.min(prev.end, maxChartYear));
+          if (nextStart === prev.start && nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: nextStart, end: nextEnd };
+        }
+        if (key === 'end') {
+          const nextEnd = Math.max(prev.start, clamped);
+          if (nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: prev.start, end: nextEnd };
+        }
+        return prev;
+      });
+    },
+    [maxChartYear]
+  );
+
+  const handleRateChartRangeChange = useCallback(
+    (key, value) => {
+      setRateRangeTouched(true);
+      setRateChartRange((prev) => {
         const sanitized = Number.isFinite(value) ? Math.round(value) : 0;
         const clamped = Math.max(0, Math.min(sanitized, maxChartYear));
         if (key === 'start') {
@@ -1740,16 +4055,14 @@ export default function App() {
   const propertyNetAfterTaxLabel = isCompanyBuyer
     ? 'Property net after corporation tax'
     : 'Property net after tax';
-  const afterTaxComparisonPrefix = isCompanyBuyer ? 'After corporation tax' : 'After income tax';
-  const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
-  const appreciationRate = Number(inputs.annualAppreciation) || 0;
-  const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
-  const appreciationFactor = 1 + appreciationRate;
-  const appreciationFactorDisplay = appreciationFactor.toFixed(4);
-  const appreciationPower = Math.pow(appreciationFactor, exitYears);
-  const appreciationPowerDisplay = appreciationPower.toFixed(4);
   const verifyingAuth = authStatus === 'verifying';
   const shouldShowAuthOverlay = remoteEnabled && (authStatus === 'unauthorized' || verifyingAuth);
+  const selectedScenario = useMemo(
+    () => savedScenarios.find((item) => item.id === selectedScenarioId) ?? null,
+    [savedScenarios, selectedScenarioId]
+  );
+  const canUpdateSelectedScenario = Boolean(selectedScenario);
+  const isUpdatingScenario = syncStatus === 'updating';
   const scenarioStatus = (() => {
     if (!remoteEnabled) {
       return { message: 'Scenarios are stored locally in your browser.', tone: 'neutral', retry: false };
@@ -1976,6 +4289,321 @@ export default function App() {
       <div className="font-semibold">Total: {currency(equity.totalPropertyTax)}</div>
     </div>
   );
+  const knowledgeMetricSnapshots = useMemo(() => {
+    const depositValue = Number(equity.deposit) || 0;
+    const stampDutyValue = Number(equity.stampDuty) || 0;
+    const closingCostsValue = Number(equity.otherClosing) || 0;
+    const renovationValue = Number(inputs.renovationCost) || 0;
+    const bridgingAmountValue = Number(equity.bridgingLoanAmount) || 0;
+    const totalCashRequiredValue = Number(equity.cashIn) || 0;
+    const netCashInValue = Number.isFinite(equity.initialCashOutlay)
+      ? Number(equity.initialCashOutlay) || 0
+      : totalCashRequiredValue;
+    const grossRentValue = Number(selectedGrossRent) || 0;
+    const operatingExpensesValue = Number(selectedOperatingExpenses) || 0;
+    const noiValue = Number(selectedNoi) || 0;
+    const mortgageDebtValue = Number(selectedMortgageDebtService) || 0;
+    const bridgingDebtValue = Number(selectedBridgingDebtService) || 0;
+    const preTaxCashValue = Number(selectedCashPreTax) || 0;
+    const rentalTaxValue = Number(selectedRentalTax) || 0;
+    const afterTaxCashValue = Number(selectedCashAfterTax) || 0;
+    const capValue = Number(equity.cap) || 0;
+    const rentalYieldValue = Number(rentalYield) || 0;
+    const yieldOnCostValue = Number(equity.yoc) || 0;
+    const cocValue = Number(equity.coc) || 0;
+    const irrValue = Number(equity.irr) || 0;
+    const irrHurdleCurrent = Number.isFinite(inputs.irrHurdle) ? Number(inputs.irrHurdle) : 0;
+    const dscrValue = Number(equity.dscr) || 0;
+    const mortgagePaymentValue = Number(equity.mortgage) || 0;
+    const npvValue = Number(equity.npv) || 0;
+    const indexFundValue = Number(equity.indexValEnd) || 0;
+    const propertyGrossValue = Number(equity.propertyGrossWealthAtExit) || 0;
+    const propertyNetValue = Number(equity.propertyNetWealthAtExit) || 0;
+    const propertyNetAfterTaxValue = Number(equity.propertyNetWealthAfterTax) || 0;
+    const rentalTaxTotalValue = Number(equity.totalPropertyTax) || 0;
+    const futureValueValue = Number(equity.futureValue) || 0;
+    const remainingLoanValue = Number(equity.remaining) || 0;
+    const sellingCostsValue = Number(equity.sellingCosts) || 0;
+    const estimatedEquityValue = Number(estimatedExitEquity) || 0;
+    const reinvestFundSnapshot = Number(reinvestFundValue) || 0;
+    const annualInterest = Array.isArray(equity.annualInterest) ? equity.annualInterest : [];
+    const annualPrincipal = Array.isArray(equity.annualPrincipal) ? equity.annualPrincipal : [];
+    const annualDebtService = Array.isArray(equity.annualDebtService) ? equity.annualDebtService : [];
+    const interestYearOne = Number(annualInterest[0]) || 0;
+    const principalYearOne = Number(annualPrincipal[0]) || Math.max(0, (annualDebtService[0] || 0) - interestYearOne);
+    const currentLtv = 1 - (Number(inputs.depositPct) || 0);
+    const roiValue = totalCashRequiredValue > 0 ? propertyNetValue / totalCashRequiredValue - 1 : 0;
+    const efficiencyValue =
+      Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue) ? irrValue * propertyNetAfterTaxValue : 0;
+    const appreciationRateValue = Number(inputs.annualAppreciation) || 0;
+    const rentGrowthRateValue = Number(inputs.rentGrowth) || 0;
+
+    return {
+      deposit: { value: depositValue, formatted: currency(depositValue) },
+      ltv: { value: currentLtv, formatted: formatPercent(currentLtv) },
+      stampDuty: { value: stampDutyValue, formatted: currency(stampDutyValue) },
+      closingCosts: { value: closingCostsValue, formatted: currency(closingCostsValue) },
+      renovationCost: { value: renovationValue, formatted: currency(renovationValue) },
+      bridgingLoanAmount: { value: bridgingAmountValue, formatted: currency(bridgingAmountValue) },
+      netCashIn: { value: netCashInValue, formatted: currency(netCashInValue) },
+      totalCashRequired: { value: totalCashRequiredValue, formatted: currency(totalCashRequiredValue) },
+      grossRent: { value: grossRentValue, formatted: currency(grossRentValue) },
+      operatingExpenses: { value: operatingExpensesValue, formatted: currency(operatingExpensesValue) },
+      noi: { value: noiValue, formatted: currency(noiValue) },
+      mortgageDebtService: { value: mortgageDebtValue, formatted: currency(mortgageDebtValue) },
+      bridgingDebtService: { value: bridgingDebtValue, formatted: currency(bridgingDebtValue) },
+      cashflowPreTax: { value: preTaxCashValue, formatted: currency(preTaxCashValue) },
+      rentalTax: { value: rentalTaxValue, formatted: currency(rentalTaxValue), label: rentalTaxLabel },
+      cashflowAfterTax: { value: afterTaxCashValue, formatted: currency(afterTaxCashValue) },
+      cap: { value: capValue, formatted: formatPercent(capValue) },
+      rentalYield: { value: rentalYieldValue, formatted: formatPercent(rentalYieldValue) },
+      yoc: { value: yieldOnCostValue, formatted: formatPercent(yieldOnCostValue) },
+      coc: { value: cocValue, formatted: formatPercent(cocValue) },
+      irr: { value: irrValue, formatted: formatPercent(irrValue) },
+      irrHurdle: { value: irrHurdleCurrent, formatted: formatPercent(irrHurdleCurrent) },
+      dscr: { value: dscrValue, formatted: dscrValue > 0 ? dscrValue.toFixed(2) : '—' },
+      mortgagePayment: { value: mortgagePaymentValue, formatted: currency(mortgagePaymentValue) },
+      npvToDate: { value: npvValue, formatted: currency(npvValue) },
+      indexFundValue: { value: indexFundValue, formatted: currency(indexFundValue) },
+      propertyGross: { value: propertyGrossValue, formatted: currency(propertyGrossValue) },
+      propertyNet: { value: propertyNetValue, formatted: currency(propertyNetValue) },
+      propertyNetAfterTax: {
+        value: propertyNetAfterTaxValue,
+        formatted: currency(propertyNetAfterTaxValue),
+        label: propertyNetAfterTaxLabel,
+      },
+      rentalTaxTotal: {
+        value: rentalTaxTotalValue,
+        formatted: currency(rentalTaxTotalValue),
+        label: rentalTaxCumulativeLabel,
+      },
+      futureValue: { value: futureValueValue, formatted: currency(futureValueValue) },
+      remainingLoan: { value: remainingLoanValue, formatted: currency(remainingLoanValue) },
+      sellingCosts: { value: sellingCostsValue, formatted: currency(sellingCostsValue) },
+      estimatedEquity: { value: estimatedEquityValue, formatted: currency(estimatedEquityValue) },
+      propertyValue: { value: futureValueValue, formatted: currency(futureValueValue) },
+      reinvestFund: { value: reinvestFundSnapshot, formatted: currency(reinvestFundSnapshot) },
+      loanBalance: { value: remainingLoanValue, formatted: currency(remainingLoanValue) },
+      ownerEquity: { value: futureValueValue - remainingLoanValue, formatted: currency(futureValueValue - remainingLoanValue) },
+      interestPaidYear1: { value: interestYearOne, formatted: currency(interestYearOne) },
+      principalPaidYear1: { value: principalYearOne, formatted: currency(principalYearOne) },
+      roi: { value: roiValue, formatted: formatPercent(roiValue) },
+      efficiency: { value: efficiencyValue, formatted: currency(efficiencyValue) },
+      annualAppreciation: { value: appreciationRateValue, formatted: formatPercent(appreciationRateValue) },
+      rentGrowth: { value: rentGrowthRateValue, formatted: formatPercent(rentGrowthRateValue) },
+      yieldOnCost: { value: yieldOnCostValue, formatted: formatPercent(yieldOnCostValue) },
+    };
+  }, [
+    equity.deposit,
+    equity.stampDuty,
+    equity.otherClosing,
+    inputs.renovationCost,
+    equity.bridgingLoanAmount,
+    equity.cashIn,
+    equity.initialCashOutlay,
+    selectedGrossRent,
+    selectedOperatingExpenses,
+    selectedNoi,
+    selectedMortgageDebtService,
+    selectedBridgingDebtService,
+    selectedCashPreTax,
+    selectedRentalTax,
+    selectedCashAfterTax,
+    equity.cap,
+    rentalYield,
+    equity.yoc,
+    equity.coc,
+    equity.irr,
+    inputs.irrHurdle,
+    equity.dscr,
+    equity.mortgage,
+    equity.npv,
+    equity.indexValEnd,
+    equity.propertyGrossWealthAtExit,
+    equity.propertyNetWealthAtExit,
+    equity.propertyNetWealthAfterTax,
+    equity.totalPropertyTax,
+    equity.futureValue,
+    equity.remaining,
+    equity.sellingCosts,
+    estimatedExitEquity,
+    reinvestFundValue,
+    equity.annualInterest,
+    equity.annualPrincipal,
+    equity.annualDebtService,
+    inputs.depositPct,
+    inputs.annualAppreciation,
+    inputs.rentGrowth,
+    propertyNetAfterTaxLabel,
+    rentalTaxLabel,
+    rentalTaxCumulativeLabel,
+  ]);
+  const knowledgeMetricList = useMemo(
+    () =>
+      Object.entries(KNOWLEDGE_METRICS).map(([id, definition]) => ({
+        id,
+        ...definition,
+        label: knowledgeMetricSnapshots[id]?.label ?? definition.label,
+        snapshot: knowledgeMetricSnapshots[id] ?? null,
+      })),
+    [knowledgeMetricSnapshots]
+  );
+  const openKnowledgeBase = useCallback(
+    (key) => {
+      if (!key) return;
+      if (KNOWLEDGE_GROUPS[key]) {
+        const groupId = key;
+        const groupConfig = KNOWLEDGE_GROUPS[groupId];
+        const preferredIds = Array.isArray(groupConfig.metrics) ? groupConfig.metrics : [];
+        let defaultMetric = null;
+        for (const metricId of preferredIds) {
+          const candidate = knowledgeMetricList.find((item) => item.id === metricId);
+          if (candidate) {
+            defaultMetric = candidate.id;
+            break;
+          }
+        }
+        if (!defaultMetric) {
+          const fallback = knowledgeMetricList.find((item) => item.groups?.includes(groupId));
+          defaultMetric = fallback?.id ?? null;
+        }
+        setKnowledgeState({ open: true, groupId, metricId: defaultMetric });
+        return;
+      }
+      const metricEntry = knowledgeMetricList.find((item) => item.id === key);
+      if (metricEntry) {
+        const groupId = Array.isArray(metricEntry.groups) && metricEntry.groups.length > 0 ? metricEntry.groups[0] : null;
+        setKnowledgeState({ open: true, groupId, metricId: metricEntry.id });
+      }
+    },
+    [knowledgeMetricList]
+  );
+  const closeKnowledgeBase = useCallback(() => {
+    setKnowledgeState({ open: false, groupId: null, metricId: null });
+  }, []);
+  const handleSelectKnowledgeMetric = useCallback((metricId) => {
+    setKnowledgeState((prev) => {
+      if (!metricId || prev.metricId === metricId) {
+        return prev;
+      }
+      return { ...prev, metricId };
+    });
+  }, []);
+  const knowledgeGroupMetrics = useMemo(() => {
+    if (!knowledgeState.open || !knowledgeState.groupId) {
+      return [];
+    }
+    const groupId = knowledgeState.groupId;
+    const config = KNOWLEDGE_GROUPS[groupId];
+    const orderedIds = Array.isArray(config?.metrics) ? config.metrics : [];
+    const byId = new Map();
+    knowledgeMetricList
+      .filter((item) => Array.isArray(item.groups) && item.groups.includes(groupId))
+      .forEach((item) => {
+        byId.set(item.id, item);
+      });
+    if (orderedIds.length > 0) {
+      const ordered = [];
+      orderedIds.forEach((metricId) => {
+        const metric = byId.get(metricId);
+        if (metric) {
+          ordered.push(metric);
+          byId.delete(metricId);
+        }
+      });
+      ordered.push(...byId.values());
+      return ordered;
+    }
+    return Array.from(byId.values());
+  }, [knowledgeMetricList, knowledgeState.groupId, knowledgeState.open]);
+  const knowledgeGroupDefinition = knowledgeState.groupId ? KNOWLEDGE_GROUPS[knowledgeState.groupId] : null;
+  const knowledgeActiveMetric = knowledgeState.metricId ? KNOWLEDGE_METRICS[knowledgeState.metricId] : null;
+  const knowledgeActiveSnapshot = knowledgeState.metricId
+    ? knowledgeMetricSnapshots[knowledgeState.metricId] ?? null
+    : null;
+  const buildKnowledgeContextSummary = useCallback(
+    (groupId, metricId) => {
+      const lines = [];
+      const group = groupId ? KNOWLEDGE_GROUPS[groupId] : null;
+      const metric = metricId ? KNOWLEDGE_METRICS[metricId] : null;
+      const snapshot = metricId ? knowledgeMetricSnapshots[metricId] : null;
+      const displayLabel = snapshot?.label ?? metric?.label ?? metricId ?? 'Metric';
+      if (group) {
+        lines.push(`${group.label} context for ${displayLabel}.`);
+        if (group.description) {
+          lines.push(`Group overview: ${group.description}`);
+        }
+      } else {
+        lines.push(`Context for ${displayLabel}.`);
+      }
+      if (snapshot?.formatted) {
+        lines.push(`Current value: ${snapshot.formatted}`);
+      }
+      if (Number.isFinite(snapshot?.value)) {
+        lines.push(`Raw value: ${snapshot.value}`);
+      }
+      if (metric?.description) {
+        lines.push(`Definition: ${metric.description}`);
+      }
+      if (metric?.calculation) {
+        lines.push(`Calculation: ${metric.calculation}`);
+      }
+      if (metric?.importance) {
+        lines.push(`Why it matters: ${metric.importance}`);
+      }
+      if (groupId) {
+        const relatedMetrics = knowledgeMetricList.filter(
+          (item) => Array.isArray(item.groups) && item.groups.includes(groupId) && item.id !== metricId
+        );
+        if (relatedMetrics.length > 0) {
+          lines.push('Related metrics:');
+          relatedMetrics.forEach((related) => {
+            const relatedSnapshot = knowledgeMetricSnapshots[related.id];
+            const relatedLabel = relatedSnapshot?.label ?? related.label ?? related.id;
+            const formatted = relatedSnapshot?.formatted;
+            if (formatted) {
+              lines.push(`- ${relatedLabel}: ${formatted}`);
+            }
+          });
+        }
+      }
+      return lines.join('\n');
+    },
+    [knowledgeMetricList, knowledgeMetricSnapshots]
+  );
+  const buildKnowledgeContextPayload = useCallback(
+    (groupId, metricId) => {
+      const group = groupId ? KNOWLEDGE_GROUPS[groupId] : null;
+      const metric = metricId ? KNOWLEDGE_METRICS[metricId] : null;
+      const snapshot = metricId ? knowledgeMetricSnapshots[metricId] : null;
+      const related = groupId
+        ? knowledgeMetricList
+            .filter((item) => Array.isArray(item.groups) && item.groups.includes(groupId))
+            .map((item) => {
+              const snap = knowledgeMetricSnapshots[item.id];
+              return {
+                id: item.id,
+                label: snap?.label ?? item.label ?? item.id,
+                value: Number.isFinite(snap?.value) ? snap.value : null,
+                formatted: snap?.formatted ?? null,
+              };
+            })
+        : [];
+      return {
+        groupId,
+        groupLabel: group?.label ?? null,
+        metricId,
+        metricLabel: snapshot?.label ?? metric?.label ?? metricId ?? null,
+        metricValue: Number.isFinite(snapshot?.value) ? snapshot.value : null,
+        metricFormatted: snapshot?.formatted ?? null,
+        metricDescription: metric?.description ?? null,
+        metricCalculation: metric?.calculation ?? null,
+        metricImportance: metric?.importance ?? null,
+        relatedMetrics: related,
+      };
+    },
+    [knowledgeMetricList, knowledgeMetricSnapshots]
+  );
   const availableCashflowColumns = useMemo(
     () =>
       CASHFLOW_COLUMN_DEFINITIONS.map((column) =>
@@ -2012,6 +4640,15 @@ export default function App() {
     if (!key) return;
     setCashflowColumnKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
   };
+  const knowledgeBaseContextValue = useMemo(
+    () => ({
+      open: openKnowledgeBase,
+      isOpen: knowledgeState.open,
+      activeGroupId: knowledgeState.groupId,
+      activeMetricId: knowledgeState.metricId,
+    }),
+    [openKnowledgeBase, knowledgeState.groupId, knowledgeState.metricId, knowledgeState.open]
+  );
   const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
   const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
   const hasPropertyUrl = trimmedPropertyUrl !== '';
@@ -2140,7 +4777,7 @@ export default function App() {
     return lines.join('\n');
   };
 
-  const callCustomChat = async (question) => {
+  const callCustomChat = async (question, extraSummary = '', extraContext = null) => {
     const response = await fetch(`${CHAT_API_URL}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2163,6 +4800,8 @@ export default function App() {
           exitYear: equity.exitYear,
           indexFundGrowth: inputs.indexFundGrowth,
         },
+        extraSummary,
+        metricContext: extraContext,
       }),
     });
 
@@ -2184,16 +4823,19 @@ export default function App() {
     );
   };
 
-  const callGoogleChat = async (question) => {
+  const callGoogleChat = async (question, extraSummary = '') => {
     const scenarioSummary = buildChatScenarioSummary();
-    const prompt = [
+    const promptLines = [
       'You are an AI assistant helping evaluate UK property investments.',
       'Use the provided scenario data to answer the user\'s question with clear reasoning and cite any calculations you perform.',
       'Scenario data:',
       scenarioSummary,
-      '',
-      `Question: ${question}`,
-    ].join('\n');
+    ];
+    if (extraSummary && extraSummary.trim().length > 0) {
+      promptLines.push('', 'Metric context:', extraSummary.trim());
+    }
+    promptLines.push('', `Question: ${question}`);
+    const prompt = promptLines.join('\n');
 
     const response = await fetch(
       `${GOOGLE_API_BASE}/models/${encodeURIComponent(GOOGLE_MODEL)}:generateContent?key=${encodeURIComponent(GOOGLE_API_KEY)}`,
@@ -2211,7 +4853,6 @@ export default function App() {
             temperature: 0.3,
             topP: 0.8,
             topK: 40,
-            maxOutputTokens: 1024,
           },
         }),
       },
@@ -2299,6 +4940,73 @@ export default function App() {
     setChatError('');
   };
 
+  const handleKnowledgeChatSubmit = async (event) => {
+    event.preventDefault();
+    const question = knowledgeChatInput.trim();
+    if (!question || !knowledgeState.open || !knowledgeState.metricId) {
+      return;
+    }
+    const timestamp = Date.now();
+    const userMessage = {
+      id: `kb-user-${timestamp}`,
+      role: 'user',
+      content: question,
+      createdAt: timestamp,
+    };
+    setKnowledgeChatMessages((prev) => [...prev, userMessage]);
+    setKnowledgeChatInput('');
+
+    if (!chatEnabled) {
+      setKnowledgeChatError('Chat service is not currently available.');
+      return;
+    }
+
+    setKnowledgeChatStatus('loading');
+    setKnowledgeChatError('');
+
+    const summary = buildKnowledgeContextSummary(knowledgeState.groupId, knowledgeState.metricId);
+    const payload = buildKnowledgeContextPayload(knowledgeState.groupId, knowledgeState.metricId);
+
+    try {
+      let answer = '';
+      if (GOOGLE_API_KEY) {
+        answer = await callGoogleChat(question, summary);
+      } else if (CHAT_API_URL) {
+        answer = await callCustomChat(question, summary, payload);
+      } else {
+        throw new Error('Chat service is not currently configured.');
+      }
+
+      const content = answer && answer.trim().length > 0 ? answer.trim() : 'The chat service returned an empty response.';
+      const assistantMessage = {
+        id: `kb-assistant-${timestamp}`,
+        role: 'assistant',
+        content,
+        createdAt: Date.now(),
+      };
+      setKnowledgeChatMessages((prev) => [...prev, assistantMessage]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to reach the chat service.';
+      setKnowledgeChatError(message);
+      setKnowledgeChatMessages((prev) => [
+        ...prev,
+        {
+          id: `kb-assistant-error-${Date.now()}`,
+          role: 'assistant',
+          content: 'Sorry, I was unable to fetch a response. Please try again shortly.',
+          createdAt: Date.now(),
+        },
+      ]);
+    } finally {
+      setKnowledgeChatStatus('idle');
+    }
+  };
+
+  const handleKnowledgeChatClear = () => {
+    setKnowledgeChatMessages([]);
+    setKnowledgeChatError('');
+  };
+
   const handleExportCashflowCsv = () => {
     if (!cashflowTableRows.length) {
       if (typeof window !== 'undefined') {
@@ -2344,86 +5052,6 @@ export default function App() {
     window.URL.revokeObjectURL(url);
   };
 
-  const handleExportTableCsv = () => {
-    if (savedScenarios.length === 0) {
-      if (typeof window !== 'undefined') {
-        window.alert('No saved scenarios to export yet.');
-      }
-      return;
-    }
-
-    if (typeof document === 'undefined' || typeof window === 'undefined') {
-      return;
-    }
-
-    const scenarioData = savedScenarios.map((scenario) => {
-      const data = { ...DEFAULT_INPUTS, ...scenario.data };
-      const metrics = calculateEquity(data);
-      const preview = scenario.preview ?? null;
-      return { scenario, data, metrics, preview };
-    });
-
-    const inputKeys = new Set();
-    const metricKeys = new Set();
-    const previewKeys = new Set();
-
-    scenarioData.forEach(({ data, metrics, preview }) => {
-      Object.keys(data || {}).forEach((key) => inputKeys.add(key));
-      Object.keys(metrics || {}).forEach((key) => metricKeys.add(key));
-      if (preview && typeof preview === 'object') {
-        Object.keys(preview).forEach((key) => previewKeys.add(key));
-      }
-    });
-
-    const sortedInputKeys = Array.from(inputKeys).sort();
-    const sortedMetricKeys = Array.from(metricKeys).sort();
-    const sortedPreviewKeys = Array.from(previewKeys).sort();
-
-    const header = [
-      'scenario_id',
-      'scenario_name',
-      'saved_at_iso',
-      ...sortedInputKeys.map((key) => `input_${key}`),
-      ...sortedPreviewKeys.map((key) => `preview_${key}`),
-      ...sortedMetricKeys.map((key) => `metric_${key}`),
-    ];
-
-    const rows = scenarioData.map(({ scenario, data, metrics, preview }) => {
-      const row = [
-        scenario.id ?? '',
-        scenario.name ?? '',
-        scenario.savedAt ? new Date(scenario.savedAt).toISOString() : '',
-      ];
-      sortedInputKeys.forEach((key) => {
-        row.push(normaliseForCsv(data?.[key]));
-      });
-      sortedPreviewKeys.forEach((key) => {
-        const value = preview && typeof preview === 'object' ? preview[key] : '';
-        row.push(normaliseForCsv(value));
-      });
-      sortedMetricKeys.forEach((key) => {
-        row.push(normaliseForCsv(metrics?.[key]));
-      });
-      return row;
-    });
-
-    const csvBody = [header, ...rows]
-      .map((row) => row.map((value) => csvEscape(value)).join(','))
-      .join('\n');
-
-    const csvContent = `\ufeff${csvBody}`;
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'property-scenarios.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  };
-
   const onNum = (key, value, decimals = 2) => {
     setInputs((prev) => {
       const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
@@ -2463,6 +5091,56 @@ export default function App() {
       ...prev,
       [key]: !(prev[key] !== false),
     }));
+  };
+
+  const toggleCashflowSeries = (key) => {
+    setCashflowSeriesActive((prev) => ({
+      ...prev,
+      [key]: !(prev[key] !== false),
+    }));
+  };
+
+  const toggleRateSeries = (key) => {
+    setRateSeriesActive((prev) => ({
+      ...prev,
+      [key]: !(prev[key] !== false),
+    }));
+  };
+
+  const toggleLeverageSeries = (key) => {
+    setLeverageSeriesActive((prev) => ({
+      ...prev,
+      [key]: !(prev[key] !== false),
+    }));
+  };
+
+  const handleScenarioSort = (key) => {
+    setScenarioSort((prev) => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'desc' ? 'asc' : 'desc' };
+      }
+      return { key, direction: 'desc' };
+    });
+  };
+
+  const renderScenarioHeader = (label, key, align = 'left') => {
+    const active = scenarioSort.key === key;
+    const direction = active ? scenarioSort.direction : 'desc';
+    const icon = active ? (direction === 'asc' ? '↑' : '↓') : '↕';
+    const alignmentClasses =
+      align === 'right' ? 'justify-end text-right' : 'justify-start text-left';
+    return (
+      <button
+        type="button"
+        onClick={() => handleScenarioSort(key)}
+        className={`flex w-full items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600 ${alignmentClasses}`}
+      >
+        <span className={align === 'right' ? 'ml-auto' : ''}>{label}</span>
+        <span aria-hidden="true" className="text-[10px] text-slate-400">
+          {icon}
+        </span>
+      </button>
+    );
   };
 
   const pctInput = (k, label, step = 0.005) => (
@@ -2516,31 +5194,6 @@ export default function App() {
     </div>
   );
 
-  const sensitivityResults = useMemo(() => {
-    const rent = Number.isFinite(inputs.monthlyRent) ? inputs.monthlyRent : 0;
-    const scenarioBase = equity.cashflowYear1AfterTax;
-    const evaluate = (multiplier) => {
-      const adjustedRent = Math.max(0, roundTo(rent * multiplier, 2));
-      return calculateEquity({ ...inputs, monthlyRent: adjustedRent }).cashflowYear1AfterTax;
-    };
-    const downMultiplier = clamp(1 - sensitivityPct, 0, 2);
-    const upMultiplier = Math.max(0, 1 + sensitivityPct);
-    return {
-      base: scenarioBase,
-      down: evaluate(downMultiplier),
-      up: evaluate(upMultiplier),
-    };
-  }, [equity.cashflowYear1AfterTax, inputs, sensitivityPct]);
-  const sensitivityPercentLabel = `${roundTo(sensitivityPct * 100, 2)}%`;
-  const canDecreaseSensitivity = sensitivityPct > 0;
-  const canIncreaseSensitivity = sensitivityPct < 0.5;
-  const handleAdjustSensitivity = (delta) => {
-    setSensitivityPct((current) => {
-      const next = clamp(roundTo(current + delta, 3), 0, 0.5);
-      return next;
-    });
-  };
-
   const integrateScenario = (record, { select = false } = {}) => {
     const normalized = normalizeScenarioRecord(record);
     if (!normalized) return null;
@@ -2566,6 +5219,44 @@ export default function App() {
     });
   };
 
+  function captureUiState() {
+    const fallbackEnd = Number(inputs.exitYear) || Number(DEFAULT_INPUTS.exitYear) || 0;
+    const sanitizeRange = (range) => {
+      const start = Number(range?.start);
+      const end = Number(range?.end);
+      return {
+        start: Number.isFinite(start) ? start : 0,
+        end: Number.isFinite(end) ? end : fallbackEnd,
+      };
+    };
+    const sanitizeWindow = Number(rateChartSettings.movingAverageWindow);
+    return {
+      collapsedSections: { ...collapsedSections },
+      activeSeries: { ...activeSeries },
+      rateSeriesActive: { ...rateSeriesActive },
+      cashflowSeriesActive: { ...cashflowSeriesActive },
+      leverageSeriesActive: { ...leverageSeriesActive },
+      roiHeatmapMetric,
+      chartRange: sanitizeRange(chartRange),
+      chartRangeTouched: Boolean(chartRangeTouched),
+      rateChartRange: sanitizeRange(rateChartRange),
+      rateRangeTouched: Boolean(rateRangeTouched),
+      rateChartSettings: {
+        showMovingAverage: Boolean(rateChartSettings.showMovingAverage),
+        movingAverageWindow: Number.isFinite(sanitizeWindow) ? sanitizeWindow : 0,
+        showZeroBaseline: Boolean(rateChartSettings.showZeroBaseline),
+      },
+      performanceYear: Math.max(1, Math.round(Number(performanceYear) || 1)),
+      scenarioAlignInputs: Boolean(scenarioAlignInputs),
+      scenarioScatterXAxis,
+      scenarioScatterYAxis,
+      scenarioSort: {
+        key: typeof scenarioSort.key === 'string' ? scenarioSort.key : 'savedAt',
+        direction: scenarioSort.direction === 'asc' ? 'asc' : 'desc',
+      },
+    };
+  }
+
   const buildScenarioSnapshot = () => {
     const sanitizedInputs = JSON.parse(
       JSON.stringify({
@@ -2581,6 +5272,7 @@ export default function App() {
       data: sanitizedInputs,
       preview: previewSnapshot,
       cashflowColumns: sanitizeCashflowColumns(cashflowColumnKeys),
+      uiState: captureUiState(),
     };
   };
 
@@ -2592,6 +5284,7 @@ export default function App() {
         inputs: snapshot.data,
         preview: snapshot.preview,
         cashflowColumns: snapshot.cashflowColumns,
+        uiState: snapshot.uiState,
       };
       const encoded = encodeSharePayload(payload);
       if (!encoded) {
@@ -2740,16 +5433,25 @@ export default function App() {
       data: snapshot.data,
       preview: snapshot.preview,
       cashflowColumns: snapshot.cashflowColumns,
+      uiState: snapshot.uiState,
     };
     integrateScenario(scenario, { select: true });
   };
 
-  const handleLoadScenario = () => {
-    const scenario = savedScenarios.find((item) => item.id === selectedScenarioId);
+  const handleLoadScenario = (scenarioId, options = {}) => {
+    const targetId = typeof scenarioId === 'string' && scenarioId ? scenarioId : selectedScenarioId;
+    const scenario = savedScenarios.find((item) => item.id === targetId);
     if (!scenario) return;
+    setSelectedScenarioId(scenario.id);
     setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
     setCashflowColumnKeys(sanitizeCashflowColumns(scenario.cashflowColumns));
-    setShowLoadPanel(false);
+    applyUiState(scenario.uiState);
+    if (!options.preserveLoadPanel) {
+      setShowLoadPanel(false);
+    }
+    if (options.closeTableOnLoad) {
+      setShowTableModal(false);
+    }
     const scenarioUrl = scenario.data?.propertyUrl ?? '';
     const shouldActivate =
       (scenario.preview && scenario.preview.active) || (typeof scenarioUrl === 'string' && scenarioUrl.trim() !== '');
@@ -2841,6 +5543,7 @@ export default function App() {
         data: snapshot.data,
         preview: snapshot.preview,
         cashflowColumns: snapshot.cashflowColumns,
+        uiState: snapshot.uiState,
         savedAt: updatedAt,
       },
       { select: selectedScenarioId === id }
@@ -2876,7 +5579,8 @@ export default function App() {
   };
 
   return (
-    <div ref={pageRef} data-export-root className="min-h-screen bg-slate-50 text-slate-900">
+    <KnowledgeBaseContext.Provider value={knowledgeBaseContextValue}>
+      <div ref={pageRef} data-export-root className="min-h-screen bg-slate-50 text-slate-900">
       {shouldShowAuthOverlay ? (
         <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 backdrop-blur-sm">
           <form
@@ -2957,7 +5661,7 @@ export default function App() {
                 onClick={handleExportPdf}
                 className="no-print inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
               >
-                📄 Export PDF
+                📄 PDF
               </button>
               <button
                 type="button"
@@ -2971,11 +5675,30 @@ export default function App() {
               <div className="text-xs font-medium text-emerald-600 md:self-end">{shareNotice}</div>
             )}
             <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">
-              <div
-                className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}
-                title={SCORE_TOOLTIPS.overall}
-              >
-                Score: {Math.round(equity.score)} / 100
+              <div className="relative group">
+                <div
+                  className={`rounded-full px-4 py-1 text-white outline-none transition ${badgeColor(equity.score)}`}
+                  tabIndex={0}
+                  aria-describedby="overall-score-tooltip"
+                >
+                  Score: {Math.round(equity.score)} / 100
+                </div>
+                <div
+                  id="overall-score-tooltip"
+                  role="tooltip"
+                  className="pointer-events-none absolute left-1/2 top-full z-20 hidden w-72 -translate-x-1/2 translate-y-2 rounded-lg border border-slate-200 bg-white p-3 text-[11px] text-slate-600 shadow-lg group-hover:block group-focus-within:block"
+                >
+                  <p className="font-semibold text-slate-700">How this score is built</p>
+                  <p className="mt-1">{SCORE_TOOLTIPS.overall}</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-left">
+                    <li>Cash-on-cash return × 1.2, capped at 40 points.</li>
+                    <li>Cap rate × 0.8, capped at 25 points.</li>
+                    <li>(DSCR − 1) × 25, capped at 15 points.</li>
+                    <li>NPV ÷ £20k, capped at 15 points.</li>
+                    <li>Year-one after-tax cash flow ÷ £1k, capped at 5 points.</li>
+                  </ul>
+                  <p className="mt-2 text-slate-500">Points are summed and clipped between 0 and 100.</p>
+                </div>
               </div>
               <div
                 className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}
@@ -2993,19 +5716,44 @@ export default function App() {
           </header>
         </div>
 
-        <main className="py-6">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <section className="md:col-span-1">
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
+        <main className="py-6 md:min-h-screen">
+          <div className="grid grid-cols-1 gap-4 md:min-h-[calc(100vh-8rem)] md:grid-cols-3 md:items-stretch">
+            <section className="space-y-3 md:col-span-1 md:self-start md:pr-2 md:pb-4">
+              <div className="rounded-2xl bg-white p-3 shadow-sm">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold">Deal Inputs</h2>
+                  <div className="flex items-center gap-1">
+                    {canUpdateSelectedScenario ? (
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateScenario(selectedScenario.id)}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-label="Update saved scenario"
+                        title="Update saved scenario"
+                        disabled={isUpdatingScenario}
+                      >
+                        <span aria-hidden="true">💾</span>
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={handleResetInputs}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100"
+                      aria-label="Reset deal inputs"
+                    >
+                      <span aria-hidden="true">↻</span>
+                    </button>
+                  </div>
+                </div>
 
-              <CollapsibleSection
-                title="Property info"
-                collapsed={collapsedSections.propertyInfo}
-                onToggle={() => toggleSection('propertyInfo')}
-              >
-                <div className="grid gap-2 md:grid-cols-2">
+                <CollapsibleSection
+                  title="Property info"
+                  collapsed={collapsedSections.propertyInfo}
+                  onToggle={() => toggleSection('propertyInfo')}
+                >
+                  <div className="grid gap-2 md:grid-cols-2">
                   <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
+                  <div>{smallInput('bedrooms', 'Bedrooms', 1, 0)}</div>
                   <div className="flex flex-col gap-1 md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Property URL</label>
                     <div className="flex items-center gap-2">
@@ -3069,20 +5817,87 @@ export default function App() {
                 <div className="mt-2 space-y-1 text-[11px] leading-snug text-slate-500">
                   <div>
                     {previewActive
-                      ? 'The live listing below will be stored with saved scenarios and share links.'
+                      ? 'Listing preview loaded below.'
                       : 'Choose “Preview” to open the listing below; the frame is saved with scenarios and share links.'}
                   </div>
                   {previewLoading ? <div>Loading preview…</div> : null}
                   {previewError ? <div className="text-rose-600">{previewError}</div> : null}
                 </div>
-              </CollapsibleSection>
+                {geocodeState.status === 'loading' ? (
+                  <p className="mt-2 text-[11px] text-slate-500">Locating property…</p>
+                ) : null}
+                {geocodeState.status === 'error' ? (
+                  <p className="mt-2 text-[11px] text-rose-600" role="alert">
+                    {geocodeState.error}
+                  </p>
+                ) : null}
+                {locationPreview ? (
+                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-[11px] font-semibold text-slate-600">Property location</div>
+                    <p className="mt-1 text-[11px] text-slate-500">{locationPreview.displayName}</p>
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setIsMapModalOpen(true)}
+                        className="inline-flex items-center gap-2 rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                      >
+                        <span role="img" aria-hidden="true">
+                          🗺️
+                        </span>
+                        Open interactive map
+                      </button>
+                      <a
+                        href={locationPreview.viewUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="Open location on OpenStreetMap"
+                        className="inline-flex items-center justify-center rounded-full border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                      >
+                        <span className="sr-only">View on OpenStreetMap</span>
+                        <svg
+                          aria-hidden="true"
+                          className="h-4 w-4"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          xmlns="http://www.w3.org/2000/svg"
+                        >
+                          <path
+                            d="M11.25 3.5H5.5A2 2 0 0 0 3.5 5.5v9A2 2 0 0 0 5.5 16.5h9a2 2 0 0 0 2-2v-5.75"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M9.5 10.5 16.5 3.5"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M12.5 3.5h4v4"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </a>
+                    </div>
+                    <div className="mt-2 text-[10px] uppercase tracking-wide text-slate-400">
+                      Map data © OpenStreetMap contributors
+                    </div>
+                  </div>
+                ) : null}
+                </CollapsibleSection>
 
-              <CollapsibleSection
-                title="Buyer profile"
-                collapsed={collapsedSections.buyerProfile}
-                onToggle={() => toggleSection('buyerProfile')}
-              >
-                <div className="flex items-center gap-3 text-xs">
+                <CollapsibleSection
+                  title="Buyer profile"
+                  collapsed={collapsedSections.buyerProfile}
+                  onToggle={() => toggleSection('buyerProfile')}
+                >
+                  <div className="flex items-center gap-3 text-xs">
                   <label className="inline-flex items-center gap-2">
                     <input
                       type="radio"
@@ -3126,14 +5941,14 @@ export default function App() {
                     Company purchases are treated here at higher rates (+5% surcharge on the total price).
                   </div>
                 )}
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-              <CollapsibleSection
-                title="Household income"
-                collapsed={collapsedSections.householdIncome}
-                onToggle={() => toggleSection('householdIncome')}
-              >
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <CollapsibleSection
+                  title="Household income"
+                  collapsed={collapsedSections.householdIncome}
+                  onToggle={() => toggleSection('householdIncome')}
+                >
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {moneyInput('incomePerson1', 'Owner A income (£)', 1000)}
                   {moneyInput('incomePerson2', 'Owner B income (£)', 1000)}
                   {pctInput('ownershipShare1', 'Owner A ownership %')}
@@ -3144,14 +5959,14 @@ export default function App() {
                     ? 'For company purchases, rental profits are taxed at a flat 19% corporation tax rate. Ownership percentages still control how cash flows are split across the summary.'
                     : 'Rental profit is allocated according to the ownership percentages above before applying each owner’s marginal tax bands. Percentages are normalised if they do not sum to 100%.'}
                 </p>
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-              <CollapsibleSection
-                title="Purchase costs"
-                collapsed={collapsedSections.purchaseCosts}
-                onToggle={() => toggleSection('purchaseCosts')}
-              >
-                <div className="grid grid-cols-2 gap-2">
+                <CollapsibleSection
+                  title="Purchase costs"
+                  collapsed={collapsedSections.purchaseCosts}
+                  onToggle={() => toggleSection('purchaseCosts')}
+                >
+                  <div className="grid grid-cols-2 gap-2">
                   {moneyInput('purchasePrice', 'Purchase price (£)')}
                   {pctInput('depositPct', 'Deposit %')}
                   {pctInput('closingCostsPct', 'Other closing costs %')}
@@ -3183,15 +5998,41 @@ export default function App() {
                     </div>
                     <div className="mt-1 text-[11px] text-slate-500">Interest‑only keeps the loan balance unchanged until exit; debt service = interest only.</div>
                   </div>
+                  <div className="col-span-2 mt-2 space-y-2">
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(inputs.useBridgingLoan)}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            useBridgingLoan: event.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Use bridging loan for deposit</span>
+                    </label>
+                    {inputs.useBridgingLoan ? (
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
+                        {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
+                      </div>
+                    ) : null}
+                    {inputs.useBridgingLoan ? (
+                      <p className="text-[11px] text-slate-500">
+                        Deposit funds are covered by the bridge during the selected term before reverting to the standard mortgage.
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-              <CollapsibleSection
-                title="Rental cashflow"
-                collapsed={collapsedSections.rentalCashflow}
-                onToggle={() => toggleSection('rentalCashflow')}
-              >
-                <div className="grid grid-cols-2 gap-2">
+                <CollapsibleSection
+                  title="Rental cashflow"
+                  collapsed={collapsedSections.rentalCashflow}
+                  onToggle={() => toggleSection('rentalCashflow')}
+                >
+                  <div className="grid grid-cols-2 gap-2">
                   {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
                   {pctInput('vacancyPct', 'Vacancy %')}
                   {pctInput('mgmtPct', 'Management %')}
@@ -3203,7 +6044,6 @@ export default function App() {
                   {pctInput('indexFundGrowth', 'Index fund growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
                   {pctInput('sellingCostsPct', 'Selling costs %')}
-                  {pctInput('discountRate', 'Discount rate %', 0.001)}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                       <input
@@ -3228,20 +6068,75 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              </CollapsibleSection>
+                </CollapsibleSection>
 
-            </div>
-          </section>
+                <CollapsibleSection
+                  title="Extra settings"
+                  collapsed={collapsedSections.extraSettings}
+                  onToggle={() => toggleSection('extraSettings')}
+                >
+                  <div className="grid grid-cols-2 gap-2">
+                    {pctInput('discountRate', 'Discount rate %', 0.001)}
+                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                  </div>
+                </CollapsibleSection>
 
-          <section className="space-y-3 md:col-span-2">
+              </div>
+            </section>
+
+      <section className="md:col-span-2 md:self-stretch">
+        <div className="flex flex-col space-y-3 md:pr-2 md:pb-6">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <SummaryCard title="Cash needed" tooltip={SECTION_DESCRIPTIONS.cashNeeded}>
-                <Line label="Deposit" value={currency(equity.deposit)} />
-                <Line label="Stamp Duty (est.)" value={currency(equity.stampDuty)} />
-                <Line label="Other closing costs" value={currency(equity.otherClosing)} />
-                <Line label="Renovation (upfront)" value={currency(inputs.renovationCost)} />
+              <SummaryCard
+                title="Cash needed"
+                tooltip={SECTION_DESCRIPTIONS.cashNeeded}
+                knowledgeKey="cashNeeded"
+              >
+                <Line label="Deposit" value={currency(equity.deposit)} knowledgeKey="deposit" />
+                <Line
+                  label="Stamp Duty (est.)"
+                  value={currency(equity.stampDuty)}
+                  knowledgeKey="stampDuty"
+                />
+                <Line
+                  label="Other closing costs"
+                  value={currency(equity.otherClosing)}
+                  knowledgeKey="closingCosts"
+                />
+                <Line
+                  label="Renovation (upfront)"
+                  value={currency(inputs.renovationCost)}
+                  knowledgeKey="renovationCost"
+                />
+                {equity.bridgingLoanAmount > 0 ? (
+                  <Line
+                    label="Bridging loan (deposit financed)"
+                    value={currency(-equity.bridgingLoanAmount)}
+                    knowledgeKey="bridgingLoanAmount"
+                  />
+                ) : null}
                 <hr className="my-2" />
-                <Line label="Total cash in" value={currency(equity.cashIn)} bold />
+                <Line
+                  label={
+                    equity.bridgingLoanAmount > 0
+                      ? 'Net cash in (after bridging)'
+                      : 'Total cash in'
+                  }
+                  value={currency(
+                    Number.isFinite(equity.initialCashOutlay)
+                      ? equity.initialCashOutlay
+                      : equity.cashIn
+                  )}
+                  bold
+                  knowledgeKey="netCashIn"
+                />
+                {equity.bridgingLoanAmount > 0 ? (
+                  <Line
+                    label="Total cash required"
+                    value={currency(equity.cashIn)}
+                    knowledgeKey="totalCashRequired"
+                  />
+                ) : null}
               </SummaryCard>
 
               <SummaryCard
@@ -3251,6 +6146,7 @@ export default function App() {
                       label="Performance"
                       tooltip={SECTION_DESCRIPTIONS.performance}
                       className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="performance"
                     />
                     <div className="flex items-center gap-1 text-[11px] text-slate-500">
                       <span>Year</span>
@@ -3267,267 +6163,1212 @@ export default function App() {
                   </div>
                 }
               >
-                <Line label="Gross rent (vacancy adj.)" value={currency(selectedGrossRent)} />
-                <Line label="Operating expenses" value={currency(selectedOperatingExpenses)} />
-                <Line label="NOI" value={currency(selectedNoi)} />
-                <Line label="Debt service" value={currency(selectedDebtService)} />
-                <Line label="Cash flow (pre‑tax)" value={currency(selectedCashPreTax)} />
-                <Line label={rentalTaxLabel} value={currency(selectedRentalTax)} />
+                <Line
+                  label="Gross rent (vacancy adj.)"
+                  value={currency(selectedGrossRent)}
+                  knowledgeKey="grossRent"
+                />
+                <Line
+                  label="Operating expenses"
+                  value={currency(selectedOperatingExpenses)}
+                  knowledgeKey="operatingExpenses"
+                />
+                <Line label="NOI" value={currency(selectedNoi)} knowledgeKey="noi" />
+                <Line
+                  label="Debt service"
+                  value={currency(selectedMortgageDebtService)}
+                  knowledgeKey="mortgageDebtService"
+                />
+                {selectedBridgingDebtService !== 0 ? (
+                  <Line
+                    label="Debt service (bridging)"
+                    value={currency(selectedBridgingDebtService)}
+                    knowledgeKey="bridgingDebtService"
+                  />
+                ) : null}
+                <Line
+                  label="Cash flow (pre‑tax)"
+                  value={currency(selectedCashPreTax)}
+                  knowledgeKey="cashflowPreTax"
+                />
+                <Line
+                  label={rentalTaxLabel}
+                  value={currency(selectedRentalTax)}
+                  knowledgeKey="rentalTax"
+                />
                 <hr className="my-2" />
-                <Line label="Cash flow (after tax)" value={currency(selectedCashAfterTax)} bold />
+                <Line
+                  label="Cash flow (after tax)"
+                  value={currency(selectedCashAfterTax)}
+                  bold
+                  knowledgeKey="cashflowAfterTax"
+                />
               </SummaryCard>
 
-              <SummaryCard title="Key ratios" tooltip={SECTION_DESCRIPTIONS.keyRatios}>
-                <Line label="Cap rate" value={formatPercent(equity.cap)} tooltip={KEY_RATIO_TOOLTIPS.cap} />
-                <Line label="Yield on cost" value={formatPercent(equity.yoc)} tooltip={KEY_RATIO_TOOLTIPS.yoc} />
-                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} tooltip={KEY_RATIO_TOOLTIPS.coc} />
-                <Line label="IRR" value={formatPercent(equity.irr)} tooltip={KEY_RATIO_TOOLTIPS.irr} />
+              <SummaryCard
+                title="Key ratios"
+                tooltip={SECTION_DESCRIPTIONS.keyRatios}
+                knowledgeKey="keyRatios"
+              >
+                <Line
+                  label="Cap rate"
+                  value={formatPercent(equity.cap)}
+                  tooltip={KEY_RATIO_TOOLTIPS.cap}
+                  knowledgeKey="cap"
+                />
+                <Line
+                  label="Rental yield"
+                  value={formatPercent(rentalYield)}
+                  tooltip={KEY_RATIO_TOOLTIPS.rentalYield}
+                  knowledgeKey="rentalYield"
+                />
+                <Line
+                  label="Yield on cost"
+                  value={formatPercent(equity.yoc)}
+                  tooltip={KEY_RATIO_TOOLTIPS.yoc}
+                  knowledgeKey="yoc"
+                />
+                <Line
+                  label="Cash‑on‑cash"
+                  value={formatPercent(equity.coc)}
+                  tooltip={KEY_RATIO_TOOLTIPS.coc}
+                  knowledgeKey="coc"
+                />
+                <Line
+                  label="IRR"
+                  value={formatPercent(equity.irr)}
+                  tooltip={KEY_RATIO_TOOLTIPS.irr}
+                  knowledgeKey="irr"
+                />
                 <Line
                   label="DSCR"
                   value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
                   tooltip={KEY_RATIO_TOOLTIPS.dscr}
+                  knowledgeKey="dscr"
                 />
-                <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} tooltip={KEY_RATIO_TOOLTIPS.mortgage} />
-              </SummaryCard>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <SummaryCard title={`At exit (Year ${inputs.exitYear})`} tooltip={SECTION_DESCRIPTIONS.exit}>
-                <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
-                <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
-                <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
-                <hr className="my-2" />
                 <Line
-                  label="Estimated equity then"
-                  value={currency(estimatedExitEquity)}
-                  bold
-                  tooltip={estimatedEquityTooltip}
+                  label="Mortgage pmt (mo)"
+                  value={currency(equity.mortgage)}
+                  tooltip={KEY_RATIO_TOOLTIPS.mortgage}
+                  knowledgeKey="mortgagePayment"
                 />
-              </SummaryCard>
-
-              <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`} tooltip={SECTION_DESCRIPTIONS.npv}>
-                <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
-                <Line label="NPV" value={currency(equity.npv)} bold />
               </SummaryCard>
             </div>
 
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <SectionTitle
-                  label="Wealth trajectory vs Index Fund"
-                  tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
-                  className="text-sm font-semibold text-slate-700"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowChartModal(true)}
-                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                >
-                  Expand chart
-                </button>
-              </div>
-              <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
-                <span>Showing years {chartRange.start} – {chartRange.end}</span>
-              </div>
-              <div className="h-72 w-full">
-                <ResponsiveContainer>
-                  <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis
-                      dataKey="year"
-                      tickFormatter={(t) => `Y${t}`}
-                      tick={{ fontSize: 10, fill: '#475569' }}
-                    />
-                    <YAxis
-                      tickFormatter={(v) => currency(v)}
-                      tick={{ fontSize: 10, fill: '#475569' }}
-                      width={90}
-                    />
-                    <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
-                    <Legend
-                      content={(props) => (
-                        <ChartLegend
-                          {...props}
-                          activeSeries={activeSeries}
-                          onToggle={toggleSeries}
-                          excludedKeys={reinvestActive ? [] : ['investedRent']}
-                        />
-                      )}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="indexFund"
-                      name="Index fund"
-                      stroke="#f97316"
-                      fill="rgba(249,115,22,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.indexFund}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="cashflow"
-                      name="Cashflow"
-                      stroke="#facc15"
-                      fill="rgba(250,204,21,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.cashflow}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyValue"
-                      name="Property value"
-                      stroke="#0ea5e9"
-                      fill="rgba(14,165,233,0.18)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyValue}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyGross"
-                      name="Property gross"
-                      stroke="#2563eb"
-                      fill="rgba(37,99,235,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyGross}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyNet"
-                      name="Property net"
-                      stroke="#16a34a"
-                      fill="rgba(22,163,74,0.25)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyNet}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyNetAfterTax"
-                      name={propertyNetAfterTaxLabel}
-                      stroke="#9333ea"
-                      fill="rgba(147,51,234,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyNetAfterTax}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="investedRent"
-                      name="Invested rent"
-                      stroke="#0d9488"
-                      fill="rgba(13,148,136,0.15)"
-                      strokeWidth={2}
-                      strokeDasharray="5 3"
-                      hide={!activeSeries.investedRent || !reinvestActive}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
+            
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="space-y-3 md:order-2 md:col-span-1">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 md:items-stretch">
+              <div className="md:col-span-1">
                 <SummaryCard
                   title={`Exit comparison (Year ${inputs.exitYear})`}
                   tooltip={SECTION_DESCRIPTIONS.exitComparison}
+                  className="h-full"
+                  knowledgeKey="exitComparison"
                 >
                   <Line
                     label="Index fund value"
                     value={currency(equity.indexValEnd)}
                     tooltip={indexFundTooltip}
+                    knowledgeKey="indexFundValue"
                   />
                   <Line
                     label="Property gross"
                     value={currency(equity.propertyGrossWealthAtExit)}
                     tooltip={propertyGrossTooltip}
+                    knowledgeKey="propertyGross"
                   />
                   <Line
                     label="Property net"
                     value={currency(equity.propertyNetWealthAtExit)}
                     tooltip={propertyNetTooltip}
+                    knowledgeKey="propertyNet"
                   />
                   <Line
                     label={propertyNetAfterTaxLabel}
                     value={currency(equity.propertyNetWealthAfterTax)}
                     tooltip={propertyNetAfterTaxTooltip}
+                    knowledgeKey="propertyNetAfterTax"
                   />
                   <Line
                     label={rentalTaxCumulativeLabel}
                     value={currency(equity.totalPropertyTax)}
                     tooltip={rentalTaxTooltip}
+                    knowledgeKey="rentalTaxTotal"
                   />
-                  <div className="mt-2 text-xs text-slate-600">
-                    {equity.propertyNetWealthAfterTax > equity.indexValEnd
-                      ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
-                      : equity.propertyNetWealthAfterTax < equity.indexValEnd
-                      ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
-                      : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
-                  </div>
                 </SummaryCard>
               </div>
 
-              <div className="md:order-1 md:col-span-1">
+              <div className="md:col-span-1">
                 <SummaryCard
-                  title={
-                    <div className="flex items-center justify-between gap-2">
-                      <SectionTitle
-                        label="Sensitivity"
-                        tooltip={SECTION_DESCRIPTIONS.sensitivity}
-                        className="text-sm font-semibold text-slate-700"
-                      />
-                      <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                        <button
-                          type="button"
-                          onClick={() => handleAdjustSensitivity(-0.01)}
-                          className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label="Decrease rent sensitivity"
-                          disabled={!canDecreaseSensitivity}
-                        >
-                          ▼
-                        </button>
-                        <span className="min-w-[3ch] text-right font-semibold text-slate-700">
-                          {sensitivityPercentLabel}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleAdjustSensitivity(0.01)}
-                          className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label="Increase rent sensitivity"
-                          disabled={!canIncreaseSensitivity}
-                        >
-                          ▲
-                        </button>
-                      </div>
-                    </div>
-                  }
+                  title={`Equity at exit (Year ${inputs.exitYear})`}
+                  tooltip={SECTION_DESCRIPTIONS.exit}
+                  className="h-full"
+                  knowledgeKey="exit"
                 >
-                  <div className="space-y-0.5">
-                    <SensitivityRow label={`Rent −${sensitivityPercentLabel}`} value={sensitivityResults.down} />
-                    <SensitivityRow label="Base" value={sensitivityResults.base} />
-                    <SensitivityRow label={`Rent +${sensitivityPercentLabel}`} value={sensitivityResults.up} />
-                  </div>
-                </SummaryCard>
-              </div>
-
-              <div className="md:col-span-2 md:order-3">
-                <CollapsibleSection
-                  title="Annual cash flow detail"
-                  collapsed={collapsedSections.cashflowDetail}
-                  onToggle={() => toggleSection('cashflowDetail')}
-                  className="rounded-2xl bg-white p-3 shadow-sm"
-                >
-                  <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-                  <CashflowTable
-                    rows={cashflowTableRows}
-                    columns={selectedCashflowColumns}
-                    hiddenColumns={hiddenCashflowColumns}
-                    onRemoveColumn={handleRemoveCashflowColumn}
-                    onAddColumn={handleAddCashflowColumn}
-                    onExport={handleExportCashflowCsv}
+                  <Line
+                    label="Future value"
+                    value={currency(equity.futureValue)}
+                    tooltip={futureValueTooltip}
+                    knowledgeKey="futureValue"
                   />
-                </CollapsibleSection>
+                  <Line
+                    label="Remaining loan"
+                    value={currency(equity.remaining)}
+                    tooltip={remainingLoanTooltip}
+                    knowledgeKey="remainingLoan"
+                  />
+                  <Line
+                    label="Selling costs"
+                    value={currency(equity.sellingCosts)}
+                    tooltip={sellingCostsTooltip}
+                    knowledgeKey="sellingCosts"
+                  />
+                  <hr className="my-2" />
+                  <Line
+                    label="Estimated equity then"
+                    value={currency(estimatedExitEquity)}
+                    bold
+                    tooltip={estimatedEquityTooltip}
+                    knowledgeKey="estimatedEquity"
+                  />
+                </SummaryCard>
               </div>
             </div>
 
-          </section>
+            <div className="rounded-2xl bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('wealthTrajectory')}
+                    aria-expanded={!collapsedSections.wealthTrajectory}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.wealthTrajectory ? 'Show chart' : 'Hide chart'}
+                  >
+                    {collapsedSections.wealthTrajectory ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Wealth trajectory vs Index Fund"
+                    tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
+                    className="text-sm font-semibold text-slate-700"
+                    knowledgeKey="wealthTrajectory"
+                  />
+                </div>
+                {!collapsedSections.wealthTrajectory ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowChartModal(true)}
+                    className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                  >
+                    Expand chart
+                  </button>
+                ) : null}
+              </div>
+              {!collapsedSections.wealthTrajectory ? (
+                <>
+                  <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
+                    <span>Showing years {chartRange.start} – {chartRange.end}</span>
+                  </div>
+                  <div className="h-72 w-full">
+                    <ResponsiveContainer>
+                      <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="year"
+                          tickFormatter={(t) => `Y${t}`}
+                          tick={{ fontSize: 10, fill: '#475569' }}
+                        />
+                        <YAxis
+                          tickFormatter={(v) => currency(v)}
+                          tick={{ fontSize: 10, fill: '#475569' }}
+                          width={90}
+                        />
+                        <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
+                        <Legend
+                          content={(props) => (
+                            <ChartLegend
+                              {...props}
+                              activeSeries={activeSeries}
+                              onToggle={toggleSeries}
+                              excludedKeys={reinvestActive ? [] : ['investedRent']}
+                            />
+                          )}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="indexFund"
+                          name="Index fund"
+                          stroke="#f97316"
+                          fill="rgba(249,115,22,0.2)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                          hide={!activeSeries.indexFund}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="cashflow"
+                          name="Cashflow"
+                          stroke="#facc15"
+                          fill="rgba(250,204,21,0.2)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                          hide={!activeSeries.cashflow}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="propertyValue"
+                          name="Property value"
+                          stroke="#0ea5e9"
+                          fill="rgba(14,165,233,0.18)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                          hide={!activeSeries.propertyValue}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="propertyGross"
+                          name="Property gross"
+                          stroke="#2563eb"
+                          fill="rgba(37,99,235,0.2)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                          hide={!activeSeries.propertyGross}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="propertyNet"
+                          name="Property net"
+                          stroke="#16a34a"
+                          fill="rgba(22,163,74,0.25)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                          hide={!activeSeries.propertyNet}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="propertyNetAfterTax"
+                          name={propertyNetAfterTaxLabel}
+                          stroke="#9333ea"
+                          fill="rgba(147,51,234,0.2)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                          hide={!activeSeries.propertyNetAfterTax}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="investedRent"
+                          name="Invested rent"
+                          stroke="#0d9488"
+                          fill="rgba(13,148,136,0.15)"
+                          strokeWidth={2}
+                          strokeDasharray="5 3"
+                          isAnimationActive={false}
+                          hide={!activeSeries.investedRent || !reinvestActive}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.rateTrends ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('rateTrends')}
+                      aria-expanded={!collapsedSections.rateTrends}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.rateTrends ? 'Show chart' : 'Hide chart'}
+                    >
+                      {collapsedSections.rateTrends ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Return ratios over time"
+                      tooltip={SECTION_DESCRIPTIONS.rateTrends}
+                      className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="rateTrends"
+                    />
+                  </div>
+                  {!collapsedSections.rateTrends ? (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRateChartRange({ start: 0, end: maxChartYear });
+                          setRateRangeTouched(false);
+                        }}
+                        className="hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                      >
+                        Reset range
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowRatesModal(true)}
+                        className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                      >
+                        Expand chart
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+                {!collapsedSections.rateTrends ? (
+                  <>
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
+                      <span>Years {rateChartRange.start} – {rateChartRange.end}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRateChartRange({ start: 0, end: maxChartYear });
+                          setRateRangeTouched(false);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 sm:hidden"
+                      >
+                        Reset range
+                      </button>
+                    </div>
+                    <div className="h-72 w-full">
+                      {rateChartDataWithMovingAverage.length > 0 ? (
+                        <ResponsiveContainer>
+                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 70, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis
+                              dataKey="year"
+                              tickFormatter={(t) => `Y${t}`}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                            />
+                            <YAxis
+                              yAxisId="percent"
+                              tickFormatter={(v) => formatPercent(v)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              width={70}
+                            />
+                            <YAxis
+                              yAxisId="currency"
+                              orientation="right"
+                              tickFormatter={(v) => currency(v)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              width={90}
+                            />
+                            <Tooltip
+                              formatter={(value, name, entry) => {
+                                const key = entry?.dataKey;
+                                const label = SERIES_LABELS[key] ?? name;
+                                if (RATE_VALUE_KEYS.includes(key)) {
+                                  return [currency(value), label];
+                                }
+                                return [formatPercent(value), label];
+                              }}
+                              labelFormatter={(label) => `Year ${label}`}
+                            />
+                            <Legend
+                              content={(props) => (
+                                <ChartLegend
+                                  {...props}
+                                  activeSeries={rateSeriesActive}
+                                  onToggle={toggleRateSeries}
+                                  excludedKeys={RATE_PERCENT_KEYS.map((key) => `${key}MA`)}
+                                />
+                              )}
+                            />
+                            {rateChartSettings.showZeroBaseline ? (
+                              <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
+                            ) : null}
+                            {RATE_PERCENT_SERIES.map((key) => (
+                              <RechartsLine
+                                key={key}
+                                type="monotone"
+                                dataKey={key}
+                                name={SERIES_LABELS[key] ?? key}
+                                stroke={SERIES_COLORS[key]}
+                                strokeWidth={2}
+                                dot={false}
+                                yAxisId="percent"
+                                hide={!rateSeriesActive[key]}
+                                strokeDasharray={key === 'irrHurdle' ? '4 4' : undefined}
+                                isAnimationActive={false}
+                              />
+                            ))}
+                            {RATE_VALUE_KEYS.map((key) => (
+                              <RechartsLine
+                                key={key}
+                                type="monotone"
+                                dataKey={key}
+                                name={SERIES_LABELS[key] ?? key}
+                                stroke={SERIES_COLORS[key]}
+                                strokeWidth={2}
+                                dot={false}
+                                yAxisId="currency"
+                                hide={!rateSeriesActive[key]}
+                              />
+                            ))}
+                            {rateChartSettings.showMovingAverage
+                              ? RATE_PERCENT_KEYS.map((key) => (
+                                  <RechartsLine
+                                    key={`${key}MA`}
+                                    type="monotone"
+                                    dataKey={`${key}MA`}
+                                    stroke={SERIES_COLORS[key]}
+                                    strokeWidth={1.5}
+                                    strokeDasharray="4 3"
+                                    dot={false}
+                                    yAxisId="percent"
+                                    hide={!rateSeriesActive[key]}
+                                    legendType="none"
+                                    isAnimationActive={false}
+                                    strokeOpacity={0.6}
+                                  />
+                                ))
+                              : null}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-500">
+                          Not enough data to plot return ratios yet.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.equityGrowth ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('equityGrowth')}
+                      aria-expanded={!collapsedSections.equityGrowth}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.equityGrowth ? 'Show chart' : 'Hide chart'}
+                    >
+                      {collapsedSections.equityGrowth ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Equity growth over time"
+                      tooltip={SECTION_DESCRIPTIONS.equityGrowth}
+                      className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="equityGrowth"
+                    />
+                  </div>
+                </div>
+                {!collapsedSections.equityGrowth ? (
+                  <>
+                    <p className="mb-2 text-[11px] text-slate-500">
+                      See how outstanding debt compares with the portion you own as the property appreciates and the mortgage is repaid.
+                    </p>
+                    <div className="h-72 w-full">
+                      {equityGrowthChartData.length > 0 ? (
+                        <ResponsiveContainer>
+                          <AreaChart data={equityGrowthChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
+                            <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={100} />
+                            <Tooltip
+                              formatter={(value, name) => currency(value)}
+                              labelFormatter={(label) => `Year ${label}`}
+                            />
+                            <Legend />
+                            <Area
+                              type="monotone"
+                              dataKey="loanBalance"
+                              name="Lender share"
+                              stackId="equity"
+                              stroke="#94a3b8"
+                              fill="rgba(148,163,184,0.4)"
+                              isAnimationActive={false}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="ownerEquity"
+                              name="Your equity"
+                              stackId="equity"
+                              stroke="#10b981"
+                              fill="rgba(16,185,129,0.35)"
+                              isAnimationActive={false}
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
+                          Equity projections will appear once an exit year and loan details are provided.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.cashflowBars ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('cashflowBars')}
+                      aria-expanded={!collapsedSections.cashflowBars}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.cashflowBars ? 'Show chart' : 'Hide chart'}
+                    >
+                      {collapsedSections.cashflowBars ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Annual cash flow"
+                      tooltip={SECTION_DESCRIPTIONS.cashflowBars}
+                      className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="cashflowBars"
+                    />
+                  </div>
+                </div>
+                {!collapsedSections.cashflowBars ? (
+                  <>
+                    <p className="mb-2 text-[11px] text-slate-500">
+                      Track rent coming in against expenses, debt service, and after-tax cash flow each year.
+                    </p>
+                    <div className="h-72 w-full">
+                      {annualCashflowChartData.length > 0 ? (
+                        <ResponsiveContainer>
+                          <ComposedChart data={annualCashflowChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
+                            <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={90} />
+                            <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                            <Legend
+                              content={(props) => (
+                                <ChartLegend
+                                  {...props}
+                                  activeSeries={cashflowSeriesActive}
+                                  onToggle={toggleCashflowSeries}
+                                />
+                              )}
+                            />
+                            <ReferenceLine y={0} stroke="#cbd5f5" strokeDasharray="4 4" />
+                            <Bar
+                              dataKey="rentIncome"
+                              name="Rent income"
+                              fill={CASHFLOW_BAR_COLORS.rentIncome}
+                              isAnimationActive={false}
+                              hide={!cashflowSeriesActive.rentIncome}
+                            />
+                            <Bar
+                              dataKey="operatingExpenses"
+                              name="Operating expenses"
+                              fill={CASHFLOW_BAR_COLORS.operatingExpenses}
+                              isAnimationActive={false}
+                              hide={!cashflowSeriesActive.operatingExpenses}
+                            />
+                            <Bar
+                              dataKey="mortgagePayments"
+                              name="Mortgage payments"
+                              fill={CASHFLOW_BAR_COLORS.mortgagePayments}
+                              isAnimationActive={false}
+                              hide={!cashflowSeriesActive.mortgagePayments}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="netCashflow"
+                              name="After-tax cash flow"
+                              stroke={CASHFLOW_BAR_COLORS.netCashflow}
+                              fill="rgba(16,185,129,0.25)"
+                              strokeWidth={2}
+                              isAnimationActive={false}
+                              hide={!cashflowSeriesActive.netCashflow}
+                            />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
+                          Not enough annual cash flow data to display.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              {hasPropertyAddress ? (
+                <div
+                  className={`rounded-2xl bg-white p-3 shadow-sm ${
+                    collapsedSections.crime ? 'md:col-span-1' : 'md:col-span-2'
+                  }`}
+                >
+                  <div
+                    className={`flex items-center justify-between gap-3 ${
+                      collapsedSections.crime ? '' : 'mb-2'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleSection('crime')}
+                        aria-expanded={!collapsedSections.crime}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                        aria-label={collapsedSections.crime ? 'Show crime report' : 'Hide crime report'}
+                      >
+                        {collapsedSections.crime ? '+' : '−'}
+                      </button>
+                      <SectionTitle
+                        label="Local crime insight"
+                        tooltip={SECTION_DESCRIPTIONS.crime}
+                        className="text-sm font-semibold text-slate-700"
+                      />
+                    </div>
+                    {crimeLoading ? (
+                      <span className="text-[11px] text-slate-500">Loading…</span>
+                    ) : crimeMonthLabel ? (
+                      <span className="text-[11px] text-slate-500">Data: {crimeMonthLabel}</span>
+                    ) : null}
+                  </div>
+                  {!collapsedSections.crime ? (
+                    <div className="space-y-4">
+                      {waitingForGeocode ? (
+                        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                          Resolving property location…
+                        </div>
+                      ) : crimeLoading ? (
+                        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                          Loading local crime statistics…
+                        </div>
+                      ) : crimeError ? (
+                        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-600">
+                          {crimeError}
+                        </div>
+                      ) : hasCrimeIncidents ? (
+                        <>
+                          <div className="text-[11px] text-slate-500">
+                            {crimeHasRecordedIncidents ? (
+                              <>
+                                Latest month{crimeMonthLabel ? `: ${crimeMonthLabel}` : ''}.
+                                {crimeSummary?.locationSummary ? (
+                                  <>
+                                    {' '}
+                                    Most reports near{' '}
+                                    <span className="font-semibold text-slate-700">
+                                      {crimeSummary.locationSummary}
+                                    </span>
+                                    .
+                                  </>
+                                ) : null}
+                              </>
+                            ) : (
+                              <>
+                                No recorded crimes for the latest reporting month
+                                {crimeMonthLabel ? ` (${crimeMonthLabel})` : ''}.
+                                {crimeSummary?.locationSummary ? (
+                                  <>
+                                    {' '}
+                                    Monitoring area near{' '}
+                                    <span className="font-semibold text-slate-700">
+                                      {crimeSummary.locationSummary}
+                                    </span>
+                                    .
+                                  </>
+                                ) : null}
+                              </>
+                            )}
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <div className="rounded-lg bg-slate-50 px-3 py-2">
+                              <div className="text-[11px] text-slate-500">Total incidents</div>
+                              <div className="text-lg font-semibold text-slate-800">
+                                {crimeSummary.totalIncidents.toLocaleString()}
+                              </div>
+                            </div>
+                            <div className="rounded-lg bg-slate-50 px-3 py-2">
+                              <div className="text-[11px] text-slate-500">Most common category</div>
+                              <div className="text-sm font-semibold text-slate-800">
+                                {crimeSummary.topCategories[0]?.label ?? '—'}
+                              </div>
+                              {crimeSummary.topCategories[0] ? (
+                                <div className="text-[11px] text-slate-500">
+                                  {crimeSummary.topCategories[0].count.toLocaleString()} (
+                                  {formatPercent(crimeSummary.topCategories[0].share)})
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="rounded-lg bg-slate-50 px-3 py-2">
+                              <div className="text-[11px] text-slate-500">Most common outcome</div>
+                              <div className="text-sm font-semibold text-slate-800">
+                                {crimeSummary.topOutcomes[0]?.label ?? 'Outcome pending'}
+                              </div>
+                              {crimeSummary.topOutcomes[0] ? (
+                                <div className="text-[11px] text-slate-500">
+                                  {crimeSummary.topOutcomes[0].count.toLocaleString()} reports
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div>
+                              <h4 className="mb-2 text-xs font-semibold text-slate-700">Category breakdown</h4>
+                              <ul className="space-y-1 text-[11px] text-slate-600">
+                                {crimeSummary.topCategories.length > 0 ? (
+                                  crimeSummary.topCategories.map((category) => (
+                                    <li
+                                      key={category.label}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span>{category.label}</span>
+                                      <span className="font-semibold text-slate-700">
+                                        {category.count.toLocaleString()} (
+                                        {formatPercent(category.share)})
+                                      </span>
+                                    </li>
+                                  ))
+                                ) : (
+                                  <li>No crime categories recorded for this month.</li>
+                                )}
+                              </ul>
+                            </div>
+                            <div>
+                              <h4 className="mb-2 text-xs font-semibold text-slate-700">Outcome snapshot</h4>
+                              <ul className="space-y-1 text-[11px] text-slate-600">
+                                {crimeSummary.topOutcomes.length > 0 ? (
+                                  crimeSummary.topOutcomes.map((outcome) => (
+                                    <li
+                                      key={outcome.label}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span>{outcome.label}</span>
+                                      <span className="font-semibold text-slate-700">
+                                        {outcome.count.toLocaleString()}
+                                      </span>
+                                    </li>
+                                  ))
+                                ) : (
+                                  <li>Outcomes not yet available for most incidents.</li>
+                                )}
+                              </ul>
+                            </div>
+                          </div>
+                          <div className="h-72 w-full overflow-hidden rounded-xl border border-slate-200">
+                            {crimeMapSrcDoc ? (
+                              <iframe
+                                key={crimeSummary.mapKey}
+                                title={`Crime map for ${
+                                  crimeSummary.locationSummary || propertyAddress || 'selected area'
+                                }`}
+                                srcDoc={crimeMapSrcDoc}
+                                className="h-full w-full"
+                                loading="lazy"
+                                sandbox="allow-scripts allow-same-origin"
+                              />
+                            ) : (
+                              <div className="flex h-full items-center justify-center bg-slate-50 text-[11px] text-slate-500">
+                                No incidents to plot on the map.
+                              </div>
+                            )}
+                          </div>
+                          <div className="space-y-1 text-[10px] text-slate-500">
+                            {crimeSummary.mapLimited ? (
+                              <p>
+                                Showing {crimeSummary.incidentsOnMap.toLocaleString()} of{' '}
+                                {crimeIncidentsCount.toLocaleString()} incidents on the map.
+                              </p>
+                            ) : null}
+                            <p>Crime data © Crown copyright and database right. Source: data.police.uk.</p>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-[11px] text-slate-500">
+                          No crime data available for this area yet.
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.interestSplit ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('interestSplit')}
+                      aria-expanded={!collapsedSections.interestSplit}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.interestSplit ? 'Show chart' : 'Hide chart'}
+                    >
+                      {collapsedSections.interestSplit ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Interest vs principal split"
+                      tooltip={SECTION_DESCRIPTIONS.interestSplit}
+                      className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="interestSplit"
+                    />
+                  </div>
+                </div>
+                {!collapsedSections.interestSplit ? (
+                  <div className="h-72 w-full">
+                    {hasInterestSplitData ? (
+                      <ResponsiveContainer>
+                        <AreaChart data={interestSplitChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
+                          <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
+                          <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                          <Legend />
+                          <Area
+                            type="monotone"
+                            dataKey="interestPaid"
+                            name="Interest"
+                            stackId="payments"
+                            stroke="#f97316"
+                            fill="rgba(249,115,22,0.25)"
+                            strokeWidth={2}
+                            isAnimationActive={false}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="principalPaid"
+                            name="Principal"
+                            stackId="payments"
+                            stroke="#22c55e"
+                            fill="rgba(34,197,94,0.3)"
+                            strokeWidth={2}
+                            isAnimationActive={false}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+                        Adjust the mortgage assumptions to model interest and principal payments.
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.leverage ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('leverage')}
+                      aria-expanded={!collapsedSections.leverage}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.leverage ? 'Show chart' : 'Hide chart'}
+                    >
+                      {collapsedSections.leverage ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Leverage multiplier"
+                      tooltip={SECTION_DESCRIPTIONS.leverage}
+                      className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="leverage"
+                    />
+                  </div>
+                </div>
+                {!collapsedSections.leverage ? (
+                  <>
+                    <p className="mb-2 text-[11px] text-slate-500">
+                      Each point recalculates the deal using the same assumptions but with a different LTV. ROI reflects net wealth at exit versus cash invested.
+                    </p>
+                    <div className="h-72 w-full">
+                      {hasLeverageData ? (
+                        <>
+                          <ResponsiveContainer>
+                            <LineChart data={leverageChartData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis
+                                dataKey="ltv"
+                                tickFormatter={(value) => formatPercent(value)}
+                                tick={{ fontSize: 11, fill: '#475569' }}
+                                domain={[0.1, 0.95]}
+                                type="number"
+                                ticks={LEVERAGE_LTV_OPTIONS}
+                              />
+                              <YAxis
+                                yAxisId="left"
+                                tickFormatter={(value) => formatPercent(value)}
+                                tick={{ fontSize: 11, fill: '#475569' }}
+                                width={80}
+                              />
+                              <YAxis
+                                yAxisId="right"
+                                orientation="right"
+                                tickFormatter={(value) => currencyThousands(value)}
+                                tick={{ fontSize: 11, fill: '#475569' }}
+                                width={72}
+                              />
+                              <Tooltip
+                                formatter={(value, name, { dataKey }) => {
+                                  if (dataKey === 'propertyNetAfterTax' || dataKey === 'efficiency') {
+                                    return [currency(value), name];
+                                  }
+                                  return [formatPercent(value), name];
+                                }}
+                                labelFormatter={(label) => `LTV ${formatPercent(label)}`}
+                              />
+                              <Legend
+                                content={(props) => (
+                                  <ChartLegend
+                                    {...props}
+                                    activeSeries={leverageSeriesActive}
+                                    onToggle={toggleLeverageSeries}
+                                  />
+                                )}
+                              />
+                              {LEVERAGE_MAX_LTV > LEVERAGE_SAFE_MAX_LTV ? (
+                                <ReferenceArea
+                                  x1={LEVERAGE_SAFE_MAX_LTV}
+                                  x2={LEVERAGE_MAX_LTV}
+                                  yAxisId="left"
+                                  y1="dataMin"
+                                  y2="dataMax"
+                                  strokeOpacity={0}
+                                  fill="#f1f5f9"
+                                  fillOpacity={0.35}
+                                />
+                              ) : null}
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="irr"
+                                name="IRR"
+                                yAxisId="left"
+                                stroke={SERIES_COLORS.irrSeries}
+                                strokeWidth={2}
+                                dot={{ r: 3 }}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.irr}
+                              />
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="roi"
+                                name="Total ROI"
+                                yAxisId="left"
+                                stroke="#0ea5e9"
+                                strokeWidth={2}
+                                strokeDasharray="4 2"
+                                dot={{ r: 3 }}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.roi}
+                              />
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="irrHurdle"
+                                name="IRR hurdle"
+                                yAxisId="left"
+                                stroke={SERIES_COLORS.irrHurdle}
+                                strokeWidth={2}
+                                strokeDasharray="4 4"
+                                dot={false}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.irrHurdle}
+                              />
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="propertyNetAfterTax"
+                                name={propertyNetAfterTaxLabel}
+                                yAxisId="right"
+                                stroke={SERIES_COLORS.propertyNetAfterTax}
+                                strokeWidth={2}
+                                dot={{ r: 3 }}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.propertyNetAfterTax}
+                              />
+                              <RechartsLine
+                                type="monotone"
+                                dataKey="efficiency"
+                                name="IRR × Profit"
+                                yAxisId="right"
+                                stroke="#8b5cf6"
+                                strokeWidth={2}
+                                strokeDasharray="6 3"
+                                dot={{ r: 3 }}
+                                isAnimationActive={false}
+                                hide={!leverageSeriesActive.efficiency}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </>
+                      ) : (
+                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+                          Enter a purchase price and rent to explore leverage outcomes.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.roiHeatmap ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('roiHeatmap')}
+                      aria-expanded={!collapsedSections.roiHeatmap}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.roiHeatmap ? 'Show heatmap' : 'Hide heatmap'}
+                    >
+                      {collapsedSections.roiHeatmap ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="ROI vs rental yield heatmap"
+                      tooltip={SECTION_DESCRIPTIONS.roiHeatmap}
+                      className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="roiHeatmap"
+                    />
+                  </div>
+                  {!collapsedSections.roiHeatmap ? (
+                    <div className="flex items-center gap-2 text-[11px] text-slate-600">
+                      <span className="font-semibold text-slate-500">Metric</span>
+                      {[{ key: 'irr', label: 'IRR' }, { key: 'roi', label: 'Total ROI' }].map((option) => (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => setRoiHeatmapMetric(option.key)}
+                          className={`rounded-full px-3 py-1 font-semibold transition ${
+                            roiHeatmapMetric === option.key
+                              ? 'bg-slate-900 text-white'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                          aria-pressed={roiHeatmapMetric === option.key}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                {!collapsedSections.roiHeatmap ? (
+                  <>
+                    <p className="mb-2 text-[11px] text-slate-500">
+                      Each cell models the scenario with the specified rental yield and annual capital growth using today’s inputs. The centre row and column align with the current rent yield and appreciation assumptions, with ±1% and ±2% steps either side.
+                    </p>
+                    <div className="overflow-x-auto">
+                      {roiHeatmapData.rows.length > 0 ? (
+                        <table className="min-w-full table-fixed border-separate border-spacing-1 text-[11px] text-slate-600">
+                          <thead>
+                            <tr>
+                              <th className="w-32 px-2 py-1 text-left font-semibold text-slate-500">Capital growth</th>
+                              {roiHeatmapYieldOptions.map((yieldRate, columnIndex) => (
+                                <th
+                                  key={`${yieldRate}-${columnIndex}`}
+                                  className="px-2 py-1 text-center font-semibold text-slate-500"
+                                >
+                                  {formatPercent(yieldRate)} rent yield
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {roiHeatmapData.rows.map((row) => {
+                              const range = roiHeatmapMetric === 'irr' ? roiHeatmapData.irrRange : roiHeatmapData.roiRange;
+                              const [minValue, maxValue] = range;
+                              return (
+                                <tr key={`${row.growthRate}-${row.rowIndex}`}>
+                                  <th className="px-2 py-1 text-left font-semibold text-slate-500">
+                                    {formatPercent(row.growthRate)} capital growth
+                                  </th>
+                                  {row.cells.map((cell) => {
+                                    const value = roiHeatmapMetric === 'irr' ? cell.irr : cell.roi;
+                                    const background = getHeatmapColor(value, minValue, maxValue);
+                                    return (
+                                      <td key={`${cell.yieldRate}-${cell.columnIndex}`} className="px-2 py-1">
+                                        <div
+                                          className="rounded-lg px-2 py-3 text-center text-xs font-semibold text-slate-800"
+                                          style={{ backgroundColor: background }}
+                                          title={`If rent yield is ${formatPercent(cell.yieldRate)} and capital growth is ${formatPercent(row.growthRate)}, expect ${formatPercent(value)} ${roiHeatmapMetric === 'irr' ? 'IRR' : 'total ROI'} (IRR ${formatPercent(cell.irr)}, total ROI ${formatPercent(cell.roi)}).`}
+                                        >
+                                          {formatPercent(value)}
+                                        </div>
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-[11px] text-slate-500">
+                          Adjust the purchase price and rent assumptions to generate heatmap results.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.cashflowDetail ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div
+                  className={`flex items-center justify-between gap-3 ${
+                    collapsedSections.cashflowDetail ? '' : 'mb-2'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('cashflowDetail')}
+                      aria-expanded={!collapsedSections.cashflowDetail}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.cashflowDetail ? 'Show cash flow table' : 'Hide cash flow table'}
+                    >
+                      {collapsedSections.cashflowDetail ? '+' : '−'}
+                    </button>
+                    <SectionTitle label="Annual cash flow detail" className="text-sm font-semibold text-slate-700" />
+                  </div>
+                </div>
+                {!collapsedSections.cashflowDetail ? (
+                  <>
+                    <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
+                    <CashflowTable
+                      rows={cashflowTableRows}
+                      columns={selectedCashflowColumns}
+                      hiddenColumns={hiddenCashflowColumns}
+                      onRemoveColumn={handleRemoveCashflowColumn}
+                      onAddColumn={handleAddCashflowColumn}
+                      onExport={handleExportCashflowCsv}
+                    />
+                  </>
+                ) : null}
+              </div>
+            </div>
+
+
+
+
+
+
+
+
+
+
+            
+
+            
+
+            
+
+            
+
+        </div>
+      </section>
         </div>
 
         <section className="mt-6">
@@ -3579,102 +7420,93 @@ export default function App() {
                 onClick={() => setShowTableModal(true)}
                 className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
               >
-                Table
-              </button>
-              <button
-                type="button"
-                onClick={handleExportTableCsv}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={scenarioTableData.length === 0}
-              >
-                Export CSV
+                Comparison
               </button>
             </div>
             {showLoadPanel ? (
               <div className="mt-3 space-y-3">
-                <div className="flex flex-col gap-1 text-xs text-slate-700">
-                  <label className="font-semibold text-slate-800" htmlFor="scenario-select">
-                    Choose scenario
-                  </label>
-                  <select
-                    id="scenario-select"
-                    value={selectedScenarioId}
-                    onChange={(event) => setSelectedScenarioId(event.target.value)}
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
-                  >
-                    {savedScenarios.length === 0 ? (
-                      <option value="">No scenarios saved</option>
-                    ) : null}
-                    {savedScenarios.map((scenario) => (
-                      <option key={scenario.id} value={scenario.id}>
-                        {scenario.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {savedScenarios.length > 0 ? (
+                {savedScenarios.length === 0 ? (
+                  <p className="text-xs text-slate-600">No scenarios saved yet.</p>
+                ) : (
                   <>
-                    <button
-                      type="button"
-                      onClick={handleLoadScenario}
-                      className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
-                    >
-                      Load selected scenario
-                    </button>
+                    <p className="text-xs text-slate-600">
+                      Click a scenario name below to load it instantly.
+                    </p>
                     <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
-                      {savedScenarios.map((scenario) => (
-                        <div
-                          key={`${scenario.id}-meta`}
-                          className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
-                        >
-                          <div className="flex flex-col">
-                            <span className="font-semibold text-slate-700">{scenario.name}</span>
-                            <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
-                            {scenario.data?.propertyAddress ? (
-                              <span className="text-slate-500">{scenario.data.propertyAddress}</span>
-                            ) : null}
-                            {scenario.data?.propertyUrl ? (
-                              <a
-                                href={scenario.data.propertyUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-slate-500 underline-offset-2 hover:underline"
+                      {savedScenarios.map((scenario) => {
+                        const isSelected = selectedScenarioId === scenario.id;
+                        const bedroomCount = Number(scenario.data?.bedrooms);
+                        const hasBedroomCount = Number.isFinite(bedroomCount) && bedroomCount > 0;
+                        return (
+                          <div
+                            key={`${scenario.id}-meta`}
+                            className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
+                          >
+                            <div className="flex flex-col">
+                              <button
+                                type="button"
+                                onClick={() => handleLoadScenario(scenario.id)}
+                                className={`text-left font-semibold transition hover:text-indigo-700 hover:underline ${
+                                  isSelected ? 'text-indigo-700 underline' : 'text-slate-700'
+                                }`}
+                                aria-pressed={isSelected}
                               >
-                                View listing
-                              </a>
-                            ) : null}
+                                {scenario.name}
+                              </button>
+                              <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
+                              {scenario.data?.propertyAddress ? (
+                                <span className="text-slate-500">{scenario.data.propertyAddress}</span>
+                              ) : null}
+                              {hasBedroomCount ? (
+                                <span className="text-slate-500">
+                                  {bedroomCount}{' '}
+                                  {bedroomCount === 1 ? 'bedroom' : 'bedrooms'}
+                                </span>
+                              ) : null}
+                              {scenario.data?.propertyUrl ? (
+                                <a
+                                  href={scenario.data.propertyUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-slate-500 underline-offset-2 hover:underline"
+                                >
+                                  View listing
+                                </a>
+                              ) : null}
+                            </div>
+                            <div className="no-print flex flex-wrap items-center gap-2 text-[11px]">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateScenario(scenario.id)}
+                                className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                              >
+                                Update
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRenameScenario(scenario.id)}
+                                className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
+                              >
+                                Rename
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteScenario(scenario.id)}
+                                className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
-                          <div className="no-print flex items-center gap-2 text-[11px]">
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateScenario(scenario.id)}
-                              className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
-                            >
-                              Update
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRenameScenario(scenario.id)}
-                              className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
-                            >
-                              Rename
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteScenario(scenario.id)}
-                              className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </>
-                ) : null}
+                )}
               </div>
             ) : null}
           </div>
+
         </section>
 
         {showListingPreview ? (
@@ -3794,6 +7626,7 @@ export default function App() {
                     label="Wealth trajectory vs Index Fund"
                     tooltip={SECTION_DESCRIPTIONS.wealthTrajectory}
                     className="text-base font-semibold text-slate-700"
+                    knowledgeKey="wealthTrajectory"
                   />
                   <div className="text-[11px] text-slate-500">Years {chartRange.start} – {chartRange.end}</div>
                 </div>
@@ -3866,32 +7699,6 @@ export default function App() {
                     );
                   })}
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
-                  <span className="font-semibold text-slate-500">Overlay ratios</span>
-                  {[
-                    { key: 'capRate', label: 'Cap rate' },
-                    { key: 'yieldRate', label: 'Yield rate' },
-                    { key: 'cashOnCash', label: 'Cash on cash' },
-                    { key: 'irrSeries', label: 'IRR' },
-                  ].map((option) => {
-                    const checked = activeSeries[option.key] !== false;
-                    return (
-                      <label key={option.key} className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) =>
-                            setActiveSeries((prev) => ({
-                              ...prev,
-                              [option.key]: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
                 <div className="mt-4 flex-1">
                   <div className="flex h-full flex-col">
                     <div
@@ -3914,13 +7721,6 @@ export default function App() {
                             tick={{ fontSize: 11, fill: '#475569' }}
                             width={110}
                           />
-                          <YAxis
-                            yAxisId="percent"
-                            orientation="right"
-                            tickFormatter={(v) => formatPercent(v)}
-                            tick={{ fontSize: 11, fill: '#475569' }}
-                            width={70}
-                          />
                           <Legend
                             content={(props) => (
                               <ChartLegend
@@ -3932,10 +7732,6 @@ export default function App() {
                                   'indexFund2x',
                                   'indexFund4x',
                                   'investedRent',
-                                  'capRate',
-                                  'yieldRate',
-                                  'cashOnCash',
-                                  'irrSeries',
                                 ]}
                               />
                             )}
@@ -3946,6 +7742,7 @@ export default function App() {
                               stroke="#334155"
                               strokeDasharray="4 4"
                               strokeWidth={1}
+                              yAxisId="currency"
                             />
                           ) : null}
                           {chartFocus && chartFocus.data
@@ -3972,6 +7769,7 @@ export default function App() {
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.indexFund}
                           />
                           <Area
@@ -3982,6 +7780,7 @@ export default function App() {
                             fill="rgba(250,204,21,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.cashflow}
                           />
                           <Area
@@ -3992,6 +7791,7 @@ export default function App() {
                             fill="rgba(14,165,233,0.18)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.propertyValue}
                           />
                           <Area
@@ -4002,6 +7802,7 @@ export default function App() {
                             fill="rgba(37,99,235,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.propertyGross}
                           />
                           <Area
@@ -4012,6 +7813,7 @@ export default function App() {
                             fill="rgba(22,163,74,0.25)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.propertyNet}
                           />
                           <Area
@@ -4022,6 +7824,7 @@ export default function App() {
                             fill="rgba(147,51,234,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.propertyNetAfterTax}
                           />
                           <Area
@@ -4033,6 +7836,7 @@ export default function App() {
                             strokeWidth={2}
                             strokeDasharray="5 3"
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.investedRent}
                           />
                           <Area
@@ -4044,6 +7848,7 @@ export default function App() {
                             strokeWidth={1.5}
                             strokeDasharray="6 3"
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.indexFund1_5x}
                           />
                           <Area
@@ -4055,6 +7860,7 @@ export default function App() {
                             strokeWidth={1.5}
                             strokeDasharray="4 2"
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.indexFund2x}
                           />
                           <Area
@@ -4066,50 +7872,8 @@ export default function App() {
                             strokeWidth={1.5}
                             strokeDasharray="2 2"
                             yAxisId="currency"
+                            isAnimationActive={false}
                             hide={!activeSeries.indexFund4x}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="capRate"
-                            name="Cap rate"
-                            stroke={SERIES_COLORS.capRate}
-                            strokeWidth={2}
-                            dot={false}
-                            yAxisId="percent"
-                            hide={!activeSeries.capRate}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="yieldRate"
-                            name="Yield rate"
-                            stroke={SERIES_COLORS.yieldRate}
-                            strokeWidth={2}
-                            strokeDasharray="4 2"
-                            dot={false}
-                            yAxisId="percent"
-                            hide={!activeSeries.yieldRate}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="cashOnCash"
-                            name="Cash on cash"
-                            stroke={SERIES_COLORS.cashOnCash}
-                            strokeWidth={2}
-                            strokeDasharray="2 2"
-                            dot={false}
-                            yAxisId="percent"
-                            hide={!activeSeries.cashOnCash}
-                          />
-                          <RechartsLine
-                            type="monotone"
-                            dataKey="irrSeries"
-                            name="IRR"
-                            stroke={SERIES_COLORS.irrSeries}
-                            strokeWidth={2}
-                            strokeDasharray="6 3"
-                            dot={false}
-                            yAxisId="percent"
-                            hide={!activeSeries.irrSeries}
                           />
                         </AreaChart>
                       </ResponsiveContainer>
@@ -4132,22 +7896,63 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div className="w-full border-t border-slate-200 bg-slate-50 p-5 text-xs text-slate-700 md:w-96 md:border-l md:border-t-0 md:text-[11px]">
-              <div className="space-y-4">
+            <aside className="w-full border-t border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-l md:border-t-0">
+              <div className="h-full overflow-y-auto p-5 space-y-6">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-700">Exit & growth assumptions</h3>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {smallInput('exitYear', 'Exit year', 1)}
-                    {pctInput('annualAppreciation', 'Appreciation %')}
+                    {pctInput('annualAppreciation', 'Capital growth %')}
                     {pctInput('rentGrowth', 'Rent growth %')}
                     {pctInput('indexFundGrowth', 'Index fund growth %')}
                     {pctInput('sellingCostsPct', 'Selling costs %')}
                     {pctInput('discountRate', 'Discount rate %', 0.001)}
+                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
                   </div>
                 </div>
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-700">Rental cashflow inputs</h3>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
+                  <h3 className="text-sm font-semibold text-slate-700">Deal levers</h3>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {moneyInput('purchasePrice', 'Purchase price (£)', 1000)}
+                    {pctInput('depositPct', 'Deposit %')}
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Loan profile</h3>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
+                    {smallInput('mortgageYears', 'Mortgage term (years)')}
+                  </div>
+                  <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Loan type</div>
+                    <div className="mt-3 space-y-2 text-[11px] text-slate-600">
+                      <label className="flex items-center justify-between gap-3">
+                        <span className="text-slate-700">Capital repayment</span>
+                        <input
+                          type="radio"
+                          name="modal-loan-type"
+                          checked={inputs.loanType === 'repayment'}
+                          onChange={() => setInputs((s) => ({ ...s, loanType: 'repayment' }))}
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-3">
+                        <span className="text-slate-700">Interest-only</span>
+                        <input
+                          type="radio"
+                          name="modal-loan-type"
+                          checked={inputs.loanType === 'interest_only'}
+                          onChange={() => setInputs((s) => ({ ...s, loanType: 'interest_only' }))}
+                        />
+                      </label>
+                      <p className="text-[10px] text-slate-500">
+                        Interest-only keeps the balance level; repayment shifts cash flow toward principal over time.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Rent & cash flow</h3>
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
                     {pctInput('vacancyPct', 'Vacancy %')}
                     {pctInput('mgmtPct', 'Management %')}
@@ -4155,28 +7960,290 @@ export default function App() {
                     {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
                     {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
                   </div>
-                  <div className="mt-3 rounded-xl border border-slate-200 p-3">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                  <div className="mt-3 space-y-3">
+                    <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600">
                       <input
                         type="checkbox"
                         checked={Boolean(inputs.reinvestIncome)}
-                        onChange={(e) =>
+                        onChange={(event) =>
                           setInputs((prev) => ({
                             ...prev,
-                            reinvestIncome: e.target.checked,
+                            reinvestIncome: event.target.checked,
                           }))
                         }
                       />
-                      <span>Reinvest after-tax cash flow into index fund</span>
+                      <span className="flex-1">
+                        <span className="block font-semibold text-slate-700">Reinvest after-tax cash flow</span>
+                        <span className="mt-1 block text-[11px] text-slate-500">
+                          Compound positive cash flow alongside the index fund path.
+                        </span>
+                      </span>
                     </label>
-                    {inputs.reinvestIncome && (
-                      <div className="mt-2 grid grid-cols-1 gap-2">
+                    {inputs.reinvestIncome ? (
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         {pctInput('reinvestPct', 'Reinvest % of after-tax cash flow')}
-                        <p className="text-[11px] text-slate-500">
-                          Only positive after-tax cash flows are reinvested and compound alongside the index fund baseline.
-                        </p>
                       </div>
-                    )}
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showRatesModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Return ratios explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowRatesModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+            <aside className="w-full border-b border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-b-0 md:border-r">
+              <div className="h-full overflow-y-auto p-5">
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Series visibility</h3>
+                    <p className="mt-1 text-[11px] text-slate-500">Toggle which ratios you want to compare.</p>
+                    <div className="mt-3 space-y-2">
+                      {RATE_SERIES_KEYS.map((key) => (
+                        <label key={`rate-series-${key}`} className="flex items-center justify-between gap-3 rounded-lg border border-transparent px-2 py-1 hover:border-slate-200">
+                          <span className="text-slate-700">{SERIES_LABELS[key]}</span>
+                          <input
+                            type="checkbox"
+                            checked={rateSeriesActive[key] !== false}
+                            onChange={(event) =>
+                              setRateSeriesActive((prev) => ({
+                                ...prev,
+                                [key]: event.target.checked,
+                              }))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Year range</h3>
+                    <p className="mt-1 text-[11px] text-slate-500">Focus on a specific portion of the hold period.</p>
+                    <div className="mt-3 space-y-3">
+                      <label className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-slate-500">Start year</span>
+                        <input
+                          type="number"
+                          value={rateChartRange.start}
+                          min={0}
+                          max={rateChartRange.end}
+                          onChange={(event) => handleRateChartRangeChange('start', Number(event.target.value))}
+                          className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-slate-500">End year</span>
+                        <input
+                          type="number"
+                          value={rateChartRange.end}
+                          min={rateChartRange.start}
+                          max={maxChartYear}
+                          onChange={(event) => handleRateChartRangeChange('end', Number(event.target.value))}
+                          className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRateChartRange({ start: 0, end: maxChartYear });
+                          setRateRangeTouched(false);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      >
+                        Reset range
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Analysis options</h3>
+                    <div className="mt-3 space-y-3">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={rateChartSettings.showMovingAverage}
+                          onChange={(event) =>
+                            setRateChartSettings((prev) => ({
+                              ...prev,
+                              showMovingAverage: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Show moving average</span>
+                      </label>
+                      {rateChartSettings.showMovingAverage ? (
+                        <div className="rounded-xl border border-slate-200 p-3">
+                          <div className="flex items-center justify-between text-[11px] text-slate-500">
+                            <span>Smoothing window</span>
+                            <span>
+                              {rateChartSettings.movingAverageWindow} yr
+                              {rateChartSettings.movingAverageWindow === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={1}
+                            max={Math.max(1, rateRangeLength)}
+                            value={rateChartSettings.movingAverageWindow}
+                            onChange={(event) =>
+                              setRateChartSettings((prev) => ({
+                                ...prev,
+                                movingAverageWindow: Number(event.target.value) || 1,
+                              }))
+                            }
+                            className="mt-2 w-full"
+                          />
+                          <p className="mt-2 text-[11px] text-slate-500">
+                            Rolling averages help highlight trend direction by reducing year-to-year volatility.
+                          </p>
+                        </div>
+                      ) : null}
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={rateChartSettings.showZeroBaseline}
+                          onChange={(event) =>
+                            setRateChartSettings((prev) => ({
+                              ...prev,
+                              showZeroBaseline: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Show 0% baseline</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </aside>
+            <div className="flex-1 overflow-hidden p-5">
+              <div className="flex h-full flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionTitle
+                    label="Return ratios over time"
+                    tooltip={SECTION_DESCRIPTIONS.rateTrends}
+                    className="text-base font-semibold text-slate-700"
+                    knowledgeKey="rateTrends"
+                  />
+                  <div className="text-[11px] text-slate-500">Years {rateChartRange.start} – {rateChartRange.end}</div>
+                </div>
+                <div className="mt-4 flex-1">
+                  <div className="flex h-full flex-col">
+                    <div className="relative flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      {rateChartDataWithMovingAverage.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 90, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis
+                              dataKey="year"
+                              tickFormatter={(t) => `Y${t}`}
+                              tick={{ fontSize: 11, fill: '#475569' }}
+                            />
+                            <YAxis
+                              yAxisId="percent"
+                              tickFormatter={(v) => formatPercent(v)}
+                              tick={{ fontSize: 11, fill: '#475569' }}
+                              width={80}
+                            />
+                            <YAxis
+                              yAxisId="currency"
+                              orientation="right"
+                              tickFormatter={(v) => currency(v)}
+                              tick={{ fontSize: 11, fill: '#475569' }}
+                              width={110}
+                            />
+                            <Tooltip
+                              formatter={(value, name, entry) => {
+                                const key = entry?.dataKey;
+                                const label = SERIES_LABELS[key] ?? name;
+                                if (RATE_VALUE_KEYS.includes(key)) {
+                                  return [currency(value), label];
+                                }
+                                return [formatPercent(value), label];
+                              }}
+                              labelFormatter={(label) => `Year ${label}`}
+                            />
+                            <Legend
+                              content={(props) => (
+                                <ChartLegend
+                                  {...props}
+                                  activeSeries={rateSeriesActive}
+                                  onToggle={toggleRateSeries}
+                                  excludedKeys={RATE_PERCENT_KEYS.map((key) => `${key}MA`)}
+                                />
+                              )}
+                            />
+                            {rateChartSettings.showZeroBaseline ? (
+                              <ReferenceLine y={0} yAxisId="percent" stroke="#cbd5f5" strokeDasharray="4 4" />
+                            ) : null}
+                            {RATE_PERCENT_SERIES.map((key) => (
+                              <RechartsLine
+                                key={`modal-${key}`}
+                                type="monotone"
+                                dataKey={key}
+                                name={SERIES_LABELS[key] ?? key}
+                                stroke={SERIES_COLORS[key]}
+                                strokeWidth={2}
+                                dot={false}
+                                yAxisId="percent"
+                                hide={!rateSeriesActive[key]}
+                                strokeDasharray={key === 'irrHurdle' ? '4 4' : undefined}
+                                isAnimationActive={false}
+                              />
+                            ))}
+                            {RATE_VALUE_KEYS.map((key) => (
+                              <RechartsLine
+                                key={`modal-${key}`}
+                                type="monotone"
+                                dataKey={key}
+                                name={SERIES_LABELS[key] ?? key}
+                                stroke={SERIES_COLORS[key]}
+                                strokeWidth={2}
+                                dot={false}
+                                yAxisId="currency"
+                                hide={!rateSeriesActive[key]}
+                              />
+                            ))}
+                            {rateChartSettings.showMovingAverage
+                              ? RATE_PERCENT_KEYS.map((key) => (
+                                  <RechartsLine
+                                    key={`modal-${key}-ma`}
+                                    type="monotone"
+                                    dataKey={`${key}MA`}
+                                    stroke={SERIES_COLORS[key]}
+                                    strokeWidth={1.5}
+                                    strokeDasharray="4 3"
+                                    dot={false}
+                                    yAxisId="percent"
+                                    hide={!rateSeriesActive[key]}
+                                    legendType="none"
+                                    isAnimationActive={false}
+                                    strokeOpacity={0.6}
+                                  />
+                                ))
+                              : null}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
+                          Not enough data to plot return ratios yet.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -4186,10 +8253,51 @@ export default function App() {
       </div>
     )}
 
+    {isMapModalOpen && locationPreview && (
+      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm">
+        <div className="relative w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-800">Property location</h2>
+              <p className="text-[11px] text-slate-500">{locationPreview.displayName}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsMapModalOpen(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="aspect-video w-full">
+            <iframe
+              title={`OpenStreetMap location for ${locationPreview.displayName}`}
+              src={locationPreview.embedUrl}
+              className="h-full w-full"
+              style={{ border: 0 }}
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+            />
+          </div>
+          <div className="flex items-center justify-between border-t border-slate-200 px-5 py-3 text-[11px] text-slate-500">
+            <span>Map data © OpenStreetMap contributors</span>
+            <a
+              href={locationPreview.viewUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Open full map
+            </a>
+          </div>
+        </div>
+      </div>
+    )}
+
     {showTableModal && (
-        <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
-          <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+        <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
               <h2 className="text-base font-semibold text-slate-800">Saved scenarios overview</h2>
               <button
                 type="button"
@@ -4199,53 +8307,250 @@ export default function App() {
                 Close
               </button>
             </div>
-            <div className="overflow-auto">
+            <div className="max-h-[65vh] overflow-auto px-5 py-4">
               {scenarioTableData.length === 0 ? (
-                <p className="px-5 py-6 text-sm text-slate-600">No scenarios saved yet.</p>
+                <p className="text-sm text-slate-600">No scenarios saved yet.</p>
               ) : (
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="px-4 py-2 text-left font-semibold">Scenario</th>
-                      <th className="px-4 py-2 text-left font-semibold">Saved</th>
-                      <th className="px-4 py-2 text-right font-semibold">Total cash in</th>
-                      <th className="px-4 py-2 text-right font-semibold">Cash flow (after tax)</th>
-                      <th className="px-4 py-2 text-right font-semibold">Mortgage pmt (mo)</th>
-                      <th className="px-4 py-2 text-right font-semibold">Yield on cost</th>
-                      <th className="px-4 py-2 text-right font-semibold">{propertyNetAfterTaxLabel}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {scenarioTableData.map(({ scenario, metrics }) => (
-                      <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
-                        <td className="px-4 py-2 font-semibold text-slate-800">{scenario.name}</td>
-                        <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashIn)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashflowYear1AfterTax)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.mortgage)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.yoc)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.propertyNetWealthAfterTax)} ({metrics.exitYear}y)</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="space-y-6">
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                      <label className="flex items-center gap-1" htmlFor="scenario-scatter-x-axis">
+                        <span className="font-semibold text-slate-700">X-axis</span>
+                        <select
+                          id="scenario-scatter-x-axis"
+                          value={scenarioScatterXAxis}
+                          onChange={(event) => setScenarioScatterXAxis(event.target.value)}
+                          className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                        >
+                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => (
+                            <option key={`scatter-x-${option.key}`} value={option.key}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-1" htmlFor="scenario-scatter-y-axis">
+                        <span className="font-semibold text-slate-700">Y-axis</span>
+                        <select
+                          id="scenario-scatter-y-axis"
+                          value={scenarioScatterYAxis}
+                          onChange={(event) => setScenarioScatterYAxis(event.target.value)}
+                          className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                        >
+                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => (
+                            <option key={`scatter-y-${option.key}`} value={option.key}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-2 rounded-full border border-slate-300 px-2.5 py-1">
+                        <input
+                          type="checkbox"
+                          checked={scenarioAlignInputs}
+                          onChange={(event) => setScenarioAlignInputs(event.target.checked)}
+                        />
+                        <span className="font-semibold text-slate-600">Use current deal inputs (keep price & rent)</span>
+                      </label>
+                    </div>
+                    <div className="h-72 w-full">
+                      {scenarioScatterData.length === 0 ? (
+                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-500">
+                          Saved scenarios with valid ratios will appear here.
+                        </div>
+                      ) : (
+                        <ResponsiveContainer>
+                          <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis
+                              type="number"
+                              dataKey="x"
+                              name={scenarioScatterXAxisOption?.label}
+                              tickFormatter={(value) => formatPercent(value)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              domain={['auto', 'auto']}
+                              label={{ value: scenarioScatterXAxisOption?.label, position: 'insideBottom', offset: -5, style: { fill: '#475569' } }}
+                            />
+                            <YAxis
+                              type="number"
+                              dataKey="y"
+                              name={scenarioScatterYAxisOption?.label}
+                              tickFormatter={(value) => formatPercent(value)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              domain={['auto', 'auto']}
+                              label={{ value: scenarioScatterYAxisOption?.label, angle: -90, position: 'insideLeft', offset: 10, style: { fill: '#475569' } }}
+                            />
+                            <Tooltip
+                              cursor={{ strokeDasharray: '3 3' }}
+                              content={({ active, payload }) => {
+                                if (!active || !payload || payload.length === 0) {
+                                  return null;
+                                }
+                                const datum = payload[0].payload;
+                                return (
+                                  <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-700 shadow-lg">
+                                    <div className="font-semibold text-slate-800">{datum.name}</div>
+                                    <div>{scenarioScatterXAxisOption?.label}: {formatPercent(datum.x)}</div>
+                                    <div>{scenarioScatterYAxisOption?.label}: {formatPercent(datum.y)}</div>
+                                    {Number.isFinite(datum.purchasePrice) ? (
+                                      <div>Purchase price: {currency(datum.purchasePrice)}</div>
+                                    ) : null}
+                                    {Number.isFinite(datum.monthlyRent) ? (
+                                      <div>Monthly rent: {currency(datum.monthlyRent)}</div>
+                                    ) : null}
+                                    <div>
+                                      {propertyNetAfterTaxLabel}: {currency(datum.propertyNetAfterTax)}
+                                    </div>
+                                  </div>
+                                );
+                              }}
+                            />
+                            <Scatter
+                              data={scenarioScatterData}
+                              fill="#2563eb"
+                              name="Saved scenarios"
+                              cursor="pointer"
+                              onClick={(point) => {
+                                const scenarioId = point?.payload?.id;
+                                if (scenarioId) {
+                                  handleLoadScenario(scenarioId, {
+                                    preserveLoadPanel: true,
+                                  });
+                                }
+                              }}
+                            >
+                              {scenarioScatterData.map((point) => (
+                                <Cell
+                                  key={`scatter-${point.id}`}
+                                  fill={point.isActive ? '#16a34a' : '#2563eb'}
+                                />
+                              ))}
+                            </Scatter>
+                          </ScatterChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-slate-200 text-sm">
+                      <thead className="bg-slate-50 text-slate-600">
+                        <tr>
+                          <th
+                            className="px-4 py-2 text-left font-semibold"
+                            aria-sort={
+                              scenarioSort.key === 'name'
+                                ? scenarioSort.direction === 'asc'
+                                  ? 'ascending'
+                                  : 'descending'
+                                : 'none'
+                            }
+                          >
+                            {renderScenarioHeader('Scenario', 'name')}
+                          </th>
+                          <th
+                            className="px-4 py-2 text-left font-semibold"
+                            aria-sort={
+                              scenarioSort.key === 'savedAt'
+                                ? scenarioSort.direction === 'asc'
+                                  ? 'ascending'
+                                  : 'descending'
+                                : 'none'
+                            }
+                          >
+                            {renderScenarioHeader('Saved', 'savedAt')}
+                          </th>
+                          <th
+                            className="px-4 py-2 text-right font-semibold"
+                            aria-sort={
+                              scenarioSort.key === 'propertyNetAfterTax'
+                                ? scenarioSort.direction === 'asc'
+                                  ? 'ascending'
+                                  : 'descending'
+                                : 'none'
+                            }
+                          >
+                            {renderScenarioHeader(propertyNetAfterTaxLabel, 'propertyNetAfterTax', 'right')}
+                          </th>
+                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((column) => (
+                            <th
+                              key={`header-${column.key}`}
+                              className="px-4 py-2 text-right font-semibold"
+                              aria-sort={
+                                scenarioSort.key === column.key
+                                  ? scenarioSort.direction === 'asc'
+                                    ? 'ascending'
+                                    : 'descending'
+                                  : 'none'
+                              }
+                            >
+                              {renderScenarioHeader(column.label, column.key, 'right')}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {scenarioTableSorted.map(({ scenario, metrics, ratios }) => (
+                          <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
+                            <td className="px-4 py-2 font-semibold">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleLoadScenario(scenario.id, {
+                                    closeTableOnLoad: true,
+                                  })
+                                }
+                                className={`text-left transition hover:text-indigo-700 hover:underline ${
+                                  selectedScenarioId === scenario.id
+                                    ? 'text-indigo-700 underline'
+                                    : 'text-slate-800'
+                                }`}
+                              >
+                                {scenario.name}
+                              </button>
+                            </td>
+                            <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
+                            <td className="px-4 py-2 text-right text-slate-700">
+                              {currency(metrics.propertyNetWealthAfterTax)}
+                              {metrics.exitYear ? ` (Y${metrics.exitYear})` : ''}
+                            </td>
+                            {SCENARIO_RATIO_PERCENT_COLUMNS.map((column) => (
+                              <td key={`${scenario.id}-${column.key}`} className="px-4 py-2 text-right text-slate-700">
+                                {formatPercent(ratios?.[column.key])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               )}
-            </div>
-            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-500">
-              <span>CSV export includes every saved scenario.</span>
-              <button
-                type="button"
-                onClick={handleExportTableCsv}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={scenarioTableData.length === 0}
-              >
-                Export CSV
-              </button>
             </div>
           </div>
         </div>
       )}
-    </div>
+
+      </div>
+
+      <KnowledgeBaseOverlay
+        open={knowledgeState.open}
+        onClose={closeKnowledgeBase}
+        groupDefinition={knowledgeGroupDefinition}
+        metrics={knowledgeGroupMetrics}
+        activeMetric={knowledgeActiveMetric}
+        activeSnapshot={knowledgeActiveSnapshot}
+        activeMetricId={knowledgeState.metricId}
+        onSelectMetric={handleSelectKnowledgeMetric}
+        chatMessages={knowledgeChatMessages}
+        chatInput={knowledgeChatInput}
+        chatStatus={knowledgeChatStatus}
+        chatError={knowledgeChatError}
+        onChatInputChange={setKnowledgeChatInput}
+        onChatSubmit={handleKnowledgeChatSubmit}
+        onChatClear={handleKnowledgeChatClear}
+        chatEnabled={chatEnabled}
+      />
+    </KnowledgeBaseContext.Provider>
   );
 }
 
@@ -4499,7 +8804,15 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Gross rent (year)', value: yearly.gross || 0 });
       breakdowns.push({ label: 'Operating expenses (year)', value: -(yearly.operatingExpenses || 0) });
       breakdowns.push({ label: 'NOI (year)', value: yearly.noi || 0 });
-      breakdowns.push({ label: 'Debt service (year)', value: -(yearly.debtService || 0) });
+      const totalDebtService = Number(yearly.debtService) || 0;
+      const bridgingDebtService = Number(yearly.debtServiceBridging) || 0;
+      const mortgageDebtService = Number.isFinite(Number(yearly.debtServiceMortgage))
+        ? Number(yearly.debtServiceMortgage) || 0
+        : Math.max(0, totalDebtService - bridgingDebtService);
+      breakdowns.push({ label: 'Debt service (year)', value: -mortgageDebtService });
+      if (bridgingDebtService !== 0) {
+        breakdowns.push({ label: 'Debt service (bridging)', value: -bridgingDebtService });
+      }
       breakdowns.push({ label: `${rentalTaxLabel} (year)`, value: -(yearly.tax || 0) });
       breakdowns.push({ label: 'After-tax cash flow (year)', value: yearly.cashAfterTax || 0 });
       breakdowns.push({ label: 'Reinvested this year', value: -(yearly.reinvestContribution || 0) });
@@ -4607,6 +8920,291 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       break;
   }
   return breakdowns;
+}
+
+function KnowledgeBaseOverlay({
+  open,
+  onClose,
+  groupDefinition,
+  metrics = [],
+  activeMetric,
+  activeSnapshot,
+  activeMetricId,
+  onSelectMetric,
+  chatMessages = [],
+  chatInput = '',
+  chatStatus = 'idle',
+  chatError = '',
+  onChatInputChange,
+  onChatSubmit,
+  onChatClear,
+  chatEnabled,
+}) {
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose?.();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
+  if (!open) {
+    return null;
+  }
+
+  const formatMetricValue = (snapshot, metricDefinition) => {
+    if (!snapshot) {
+      return 'Not available';
+    }
+    if (snapshot.formatted) {
+      return snapshot.formatted;
+    }
+    if (Number.isFinite(snapshot.value)) {
+      const unit = metricDefinition?.unit;
+      if (unit === 'percent') {
+        return formatPercent(snapshot.value);
+      }
+      if (unit === 'currency') {
+        return currency(snapshot.value);
+      }
+      if (unit === 'ratio') {
+        return snapshot.value.toFixed(2);
+      }
+      return snapshot.value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    }
+    return 'Not available';
+  };
+
+  const metricLabel = activeSnapshot?.label ?? activeMetric?.label ?? activeMetricId ?? 'Metric';
+  const metricValueDisplay = formatMetricValue(activeSnapshot, activeMetric);
+  const rawMetricValue = Number.isFinite(activeSnapshot?.value)
+    ? activeSnapshot.value.toLocaleString(undefined, {
+        maximumFractionDigits: activeMetric?.unit === 'percent' ? 4 : 2,
+      })
+    : null;
+  const description = activeMetric?.description ?? groupDefinition?.description ?? null;
+  const calculation = activeMetric?.calculation ?? null;
+  const importance = activeMetric?.importance ?? null;
+  const messages = Array.isArray(chatMessages) ? chatMessages : [];
+  const hasMessages = messages.length > 0;
+  const loading = chatStatus === 'loading';
+  const metricList = Array.isArray(metrics) && metrics.length > 0
+    ? metrics
+    : activeMetricId
+    ? [
+        {
+          id: activeMetricId,
+          label: metricLabel,
+          unit: activeMetric?.unit,
+          snapshot: activeSnapshot ?? null,
+        },
+      ]
+    : [];
+
+  const handleBackdropClick = (event) => {
+    if (event.target === event.currentTarget) {
+      onClose?.();
+    }
+  };
+
+  const handleMetricSelect = (metricId) => {
+    if (!metricId || metricId === activeMetricId) {
+      return;
+    }
+    onSelectMetric?.(metricId);
+  };
+
+  const headingId = 'knowledge-base-title';
+
+  return (
+    <div
+      className="no-print fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 px-4 py-6"
+      onClick={handleBackdropClick}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={headingId}
+    >
+      <div
+        className="relative flex h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+          <div>
+            <h2 id={headingId} className="text-base font-semibold text-slate-900">
+              Knowledge base
+            </h2>
+            <p className="text-xs text-slate-500">
+              {groupDefinition?.label ?? 'Deal metric insight'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+          >
+            Close
+          </button>
+        </div>
+        <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+          <aside className="w-full flex-shrink-0 border-b border-slate-200 bg-slate-50/70 px-5 py-5 text-sm text-slate-700 md:w-72 md:border-b-0 md:border-r md:px-6">
+            <div className="space-y-2">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  {groupDefinition?.label ?? 'Metric'}
+                </div>
+                {groupDefinition?.description ? (
+                  <p className="mt-1 text-[11px] leading-snug text-slate-600">{groupDefinition.description}</p>
+                ) : null}
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white/70">
+                {metricList.length > 0 ? (
+                  <ul className="max-h-64 overflow-y-auto py-2">
+                    {metricList.map((item) => {
+                      const isActive = item.id === activeMetricId;
+                      const displayValue = formatMetricValue(item.snapshot, item);
+                      return (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            onClick={() => handleMetricSelect(item.id)}
+                            className={`flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-[12px] transition ${
+                              isActive
+                                ? 'bg-indigo-50 font-semibold text-indigo-700'
+                                : 'hover:bg-slate-100'
+                            }`}
+                            aria-pressed={isActive}
+                          >
+                            <span className="flex-1 leading-snug">{item.label}</span>
+                            <span className="text-[11px] text-slate-500">{displayValue}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <div className="px-4 py-6 text-[11px] text-slate-500">
+                    No related metrics are available for this context yet.
+                  </div>
+                )}
+              </div>
+            </div>
+          </aside>
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <span className="text-[12px] font-semibold uppercase tracking-wide text-indigo-600">
+                  {groupDefinition?.label ?? 'Metric insight'}
+                </span>
+                <h3 className="text-xl font-semibold text-slate-900">{metricLabel}</h3>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Current value
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">{metricValueDisplay}</div>
+                  {rawMetricValue ? (
+                    <div className="text-[11px] text-slate-500">Raw value: {rawMetricValue}</div>
+                  ) : null}
+                </div>
+              </div>
+              {description ? (
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">What it measures</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">{description}</p>
+                </div>
+              ) : null}
+              {calculation ? (
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">How it’s calculated</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">{calculation}</p>
+                </div>
+              ) : null}
+              {importance ? (
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">Why it matters</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">{importance}</p>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-6 space-y-3 border-t border-slate-200 pt-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-slate-800">
+                  Ask Gemini about {metricLabel}
+                </h4>
+                {hasMessages ? (
+                  <button
+                    type="button"
+                    onClick={onChatClear}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+              {hasMessages ? (
+                <div className="max-h-60 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-[12px] text-slate-700">
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={
+                        message.role === 'user'
+                          ? 'ml-auto max-w-[85%] rounded-lg bg-indigo-100 px-3 py-2 text-indigo-800'
+                          : 'mr-auto max-w-[85%] rounded-lg bg-white px-3 py-2 text-slate-700 shadow-sm'
+                      }
+                    >
+                      {message.content}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[12px] leading-snug text-slate-500">
+                  Ask detailed questions about this metric, how it changes under different assumptions, or how it compares with other deals.
+                </p>
+              )}
+              {chatError ? (
+                <p className="text-[12px] text-rose-600" role="alert">
+                  {chatError}
+                </p>
+              ) : null}
+              {!chatEnabled ? (
+                <p className="text-[12px] text-slate-500">
+                  Provide a Gemini API key or chat endpoint in the settings to enable AI follow-ups.
+                </p>
+              ) : null}
+              <form onSubmit={onChatSubmit} className="space-y-2 text-[12px] text-slate-700">
+                <label className="flex flex-col gap-1">
+                  <span>Your question</span>
+                  <textarea
+                    value={chatInput}
+                    onChange={(event) => onChatInputChange?.(event.target.value)}
+                    className="min-h-[72px] w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    placeholder={`What should I consider about ${metricLabel}?`}
+                    disabled={loading}
+                  />
+                </label>
+                <div className="flex items-center justify-between text-[11px] text-slate-500">
+                  <span>Powered by Gemini</span>
+                  <button
+                    type="submit"
+                    className="rounded-full bg-slate-900 px-4 py-1.5 text-[12px] font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
+                    disabled={loading || !chatEnabled}
+                  >
+                    {loading ? 'Sending…' : 'Ask about this metric'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ChatBubble({
@@ -4743,69 +9341,142 @@ function ChartLegend({ payload = [], activeSeries, onToggle, excludedKeys = [] }
   );
 }
 
-function SectionTitle({ label, tooltip, className }) {
-  const classNames = ['group relative inline-flex items-center gap-1', className ?? 'text-sm font-semibold text-slate-700']
+function SectionTitle({ label, tooltip, className, knowledgeKey }) {
+  const knowledge = useContext(KnowledgeBaseContext);
+  const canOpen = Boolean(knowledgeKey && knowledge && typeof knowledge.open === 'function');
+  const isActive = Boolean(canOpen && knowledge.isOpen && knowledge.activeGroupId === knowledgeKey);
+  const classNames = [
+    'group relative inline-flex items-center gap-1',
+    className ?? 'text-sm font-semibold text-slate-700',
+    canOpen ? 'cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white' : '',
+    isActive ? 'text-indigo-700' : '',
+  ]
     .filter(Boolean)
     .join(' ');
 
-  if (!tooltip) {
-    return <span className={classNames}>{label}</span>;
-  }
+  const handleClick = () => {
+    if (canOpen) {
+      knowledge.open(knowledgeKey);
+    }
+  };
+
+  const handleKeyDown = (event) => {
+    if (!canOpen) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      knowledge.open(knowledgeKey);
+    }
+  };
 
   return (
-    <span className={classNames}>
-      <span>{label}</span>
-      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px] font-semibold text-slate-600">
-        i
-      </span>
-      <span className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block">
-        {tooltip}
-      </span>
+    <span
+      className={classNames}
+      role={canOpen ? 'button' : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      onClick={canOpen ? handleClick : undefined}
+      onKeyDown={canOpen ? handleKeyDown : undefined}
+    >
+      {canOpen ? (
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-0 rounded-lg transition ${
+            isActive ? 'bg-indigo-50' : 'bg-transparent group-hover:bg-slate-100 group-focus-within:bg-slate-100'
+          }`}
+        />
+      ) : null}
+      <span className={`relative z-10 ${isActive ? 'font-semibold' : ''}`}>{label}</span>
+      {tooltip ? (
+        <>
+          <span
+            className={`relative z-10 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px] font-semibold ${
+              isActive ? 'text-indigo-700' : 'text-slate-600'
+            }`}
+          >
+            i
+          </span>
+          <span className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block group-focus-within:block">
+            {tooltip}
+          </span>
+        </>
+      ) : null}
     </span>
   );
 }
 
-function SummaryCard({ title, children, tooltip }) {
+function SummaryCard({ title, children, tooltip, className, knowledgeKey }) {
   const titleNode =
     typeof title === 'string'
-      ? <SectionTitle label={title} tooltip={tooltip} />
+      ? <SectionTitle label={title} tooltip={tooltip} knowledgeKey={knowledgeKey} />
       : title;
 
+  const cardClassName = ['rounded-2xl bg-white p-3 shadow-sm', className].filter(Boolean).join(' ');
+
   return (
-    <div className="rounded-2xl bg-white p-3 shadow-sm">
+    <div className={cardClassName}>
       {titleNode ? <div className="mb-2">{titleNode}</div> : null}
       <div className="space-y-0.5">{children}</div>
     </div>
   );
 }
 
-function Line({ label, value, bold = false, tooltip }) {
+function Line({ label, value, bold = false, tooltip, knowledgeKey }) {
+  const knowledge = useContext(KnowledgeBaseContext);
   const hasTooltip = Boolean(tooltip);
+  const canOpen = Boolean(knowledgeKey && knowledge && typeof knowledge.open === 'function');
+  const isActive = Boolean(canOpen && knowledge.isOpen && knowledge.activeMetricId === knowledgeKey);
+
+  const classNames = [
+    'group relative flex items-center justify-between text-xs',
+    canOpen
+      ? 'cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white'
+      : hasTooltip
+      ? 'cursor-help'
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const handleClick = () => {
+    if (canOpen) {
+      knowledge.open(knowledgeKey);
+    }
+  };
+
+  const handleKeyDown = (event) => {
+    if (!canOpen) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      knowledge.open(knowledgeKey);
+    }
+  };
+
+  const labelClass = `relative z-10 ${isActive ? 'text-indigo-700' : 'text-slate-600'}`;
+  const valueColor = isActive ? 'text-indigo-700' : 'text-slate-800';
+  const valueClass = `relative z-10 ${bold ? 'font-semibold' : ''} ${valueColor}`;
 
   return (
-    <div className={`group relative flex items-center justify-between text-xs ${hasTooltip ? 'cursor-help' : ''}`}>
-      <span className="text-slate-600">{label}</span>
-      <span className={bold ? 'font-semibold text-slate-800' : 'text-slate-800'}>{value}</span>
+    <div
+      className={classNames}
+      role={canOpen ? 'button' : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      onClick={canOpen ? handleClick : undefined}
+      onKeyDown={canOpen ? handleKeyDown : undefined}
+    >
+      {canOpen ? (
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none absolute inset-0 rounded-lg transition ${
+            isActive ? 'bg-indigo-50' : 'bg-transparent group-hover:bg-slate-100 group-focus-within:bg-slate-100'
+          }`}
+        />
+      ) : null}
+      <span className={labelClass}>{label}</span>
+      <span className={valueClass}>{value}</span>
       {hasTooltip ? (
-        <div className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block">
+        <div className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block group-focus-within:block">
           {tooltip}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function SensitivityRow({ label, value }) {
-  const numericValue = Number.isFinite(value) ? value : 0;
-  const positive = numericValue >= 0;
-  return (
-    <div className="flex items-center justify-between text-xs">
-      <span className="text-slate-600">{label}</span>
-      <span
-        className={`rounded-lg px-2 py-0.5 ${positive ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}
-      >
-        {currency(numericValue)}
-      </span>
     </div>
   );
 }
