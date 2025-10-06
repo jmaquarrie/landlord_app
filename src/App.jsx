@@ -2591,7 +2591,33 @@ export default function App() {
           }
         );
         if (!crimeResponse.ok) {
-          throw new Error('Crime data request failed');
+          let errorMessage = 'Unable to load local crime statistics.';
+          try {
+            const raw = await crimeResponse.text();
+            if (raw) {
+              try {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed.error === 'string' && parsed.error.trim().length > 0) {
+                  errorMessage = parsed.error.trim();
+                } else if (parsed && typeof parsed.message === 'string' && parsed.message.trim().length > 0) {
+                  errorMessage = parsed.message.trim();
+                }
+              } catch (jsonError) {
+                if (raw.trim().length > 0) {
+                  errorMessage = raw.trim();
+                }
+              }
+            }
+          } catch (readError) {
+            console.warn('Unable to parse crime error response:', readError);
+          }
+          if (crimeResponse.status === 404) {
+            errorMessage = 'Local crime statistics are not available for this location.';
+          } else if (crimeResponse.status >= 500) {
+            errorMessage = 'Crime data service is temporarily unavailable. Please try again later.';
+          }
+        
+          throw new Error(errorMessage);
         }
         const crimeData = await crimeResponse.json();
         if (!Array.isArray(crimeData)) {
