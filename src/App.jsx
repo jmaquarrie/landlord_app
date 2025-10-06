@@ -908,6 +908,7 @@ const DEFAULT_INPUTS = {
   propertyAddress: '',
   propertyUrl: '',
   bedrooms: 3,
+  bathrooms: 1,
   purchasePrice: 70000,
   depositPct: 0.25,
   closingCostsPct: 0.01,
@@ -3364,6 +3365,9 @@ export default function App() {
         const bedroomsValue = Number(
           evaluationInputs.bedrooms ?? scenarioDefaults.bedrooms ?? DEFAULT_INPUTS.bedrooms
         );
+        const bathroomsValue = Number(
+          evaluationInputs.bathrooms ?? scenarioDefaults.bathrooms ?? DEFAULT_INPUTS.bathrooms
+        );
         const rentalYieldValue = purchasePrice > 0 ? grossRentYear1 / purchasePrice : 0;
         return {
           scenario,
@@ -3371,6 +3375,7 @@ export default function App() {
           purchasePrice,
           monthlyRent,
           bedrooms: Number.isFinite(bedroomsValue) ? bedroomsValue : null,
+          bathrooms: Number.isFinite(bathroomsValue) ? bathroomsValue : null,
           ratios: {
             cap: Number.isFinite(metrics.cap) ? metrics.cap : 0,
             rentalYield: Number.isFinite(rentalYieldValue) ? rentalYieldValue : 0,
@@ -3439,7 +3444,7 @@ export default function App() {
       return [];
     }
     return scenarioTableData
-      .map(({ scenario, metrics, ratios, purchasePrice, monthlyRent, bedrooms }) => {
+      .map(({ scenario, metrics, ratios, purchasePrice, monthlyRent, bedrooms, bathrooms }) => {
         const x = ratios?.[scenarioScatterXAxis];
         const y = ratios?.[scenarioScatterYAxis];
         const propertyNetAfterTax = Number(metrics.propertyNetWealthAfterTax) || 0;
@@ -3452,6 +3457,7 @@ export default function App() {
           purchasePrice: Number.isFinite(purchasePrice) ? purchasePrice : null,
           monthlyRent: Number.isFinite(monthlyRent) ? monthlyRent : null,
           bedrooms: Number.isFinite(bedrooms) ? bedrooms : null,
+          bathrooms: Number.isFinite(bathrooms) ? bathrooms : null,
           savedAt: scenario.savedAt,
           isActive: scenario.id === selectedScenarioId,
         };
@@ -5799,9 +5805,10 @@ export default function App() {
                   onToggle={() => toggleSection('propertyInfo')}
                 >
                   <div className="grid gap-2 md:grid-cols-2">
-                  <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
-                  <div>{smallInput('bedrooms', 'Bedrooms', 1, 0)}</div>
-                  <div className="flex flex-col gap-1 md:col-span-2">
+                    <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
+                    <div>{smallInput('bedrooms', 'Bedrooms', 1, 0)}</div>
+                    <div>{smallInput('bathrooms', 'Bathrooms', 1, 0)}</div>
+                    <div className="flex flex-col gap-1 md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Property URL</label>
                     <div className="flex items-center gap-2">
                       <input
@@ -7508,6 +7515,8 @@ export default function App() {
                         const isSelected = selectedScenarioId === scenario.id;
                         const bedroomCount = Number(scenario.data?.bedrooms);
                         const hasBedroomCount = Number.isFinite(bedroomCount) && bedroomCount > 0;
+                        const bathroomCount = Number(scenario.data?.bathrooms);
+                        const hasBathroomCount = Number.isFinite(bathroomCount) && bathroomCount > 0;
                         return (
                           <div
                             key={`${scenario.id}-meta`}
@@ -7528,10 +7537,15 @@ export default function App() {
                               {scenario.data?.propertyAddress ? (
                                 <span className="text-slate-500">{scenario.data.propertyAddress}</span>
                               ) : null}
-                              {hasBedroomCount ? (
+                              {hasBedroomCount || hasBathroomCount ? (
                                 <span className="text-slate-500">
-                                  {bedroomCount}{' '}
-                                  {bedroomCount === 1 ? 'bedroom' : 'bedrooms'}
+                                  {hasBedroomCount
+                                    ? `${bedroomCount} ${bedroomCount === 1 ? 'bedroom' : 'bedrooms'}`
+                                    : ''}
+                                  {hasBedroomCount && hasBathroomCount ? ' · ' : ''}
+                                  {hasBathroomCount
+                                    ? `${bathroomCount} ${bathroomCount === 1 ? 'bathroom' : 'bathrooms'}`
+                                    : ''}
                                 </span>
                               ) : null}
                               {scenario.data?.propertyUrl ? (
