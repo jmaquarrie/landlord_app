@@ -133,6 +133,162 @@ const LEVERAGE_LTV_OPTIONS = Array.from({ length: 18 }, (_, index) =>
 );
 const LEVERAGE_SAFE_MAX_LTV = 0.75;
 const LEVERAGE_MAX_LTV = LEVERAGE_LTV_OPTIONS[LEVERAGE_LTV_OPTIONS.length - 1];
+const CRIME_SERIES_LIMIT = 400;
+
+const formatCrimeCategory = (value) => {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return 'Other';
+  }
+  return value
+    .split('-')
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(' ');
+};
+
+const formatCrimeMonth = (value) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const [yearString, monthString] = value.split('-');
+  const year = Number(yearString);
+  const monthIndex = Number(monthString) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || monthIndex < 0 || monthIndex > 11) {
+    return value;
+  }
+  const date = new Date(year, monthIndex, 1);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric' }).format(date);
+};
+
+const summarizeCrimeData = (crimes, { lat, lon, month, lastUpdated, fallbackLocationName }) => {
+  const totalIncidents = Array.isArray(crimes) ? crimes.length : 0;
+  const safeLat = Number.isFinite(lat) ? lat : 0;
+  const safeLon = Number.isFinite(lon) ? lon : 0;
+  const categoryCounts = new Map();
+  const outcomeCounts = new Map();
+  const streetCounts = new Map();
+  const mapCrimes = [];
+  let truncated = false;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+
+  if (Array.isArray(crimes)) {
+    crimes.forEach((crime) => {
+      const categoryLabel = formatCrimeCategory(crime?.category);
+      categoryCounts.set(categoryLabel, (categoryCounts.get(categoryLabel) ?? 0) + 1);
+
+      const outcomeLabel =
+        typeof crime?.outcome_status?.category === 'string' ? crime.outcome_status.category : '';
+      if (outcomeLabel) {
+        outcomeCounts.set(outcomeLabel, (outcomeCounts.get(outcomeLabel) ?? 0) + 1);
+      }
+
+      const streetLabel =
+        typeof crime?.location?.street?.name === 'string' ? crime.location.street.name.trim() : '';
+      if (streetLabel) {
+        streetCounts.set(streetLabel, (streetCounts.get(streetLabel) ?? 0) + 1);
+      }
+
+      const pointLat = Number.parseFloat(crime?.location?.latitude);
+      const pointLon = Number.parseFloat(crime?.location?.longitude);
+      if (Number.isFinite(pointLat) && Number.isFinite(pointLon)) {
+        minLat = Math.min(minLat, pointLat);
+        maxLat = Math.max(maxLat, pointLat);
+        minLon = Math.min(minLon, pointLon);
+        maxLon = Math.max(maxLon, pointLon);
+        if (mapCrimes.length < CRIME_SERIES_LIMIT) {
+          mapCrimes.push({
+            id: crime?.id ?? crime?.persistent_id ?? `${pointLat},${pointLon},${mapCrimes.length}`,
+            lat: pointLat,
+            lon: pointLon,
+            category: categoryLabel,
+            street: streetLabel || fallbackLocationName || 'Nearby street',
+            outcome: outcomeLabel || 'Outcome not yet available',
+            month: typeof crime?.month === 'string' ? crime.month : month,
+          });
+        } else {
+          truncated = true;
+        }
+      }
+    });
+  }
+
+  const topCategories = Array.from(categoryCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([label, count]) => ({
+      label,
+      count,
+      share: totalIncidents > 0 ? count / totalIncidents : 0,
+    }));
+
+  const topOutcomes = Array.from(outcomeCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([label, count]) => ({
+      label,
+      count,
+    }));
+
+  const mostCommonStreet = Array.from(streetCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  const hasBounds =
+    Number.isFinite(minLat) &&
+    Number.isFinite(maxLat) &&
+    Number.isFinite(minLon) &&
+    Number.isFinite(maxLon) &&
+    minLat !== Infinity &&
+    maxLat !== -Infinity &&
+    minLon !== Infinity &&
+    maxLon !== -Infinity &&
+    (Math.abs(maxLat - minLat) > 0 || Math.abs(maxLon - minLon) > 0);
+
+  const bounds = hasBounds ? [[minLat, minLon], [maxLat, maxLon]] : null;
+  const spanLat = hasBounds ? Math.abs(maxLat - minLat) : 0;
+  const spanLon = hasBounds ? Math.abs(maxLon - minLon) : 0;
+  const span = Math.max(spanLat, spanLon);
+  let zoom = 15;
+  if (span > 0.2) {
+    zoom = 11;
+  } else if (span > 0.1) {
+    zoom = 12;
+  } else if (span > 0.05) {
+    zoom = 13;
+  } else if (span > 0.02) {
+    zoom = 14;
+  }
+
+  const centerLat = hasBounds ? (minLat + maxLat) / 2 : safeLat;
+  const centerLon = hasBounds ? (minLon + maxLon) / 2 : safeLon;
+
+  return {
+    month,
+    monthLabel: month ? formatCrimeMonth(month) : '',
+    lastUpdated,
+    totalIncidents,
+    topCategories,
+    topOutcomes,
+    locationSummary: mostCommonStreet || fallbackLocationName || '',
+    mapCrimes,
+    incidentsOnMap: mapCrimes.length,
+    mapLimited: truncated,
+    mapCenter: {
+      lat: Number.isFinite(centerLat) ? centerLat : safeLat,
+      lon: Number.isFinite(centerLon) ? centerLon : safeLon,
+      zoom,
+    },
+    mapBounds: bounds,
+    mapKey: `${Number.isFinite(centerLat) ? centerLat.toFixed(4) : safeLat.toFixed(4)}|${
+      Number.isFinite(centerLon) ? centerLon.toFixed(4) : safeLon.toFixed(4)
+    }|${month ?? ''}|${totalIncidents}`,
+  };
+};
+
+const INITIAL_CRIME_STATE = { status: 'idle', data: null, error: '' };
 
 const EXPANDED_SERIES_ORDER = [
   'indexFund',
@@ -454,6 +610,8 @@ const SECTION_DESCRIPTIONS = {
     'Highlights how each year’s mortgage payment splits between interest and principal to visualise amortisation.',
   leverage:
     'Stress-tests IRR and total ROI outcomes across different loan-to-value ratios to gauge the impact of leverage.',
+  crime:
+    'Summarises recent police-reported crime around the property and plots the incidents on an interactive map.',
 };
 
 const KEY_RATIO_TOOLTIPS = {
@@ -1853,6 +2011,7 @@ export default function App() {
     rentalCashflow: false,
     extraSettings: true,
     cashflowDetail: true,
+    crime: true,
     wealthTrajectory: false,
     rateTrends: true,
     cashflowBars: true,
@@ -1930,6 +2089,7 @@ export default function App() {
   const chartModalContentRef = useRef(null);
   const geocodeDebounceRef = useRef(null);
   const geocodeAbortRef = useRef(null);
+  const crimeAbortRef = useRef(null);
   const lastGeocodeQueryRef = useRef('');
   const [rateChartSettings, setRateChartSettings] = useState({
     showMovingAverage: false,
@@ -1949,8 +2109,14 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncError, setSyncError] = useState('');
   const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
+  const [crimeState, setCrimeState] = useState(INITIAL_CRIME_STATE);
   const [urlSyncReady, setUrlSyncReady] = useState(false);
   const urlSyncLastValueRef = useRef('');
+  const propertyAddress = (inputs.propertyAddress ?? '').trim();
+  const hasPropertyAddress = propertyAddress !== '';
+  const geocodeLat = Number(geocodeState.data?.lat);
+  const geocodeLon = Number(geocodeState.data?.lon);
+  const geocodeDisplayName = geocodeState.data?.displayName ?? '';
 
   const remoteAvailable = remoteEnabled && authStatus === 'ready';
 
@@ -2353,6 +2519,131 @@ export default function App() {
       }
     };
   }, [inputs.propertyAddress]);
+
+  useEffect(() => {
+    if (crimeAbortRef.current) {
+      crimeAbortRef.current.abort();
+      crimeAbortRef.current = null;
+    }
+
+    if (!hasPropertyAddress) {
+      setCrimeState(INITIAL_CRIME_STATE);
+      return;
+    }
+
+    if (!Number.isFinite(geocodeLat) || !Number.isFinite(geocodeLon)) {
+      if (geocodeState.status === 'error') {
+        setCrimeState({
+          status: 'error',
+          data: null,
+          error:
+            geocodeState.error || 'Unable to resolve the property location for crime statistics.',
+        });
+      } else if (geocodeState.status === 'loading') {
+        setCrimeState((prev) =>
+          prev.status === 'loading' && prev.data === null && prev.error === ''
+            ? prev
+            : { status: 'loading', data: null, error: '' }
+        );
+      } else {
+        setCrimeState(INITIAL_CRIME_STATE);
+      }
+      return;
+    }
+
+    const controller = new AbortController();
+    crimeAbortRef.current = controller;
+    setCrimeState({ status: 'loading', data: null, error: '' });
+
+    (async () => {
+      try {
+        let lastUpdatedDate = '';
+        try {
+          const lastUpdatedResponse = await fetch('https://data.police.uk/api/crime-last-updated', {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' },
+          });
+          if (lastUpdatedResponse.ok) {
+            const lastUpdatedData = await lastUpdatedResponse.json();
+            if (lastUpdatedData && typeof lastUpdatedData.date === 'string') {
+              lastUpdatedDate = lastUpdatedData.date;
+            }
+          }
+        } catch (error) {
+          if (error.name === 'AbortError') {
+            return;
+          }
+          console.warn('Unable to fetch crime last-updated metadata:', error);
+        }
+
+        const params = new URLSearchParams({
+          lat: geocodeLat.toString(),
+          lng: geocodeLon.toString(),
+        });
+        if (lastUpdatedDate) {
+          params.set('date', lastUpdatedDate);
+        }
+        const crimeResponse = await fetch(
+          `https://data.police.uk/api/crimes-street/all-crime?${params.toString()}`,
+          {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' },
+          }
+        );
+        if (!crimeResponse.ok) {
+          throw new Error('Crime data request failed');
+        }
+        const crimeData = await crimeResponse.json();
+        if (!Array.isArray(crimeData)) {
+          throw new Error('Crime data unavailable');
+        }
+        const month =
+          lastUpdatedDate || (typeof crimeData[0]?.month === 'string' ? crimeData[0].month : '');
+        const summary = summarizeCrimeData(crimeData, {
+          lat: geocodeLat,
+          lon: geocodeLon,
+          month,
+          lastUpdated: lastUpdatedDate,
+          fallbackLocationName: geocodeDisplayName || propertyAddress,
+        });
+        if (!controller.signal.aborted) {
+          setCrimeState({ status: 'success', data: summary, error: '' });
+        }
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          return;
+        }
+        console.warn('Unable to fetch crime statistics:', error);
+        setCrimeState({
+          status: 'error',
+          data: null,
+          error:
+            error && typeof error.message === 'string'
+              ? error.message
+              : 'Unable to load local crime statistics.',
+        });
+      } finally {
+        if (crimeAbortRef.current === controller) {
+          crimeAbortRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      if (crimeAbortRef.current === controller) {
+        crimeAbortRef.current = null;
+      }
+    };
+  }, [
+    hasPropertyAddress,
+    geocodeLat,
+    geocodeLon,
+    geocodeDisplayName,
+    propertyAddress,
+    geocodeState.status,
+    geocodeState.error,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -2897,6 +3188,112 @@ export default function App() {
     }
     return { rows, roiRange: [roiMin, roiMax], irrRange: [irrMin, irrMax] };
   }, [baselineHeatmapYield, inputs, roiHeatmapGrowthOptions, roiHeatmapYieldOptions]);
+
+  const waitingForGeocode = hasPropertyAddress && geocodeState.status === 'loading';
+  const crimeSummary = crimeState.data;
+  const hasCrimeIncidents = crimeState.status === 'success' && Boolean(crimeSummary);
+  const crimeLoading = crimeState.status === 'loading';
+  const crimeError = crimeState.status === 'error' ? crimeState.error : '';
+  const crimeMonthLabel = crimeSummary?.monthLabel ?? '';
+  const crimeIncidentsCount = crimeSummary?.totalIncidents ?? 0;
+  const crimeHasRecordedIncidents = crimeIncidentsCount > 0;
+  const crimeMapSrcDoc = useMemo(() => {
+    if (!crimeSummary) {
+      return '';
+    }
+    const centerLat = Number.isFinite(crimeSummary.mapCenter?.lat)
+      ? crimeSummary.mapCenter.lat
+      : Number.isFinite(geocodeLat)
+      ? geocodeLat
+      : 0;
+    const centerLon = Number.isFinite(crimeSummary.mapCenter?.lon)
+      ? crimeSummary.mapCenter.lon
+      : Number.isFinite(geocodeLon)
+      ? geocodeLon
+      : 0;
+    const config = {
+      center: [centerLat, centerLon],
+      zoom: Number.isFinite(crimeSummary.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14,
+      bounds: Array.isArray(crimeSummary.mapBounds) ? crimeSummary.mapBounds : null,
+      points: Array.isArray(crimeSummary.mapCrimes)
+        ? crimeSummary.mapCrimes
+            .filter(
+              (crime) =>
+                crime &&
+                Number.isFinite(crime.lat) &&
+                Number.isFinite(crime.lon)
+            )
+            .map((crime) => ({
+              lat: crime.lat,
+              lon: crime.lon,
+              category: crime.category,
+              street: crime.street,
+              outcome: crime.outcome,
+            }))
+        : [],
+    };
+    const serialized = JSON.stringify(config).replace(/<\/script/gi, '<\\/script');
+    return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha512-xwE/Az9zrjDBXn1n6A2C1BzAMo7icbLZL9Z9Z0Z2mTq7kBxKuX3sI5Gucs5cjox96D65ZjU5yBkP0O0MquTQ=="
+      crossorigin=""
+    />
+    <style>
+      html, body, #map { height: 100%; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha512-XQoYMqMTK8LvdlxU8nB3bZK7t7C22Jks6R7/g3tE1hbbfceuiN3j5f9+t5p0gT1pYDs2prX7XKz5+6R7g8JdKw=="
+      crossorigin=""
+    ></script>
+    <script>
+      const config = ${serialized};
+      const map = L.map('map', { zoomControl: true });
+      if (config.bounds && Array.isArray(config.bounds) && config.bounds.length === 2) {
+        map.fitBounds(config.bounds);
+      } else if (Array.isArray(config.center) && config.center.length === 2) {
+        map.setView(config.center, config.zoom || 14);
+      }
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+      if (Array.isArray(config.points)) {
+        config.points.forEach((point) => {
+          if (
+            point &&
+            Number.isFinite(point.lat) &&
+            Number.isFinite(point.lon)
+          ) {
+            const marker = L.circleMarker([point.lat, point.lon], {
+              radius: 5,
+              color: '#ef4444',
+              weight: 1,
+              fillColor: '#ef4444',
+              fillOpacity: 0.6
+            });
+            const popupLines = [point.category, point.street, point.outcome]
+              .filter(Boolean)
+              .join('<br />');
+            marker.addTo(map);
+            if (popupLines) {
+              marker.bindPopup(popupLines);
+            }
+          }
+        });
+      }
+    </script>
+  </body>
+</html>`;
+  }, [crimeSummary, geocodeLat, geocodeLon]);
 
   const leverageChartData = useMemo(() => {
     const price = Number(inputs.purchasePrice) || 0;
@@ -5889,6 +6286,198 @@ export default function App() {
                   </>
                 ) : null}
               </div>
+              {hasPropertyAddress ? (
+                <div
+                  className={`rounded-2xl bg-white p-3 shadow-sm ${
+                    collapsedSections.crime ? 'md:col-span-1' : 'md:col-span-2'
+                  }`}
+                >
+                  <div
+                    className={`flex items-center justify-between gap-3 ${
+                      collapsedSections.crime ? '' : 'mb-2'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleSection('crime')}
+                        aria-expanded={!collapsedSections.crime}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                        aria-label={collapsedSections.crime ? 'Show crime report' : 'Hide crime report'}
+                      >
+                        {collapsedSections.crime ? '+' : '−'}
+                      </button>
+                      <SectionTitle
+                        label="Local crime insight"
+                        tooltip={SECTION_DESCRIPTIONS.crime}
+                        className="text-sm font-semibold text-slate-700"
+                      />
+                    </div>
+                    {crimeLoading ? (
+                      <span className="text-[11px] text-slate-500">Loading…</span>
+                    ) : crimeMonthLabel ? (
+                      <span className="text-[11px] text-slate-500">Data: {crimeMonthLabel}</span>
+                    ) : null}
+                  </div>
+                  {!collapsedSections.crime ? (
+                    <div className="space-y-4">
+                      {waitingForGeocode ? (
+                        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                          Resolving property location…
+                        </div>
+                      ) : crimeLoading ? (
+                        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                          Loading local crime statistics…
+                        </div>
+                      ) : crimeError ? (
+                        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-600">
+                          {crimeError}
+                        </div>
+                      ) : hasCrimeIncidents ? (
+                        <>
+                          <div className="text-[11px] text-slate-500">
+                            {crimeHasRecordedIncidents ? (
+                              <>
+                                Latest month{crimeMonthLabel ? `: ${crimeMonthLabel}` : ''}.
+                                {crimeSummary?.locationSummary ? (
+                                  <>
+                                    {' '}
+                                    Most reports near{' '}
+                                    <span className="font-semibold text-slate-700">
+                                      {crimeSummary.locationSummary}
+                                    </span>
+                                    .
+                                  </>
+                                ) : null}
+                              </>
+                            ) : (
+                              <>
+                                No recorded crimes for the latest reporting month
+                                {crimeMonthLabel ? ` (${crimeMonthLabel})` : ''}.
+                                {crimeSummary?.locationSummary ? (
+                                  <>
+                                    {' '}
+                                    Monitoring area near{' '}
+                                    <span className="font-semibold text-slate-700">
+                                      {crimeSummary.locationSummary}
+                                    </span>
+                                    .
+                                  </>
+                                ) : null}
+                              </>
+                            )}
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <div className="rounded-lg bg-slate-50 px-3 py-2">
+                              <div className="text-[11px] text-slate-500">Total incidents</div>
+                              <div className="text-lg font-semibold text-slate-800">
+                                {crimeSummary.totalIncidents.toLocaleString()}
+                              </div>
+                            </div>
+                            <div className="rounded-lg bg-slate-50 px-3 py-2">
+                              <div className="text-[11px] text-slate-500">Most common category</div>
+                              <div className="text-sm font-semibold text-slate-800">
+                                {crimeSummary.topCategories[0]?.label ?? '—'}
+                              </div>
+                              {crimeSummary.topCategories[0] ? (
+                                <div className="text-[11px] text-slate-500">
+                                  {crimeSummary.topCategories[0].count.toLocaleString()} (
+                                  {formatPercent(crimeSummary.topCategories[0].share)})
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="rounded-lg bg-slate-50 px-3 py-2">
+                              <div className="text-[11px] text-slate-500">Most common outcome</div>
+                              <div className="text-sm font-semibold text-slate-800">
+                                {crimeSummary.topOutcomes[0]?.label ?? 'Outcome pending'}
+                              </div>
+                              {crimeSummary.topOutcomes[0] ? (
+                                <div className="text-[11px] text-slate-500">
+                                  {crimeSummary.topOutcomes[0].count.toLocaleString()} reports
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div>
+                              <h4 className="mb-2 text-xs font-semibold text-slate-700">Category breakdown</h4>
+                              <ul className="space-y-1 text-[11px] text-slate-600">
+                                {crimeSummary.topCategories.length > 0 ? (
+                                  crimeSummary.topCategories.map((category) => (
+                                    <li
+                                      key={category.label}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span>{category.label}</span>
+                                      <span className="font-semibold text-slate-700">
+                                        {category.count.toLocaleString()} (
+                                        {formatPercent(category.share)})
+                                      </span>
+                                    </li>
+                                  ))
+                                ) : (
+                                  <li>No crime categories recorded for this month.</li>
+                                )}
+                              </ul>
+                            </div>
+                            <div>
+                              <h4 className="mb-2 text-xs font-semibold text-slate-700">Outcome snapshot</h4>
+                              <ul className="space-y-1 text-[11px] text-slate-600">
+                                {crimeSummary.topOutcomes.length > 0 ? (
+                                  crimeSummary.topOutcomes.map((outcome) => (
+                                    <li
+                                      key={outcome.label}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span>{outcome.label}</span>
+                                      <span className="font-semibold text-slate-700">
+                                        {outcome.count.toLocaleString()}
+                                      </span>
+                                    </li>
+                                  ))
+                                ) : (
+                                  <li>Outcomes not yet available for most incidents.</li>
+                                )}
+                              </ul>
+                            </div>
+                          </div>
+                          <div className="h-72 w-full overflow-hidden rounded-xl border border-slate-200">
+                            {crimeMapSrcDoc ? (
+                              <iframe
+                                key={crimeSummary.mapKey}
+                                title={`Crime map for ${
+                                  crimeSummary.locationSummary || propertyAddress || 'selected area'
+                                }`}
+                                srcDoc={crimeMapSrcDoc}
+                                className="h-full w-full"
+                                loading="lazy"
+                                sandbox="allow-scripts allow-same-origin"
+                              />
+                            ) : (
+                              <div className="flex h-full items-center justify-center bg-slate-50 text-[11px] text-slate-500">
+                                No incidents to plot on the map.
+                              </div>
+                            )}
+                          </div>
+                          <div className="space-y-1 text-[10px] text-slate-500">
+                            {crimeSummary.mapLimited ? (
+                              <p>
+                                Showing {crimeSummary.incidentsOnMap.toLocaleString()} of{' '}
+                                {crimeIncidentsCount.toLocaleString()} incidents on the map.
+                              </p>
+                            ) : null}
+                            <p>Crime data © Crown copyright and database right. Source: data.police.uk.</p>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-[11px] text-slate-500">
+                          No crime data available for this area yet.
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div
                 className={`rounded-2xl bg-white p-3 shadow-sm ${
                   collapsedSections.interestSplit ? 'md:col-span-1' : 'md:col-span-2'
