@@ -3802,103 +3802,55 @@ export default function App() {
   const crimeMonthLabel = crimeSummary?.monthLabel ?? '';
   const crimeIncidentsCount = crimeSummary?.totalIncidents ?? 0;
   const crimeHasRecordedIncidents = crimeIncidentsCount > 0;
-  const crimeMapSrcDoc = useMemo(() => {
-    if (!crimeSummary) {
-      return '';
-    }
-    const centerLat = Number.isFinite(crimeSummary.mapCenter?.lat)
+  const crimeMapCenter = useMemo(() => {
+    const lat = Number.isFinite(crimeSummary?.mapCenter?.lat)
       ? crimeSummary.mapCenter.lat
       : Number.isFinite(geocodeLat)
       ? geocodeLat
-      : 0;
-    const centerLon = Number.isFinite(crimeSummary.mapCenter?.lon)
+      : null;
+    const lon = Number.isFinite(crimeSummary?.mapCenter?.lon)
       ? crimeSummary.mapCenter.lon
       : Number.isFinite(geocodeLon)
       ? geocodeLon
-      : 0;
-    const config = {
-      center: [centerLat, centerLon],
-      zoom: Number.isFinite(crimeSummary.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14,
-      bounds: Array.isArray(crimeSummary.mapBounds) ? crimeSummary.mapBounds : null,
-      points: Array.isArray(crimeSummary.mapCrimes)
-        ? crimeSummary.mapCrimes
-            .filter(
-              (crime) =>
-                crime &&
-                Number.isFinite(crime.lat) &&
-                Number.isFinite(crime.lon)
-            )
-            .map((crime) => ({
-              lat: crime.lat,
-              lon: crime.lon,
-              category: crime.category,
-              street: crime.street,
-              outcome: crime.outcome,
-            }))
-        : [],
-    };
-    const serialized = JSON.stringify(config).replace(/<\/script/gi, '<\\/script');
-    return `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <link
-      rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha512-xwE/Az9zrjDBXn1n6A2C1BzAMo7icbLZL9Z9Z0Z2mTq7kBxKuX3sI5Gucs5cjox96D65ZjU5yBkP0O0MquTQ=="
-      crossorigin=""
-    />
-    <style>
-      html, body, #map { height: 100%; margin: 0; }
-    </style>
-  </head>
-  <body>
-    <div id="map"></div>
-    <script
-      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      integrity="sha512-XQoYMqMTK8LvdlxU8nB3bZK7t7C22Jks6R7/g3tE1hbbfceuiN3j5f9+t5p0gT1pYDs2prX7XKz5+6R7g8JdKw=="
-      crossorigin=""
-    ></script>
-    <script>
-      const config = ${serialized};
-      const map = L.map('map', { zoomControl: true });
-      if (config.bounds && Array.isArray(config.bounds) && config.bounds.length === 2) {
-        map.fitBounds(config.bounds);
-      } else if (Array.isArray(config.center) && config.center.length === 2) {
-        map.setView(config.center, config.zoom || 14);
-      }
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap contributors'
-      }).addTo(map);
-      if (Array.isArray(config.points)) {
-        config.points.forEach((point) => {
-          if (
-            point &&
-            Number.isFinite(point.lat) &&
-            Number.isFinite(point.lon)
-          ) {
-            const marker = L.circleMarker([point.lat, point.lon], {
-              radius: 5,
-              color: '#ef4444',
-              weight: 1,
-              fillColor: '#ef4444',
-              fillOpacity: 0.6
-            });
-            const popupLines = [point.category, point.street, point.outcome]
-              .filter(Boolean)
-              .join('<br />');
-            marker.addTo(map);
-            if (popupLines) {
-              marker.bindPopup(popupLines);
-            }
-          }
-        });
-      }
-    </script>
-  </body>
-</html>`;
+      : null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return null;
+    }
+    const zoom = Number.isFinite(crimeSummary?.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14;
+    return { lat, lon, zoom };
   }, [crimeSummary, geocodeLat, geocodeLon]);
+
+  const crimeMapEmbedUrl = useMemo(() => {
+    if (!crimeMapCenter) {
+      return '';
+    }
+    const { lat, lon, zoom } = crimeMapCenter;
+    const latFixed = Number(lat.toFixed(6));
+    const lonFixed = Number(lon.toFixed(6));
+    const clampedZoom = Number.isFinite(zoom) ? clamp(zoom, 3, 18) : 14;
+    const latDelta = 0.005 * Math.pow(2, 14 - clampedZoom);
+    const lonDelta = 0.009 * Math.pow(2, 14 - clampedZoom);
+    const south = Math.max(-90, latFixed - latDelta);
+    const north = Math.min(90, latFixed + latDelta);
+    const west = Math.max(-180, lonFixed - lonDelta);
+    const east = Math.min(180, lonFixed + lonDelta);
+    const bbox = `${west.toFixed(6)},${south.toFixed(6)},${east.toFixed(6)},${north.toFixed(6)}`;
+    const marker = `${latFixed.toFixed(6)},${lonFixed.toFixed(6)}`;
+    return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(
+      bbox
+    )}&layer=mapnik&marker=${encodeURIComponent(marker)}`;
+  }, [crimeMapCenter]);
+
+  const crimeMapExternalUrl = useMemo(() => {
+    if (!crimeMapCenter) {
+      return '';
+    }
+    const { lat, lon, zoom } = crimeMapCenter;
+    const mapZoom = Number.isFinite(zoom) ? clamp(Math.round(zoom), 3, 19) : 14;
+    return `https://www.openstreetmap.org/?mlat=${lat.toFixed(6)}&mlon=${lon.toFixed(
+      6
+    )}#map=${mapZoom}/${lat.toFixed(6)}/${lon.toFixed(6)}`;
+  }, [crimeMapCenter]);
 
   const leverageChartData = useMemo(() => {
     const price = Number(inputs.purchasePrice) || 0;
@@ -7047,23 +6999,47 @@ export default function App() {
                             </div>
                           </div>
                           <div className="h-72 w-full overflow-hidden rounded-xl border border-slate-200">
-                            {crimeMapSrcDoc ? (
+                            {crimeMapEmbedUrl ? (
                               <iframe
                                 key={crimeSummary.mapKey}
-                                title={`Crime map for ${
+                                title={`Map preview for ${
                                   crimeSummary.locationSummary || propertyAddress || 'selected area'
                                 }`}
-                                srcDoc={crimeMapSrcDoc}
+                                src={crimeMapEmbedUrl}
                                 className="h-full w-full"
                                 loading="lazy"
-                                sandbox="allow-scripts allow-same-origin"
+                                referrerPolicy="no-referrer-when-downgrade"
+                                allowFullScreen
                               />
                             ) : (
                               <div className="flex h-full items-center justify-center bg-slate-50 text-[11px] text-slate-500">
-                                No incidents to plot on the map.
+                                No map preview available for this area.
                               </div>
                             )}
                           </div>
+                          {crimeMapExternalUrl ? (
+                            <div className="text-right text-[11px]">
+                              <a
+                                href={crimeMapExternalUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-700"
+                              >
+                                <span className="sr-only">Open full map on OpenStreetMap</span>
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  viewBox="0 0 20 20"
+                                  fill="currentColor"
+                                  className="h-3.5 w-3.5"
+                                  aria-hidden="true"
+                                >
+                                  <path d="M6.75 3A2.75 2.75 0 0 0 4 5.75v8.5A2.75 2.75 0 0 0 6.75 17h6.5A2.75 2.75 0 0 0 16 14.25v-3a.75.75 0 0 0-1.5 0v3c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-8.5c0-.69.56-1.25 1.25-1.25h3a.75.75 0 0 0 0-1.5h-3Z" />
+                                  <path d="M9.25 5a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-1.5 0V6.56l-5.47 5.47a.75.75 0 1 1-1.06-1.06L12.19 5.5H10a.75.75 0 0 1-.75-.75Z" />
+                                </svg>
+                                <span>OpenStreetMap</span>
+                              </a>
+                            </div>
+                          ) : null}
                           <div className="space-y-1 text-[10px] text-slate-500">
                             {crimeSummary.mapLimited ? (
                               <p>
