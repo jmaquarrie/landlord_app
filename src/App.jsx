@@ -314,6 +314,7 @@ const normalizeScenarioList = (list) =>
 const DEFAULT_INPUTS = {
   propertyAddress: '',
   propertyUrl: '',
+  bedrooms: 3,
   purchasePrice: 70000,
   depositPct: 0.25,
   closingCostsPct: 0.01,
@@ -2463,10 +2464,17 @@ export default function App() {
         const metrics = calculateEquity(evaluationInputs);
         const grossRentYear1 = Number(metrics.grossRentYear1) || 0;
         const purchasePrice = Number(evaluationInputs.purchasePrice ?? basePurchasePrice) || 0;
+        const monthlyRent = Number(evaluationInputs.monthlyRent ?? baseMonthlyRent) || 0;
+        const bedroomsValue = Number(
+          evaluationInputs.bedrooms ?? scenarioDefaults.bedrooms ?? DEFAULT_INPUTS.bedrooms
+        );
         const rentalYieldValue = purchasePrice > 0 ? grossRentYear1 / purchasePrice : 0;
         return {
           scenario,
           metrics,
+          purchasePrice,
+          monthlyRent,
+          bedrooms: Number.isFinite(bedroomsValue) ? bedroomsValue : null,
           ratios: {
             cap: Number.isFinite(metrics.cap) ? metrics.cap : 0,
             rentalYield: Number.isFinite(rentalYieldValue) ? rentalYieldValue : 0,
@@ -2535,7 +2543,7 @@ export default function App() {
       return [];
     }
     return scenarioTableData
-      .map(({ scenario, metrics, ratios }) => {
+      .map(({ scenario, metrics, ratios, purchasePrice, monthlyRent, bedrooms }) => {
         const x = ratios?.[scenarioScatterXAxis];
         const y = ratios?.[scenarioScatterYAxis];
         const propertyNetAfterTax = Number(metrics.propertyNetWealthAfterTax) || 0;
@@ -2545,6 +2553,9 @@ export default function App() {
           x: Number.isFinite(x) ? x : null,
           y: Number.isFinite(y) ? y : null,
           propertyNetAfterTax,
+          purchasePrice: Number.isFinite(purchasePrice) ? purchasePrice : null,
+          monthlyRent: Number.isFinite(monthlyRent) ? monthlyRent : null,
+          bedrooms: Number.isFinite(bedrooms) ? bedrooms : null,
           savedAt: scenario.savedAt,
           isActive: scenario.id === selectedScenarioId,
         };
@@ -4835,6 +4846,7 @@ export default function App() {
                 >
                   <div className="grid gap-2 md:grid-cols-2">
                   <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
+                  <div>{smallInput('bedrooms', 'Bedrooms', 1, 0)}</div>
                   <div className="flex flex-col gap-1 md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Property URL</label>
                     <div className="flex items-center gap-2">
@@ -6324,6 +6336,8 @@ export default function App() {
                     <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
                       {savedScenarios.map((scenario) => {
                         const isSelected = selectedScenarioId === scenario.id;
+                        const bedroomCount = Number(scenario.data?.bedrooms);
+                        const hasBedroomCount = Number.isFinite(bedroomCount) && bedroomCount > 0;
                         return (
                           <div
                             key={`${scenario.id}-meta`}
@@ -6343,6 +6357,12 @@ export default function App() {
                               <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
                               {scenario.data?.propertyAddress ? (
                                 <span className="text-slate-500">{scenario.data.propertyAddress}</span>
+                              ) : null}
+                              {hasBedroomCount ? (
+                                <span className="text-slate-500">
+                                  {bedroomCount}{' '}
+                                  {bedroomCount === 1 ? 'bedroom' : 'bedrooms'}
+                                </span>
                               ) : null}
                               {scenario.data?.propertyUrl ? (
                                 <a
@@ -7273,6 +7293,12 @@ export default function App() {
                                     <div className="font-semibold text-slate-800">{datum.name}</div>
                                     <div>{scenarioScatterXAxisOption?.label}: {formatPercent(datum.x)}</div>
                                     <div>{scenarioScatterYAxisOption?.label}: {formatPercent(datum.y)}</div>
+                                    {Number.isFinite(datum.purchasePrice) ? (
+                                      <div>Purchase price: {currency(datum.purchasePrice)}</div>
+                                    ) : null}
+                                    {Number.isFinite(datum.monthlyRent) ? (
+                                      <div>Monthly rent: {currency(datum.monthlyRent)}</div>
+                                    ) : null}
                                     <div>
                                       {propertyNetAfterTaxLabel}: {currency(datum.propertyNetAfterTax)}
                                     </div>
