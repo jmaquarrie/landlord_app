@@ -369,9 +369,23 @@ function buildForecast(inputs) {
     };
   });
 
+  const targetAddress = [
+    typeof inputs.houseNumber === 'number' ? String(inputs.houseNumber) : inputs.houseNumber?.trim?.(),
+    inputs.street?.trim?.(),
+    inputs.city?.trim?.(),
+    inputs.county?.trim?.(),
+    inputs.postcode?.trim?.(),
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  const comparableStreet = [inputs.street?.trim?.() || 'Sample Street', inputs.city?.trim?.() || inputs.location]
+    .filter(Boolean)
+    .join(', ');
+
   const comparables = Array.from({ length: 5 }, (_, idx) => ({
     id: idx + 1,
-    address: `${Math.round(40 + Math.random() * 40)} Sample Street, ${inputs.location}`,
+    address: `${Math.round(40 + Math.random() * 40)} ${comparableStreet}`,
     price: Math.round(referencePrice * (0.9 + Math.random() * 0.2)),
     date: `202${2 + (idx % 2)}-0${(idx % 9) + 1}-15`,
     similarity: clamp(0.72 + Math.random() * 0.2, 0.7, 0.95),
@@ -534,6 +548,7 @@ function buildForecast(inputs) {
     streetOpportunityScore,
     scoreDrivers,
     profile,
+    targetAddress,
   };
 }
 
@@ -636,6 +651,11 @@ function buildDataSourceSections(result, inputs) {
 export default function App() {
   const [inputs, setInputs] = useState({
     location: 'london',
+    houseNumber: '27',
+    street: 'Green Drive',
+    city: 'Cleveleys',
+    county: 'Lancashire',
+    postcode: 'FY5 1LH',
     propertyType: 'flat',
     bedrooms: 2,
     bathrooms: 1,
@@ -653,6 +673,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(() => buildForecast(inputs));
   const [activeScore, setActiveScore] = useState(null);
+  const [isMapOpen, setIsMapOpen] = useState(false);
 
   const handleInput = (field, value) => {
     setInputs((prev) => ({ ...prev, [field]: value }));
@@ -670,6 +691,32 @@ export default function App() {
   const chartData = useMemo(() => result?.forecastSeries ?? [], [result]);
   const activeProfile = result?.profile ?? STREET_PROFILES[inputs.location] ?? STREET_PROFILES.default;
   const dataSourceSections = useMemo(() => buildDataSourceSections(result, inputs), [result, inputs]);
+  const liveAddress = useMemo(() => {
+    return [
+      inputs.houseNumber?.trim?.(),
+      inputs.street?.trim?.(),
+      inputs.city?.trim?.(),
+      inputs.county?.trim?.(),
+      inputs.postcode?.trim?.(),
+    ]
+      .filter(Boolean)
+      .join(', ');
+  }, [inputs.houseNumber, inputs.street, inputs.city, inputs.county, inputs.postcode]);
+  const scenarioAddress = result?.targetAddress || liveAddress;
+  const openStreetMapEmbedUrl = useMemo(() => {
+    if (!liveAddress) {
+      return 'https://www.openstreetmap.org/export/embed.html?bbox=-3.06,53.84,-2.97,53.89&layer=mapnik&marker=53.873,-3.026';
+    }
+    const encoded = encodeURIComponent(liveAddress);
+    return `https://www.openstreetmap.org/export/embed.html?search=${encoded}&layer=mapnik`;
+  }, [liveAddress]);
+  const openStreetMapExternalUrl = useMemo(() => {
+    if (!liveAddress) {
+      return 'https://www.openstreetmap.org';
+    }
+    const encoded = encodeURIComponent(liveAddress);
+    return `https://www.openstreetmap.org/search?query=${encoded}`;
+  }, [liveAddress]);
 
   return (
     <div className="min-h-screen bg-slate-100 pb-20">
@@ -718,6 +765,67 @@ export default function App() {
                   ))}
                 </select>
               </label>
+
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs uppercase tracking-wider text-slate-500">Property address</p>
+                  <button
+                    type="button"
+                    onClick={() => setIsMapOpen(true)}
+                    className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700"
+                  >
+                    Preview on map
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1 text-sm text-slate-700">
+                    House number
+                    <input
+                      type="text"
+                      value={inputs.houseNumber}
+                      onChange={(event) => handleInput('houseNumber', event.target.value)}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm text-slate-700 sm:col-span-1">
+                    Street
+                    <input
+                      type="text"
+                      value={inputs.street}
+                      onChange={(event) => handleInput('street', event.target.value)}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm text-slate-700">
+                    City / Town
+                    <input
+                      type="text"
+                      value={inputs.city}
+                      onChange={(event) => handleInput('city', event.target.value)}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm text-slate-700">
+                    County
+                    <input
+                      type="text"
+                      value={inputs.county}
+                      onChange={(event) => handleInput('county', event.target.value)}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm text-slate-700 sm:col-span-2">
+                    Postcode
+                    <input
+                      type="text"
+                      value={inputs.postcode}
+                      onChange={(event) => handleInput('postcode', event.target.value)}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                    />
+                  </label>
+                </div>
+                <p className="text-xs text-slate-400">Defaults to 27 Green Drive, Cleveleys, Lancashire, FY5 1LH.</p>
+              </div>
 
               <label className="flex flex-col gap-2 text-sm text-slate-700">
                 Property type
@@ -900,6 +1008,17 @@ export default function App() {
                 <p className="text-sm text-slate-500">
                   {formatPercent(result.yoyPriceGrowth)} expected YoY change | data confidence {formatPercent(result.dataConfidence)}
                 </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                  <span className="font-semibold text-slate-700">Target property:</span>
+                  <span className="text-slate-600">{scenarioAddress || 'Awaiting address details'}</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsMapOpen(true)}
+                    className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700"
+                  >
+                    View map
+                  </button>
+                </div>
                 <p className="mt-1 text-xs uppercase tracking-wider text-slate-400">
                   LSOA {activeProfile?.lsoa} · footfall index {activeProfile?.footfallIndex} · gigabit {activeProfile?.broadbandMbps}
                   Mbps
@@ -1140,6 +1259,43 @@ export default function App() {
                 </div>
               );
             })()}
+          </div>
+        </div>
+      )}
+
+      {isMapOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4 py-8">
+          <div className="relative w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-xl">
+            <button
+              type="button"
+              onClick={() => setIsMapOpen(false)}
+              className="absolute right-4 top-4 z-10 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500 shadow hover:bg-slate-200"
+            >
+              Close
+            </button>
+            <div className="aspect-[4/3] w-full bg-slate-100">
+              <iframe
+                title="OpenStreetMap location preview"
+                src={openStreetMapEmbedUrl}
+                className="h-full w-full"
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+              />
+            </div>
+            <div className="border-t border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
+              <p className="font-medium text-slate-700">{liveAddress || 'Add address details to preview this location.'}</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Map data © OpenStreetMap contributors ·{' '}
+                <a
+                  href={openStreetMapExternalUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold text-emerald-600 hover:text-emerald-700"
+                >
+                  Open full map
+                </a>
+              </p>
+            </div>
           </div>
         </div>
       )}
