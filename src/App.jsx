@@ -217,6 +217,7 @@ const DEFAULT_POSTCODE = 'FY5 1LH';
 const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
 const POSTCODES_IO_ENDPOINT = 'https://api.postcodes.io/postcodes';
 const OS_PLACES_ENDPOINT = 'https://api.os.uk/search/places/v1/postcode';
+const OS_PLACES_FIND_ENDPOINT = 'https://api.os.uk/search/places/v1/find';
 const rawOsPlacesKey =
   typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OS_PLACES_API_KEY
     ? import.meta.env.VITE_OS_PLACES_API_KEY
@@ -291,28 +292,59 @@ async function fetchNominatim(params, { retries = NOMINATIM_MAX_RETRIES } = {}) 
 }
 
 function mapOsPlacesResultToNominatim(item) {
-  const payload = item?.DPA ?? item?.LPI;
+  const payload = item?.DPA ?? item?.LPI ?? item;
   if (!payload) {
     return null;
   }
 
-  const postcode = formatPostcode(payload.POSTCODE);
-  const houseNumber =
-    payload.BUILDING_NUMBER || payload.SUB_BUILDING_NAME || payload.BUILDING_NAME || payload.ORGANISATION_NAME;
-  const street =
+  const postcode = formatPostcode(
+    payload.POSTCODE ?? payload.POSTCODE_LOCATOR ?? payload.POSTAL_CODE ?? payload.POSTCODE_DISTRICT,
+  );
+  if (!postcode) {
+    return null;
+  }
+
+  let houseNumber =
+    payload.BUILDING_NUMBER ||
+    payload.PRIMARY_ADDRESS_NUMBER ||
+    payload.SUB_BUILDING_NAME ||
+    payload.BUILDING_NAME ||
+    payload.ORGANISATION_NAME ||
+    payload.DEPARTMENT_NAME;
+  let street =
     payload.THOROUGHFARE_NAME ||
     payload.DEPENDENT_THOROUGHFARE_NAME ||
     payload.STREET_DESCRIPTION ||
-    payload.ROAD_NAME;
+    payload.ROAD_NAME ||
+    payload.ADDRESS_LINE_1;
   const locality =
     payload.DEPENDENT_LOCALITY ||
     payload.DOUBLE_DEPENDENT_LOCALITY ||
     payload.LOCALITY_NAME ||
+    payload.ADDRESS_LINE_2 ||
     payload.TOWN_NAME;
-  const city = payload.POST_TOWN || payload.TOWN_NAME || locality;
-  const county = payload.COUNTY || payload.ADMINISTRATIVE_AREA || payload.DISTRICT || payload.LOCAL_AUTHORITY;
-  const lat = Number(payload.LAT ?? payload.LATITUDE);
-  const lon = Number(payload.LNG ?? payload.LONGITUDE);
+  const city = payload.POST_TOWN || payload.TOWN_NAME || payload.LOCALITY_NAME || locality;
+  const county =
+    payload.COUNTY || payload.ADMINISTRATIVE_AREA || payload.DISTRICT || payload.LOCAL_AUTHORITY || payload.POSTCODE_AREA;
+  const lat = Number.parseFloat(payload.LATITUDE ?? payload.LAT ?? payload.Y_COORDINATE ?? payload.GEOMETRY_Y);
+  const lon = Number.parseFloat(payload.LONGITUDE ?? payload.LON ?? payload.X_COORDINATE ?? payload.GEOMETRY_X);
+
+  if (!houseNumber && payload.ADDRESS) {
+    const inferred = extractHouseNumber(payload.ADDRESS, street || '');
+    if (inferred) {
+      houseNumber = inferred;
+    }
+  }
+
+  if (!street && payload.ADDRESS) {
+    const firstSegment = payload.ADDRESS.split(',')[0]?.trim();
+    if (firstSegment) {
+      const cleaned = firstSegment.replace(/^\d+\s+/, '').trim();
+      if (cleaned) {
+        street = cleaned;
+      }
+    }
+  }
 
   const address = {
     house_number: houseNumber || undefined,
@@ -322,7 +354,7 @@ function mapOsPlacesResultToNominatim(item) {
     suburb: locality || undefined,
     city: city || undefined,
     county: county || undefined,
-    postcode: postcode || formatPostcode(payload.POSTCODE),
+    postcode,
   };
 
   const labelParts = [
@@ -333,11 +365,12 @@ function mapOsPlacesResultToNominatim(item) {
     address.postcode,
   ].filter(Boolean);
 
-  const displayName = payload.ADDRESS || labelParts.join(', ');
+  const displayName = payload.ADDRESS ?? payload.ADDRESSLINE1 ?? labelParts.join(', ');
+  const uprn = payload.UPRN ?? payload.LPI_KEY ?? payload.ID ?? displayName;
 
   return {
-    place_id: `os-${payload.UPRN ?? displayName}`,
-    osm_id: payload.UPRN ?? payload.ID ?? displayName,
+    place_id: `os-${uprn}`,
+    osm_id: uprn,
     lat: Number.isFinite(lat) ? String(lat) : undefined,
     lon: Number.isFinite(lon) ? String(lon) : undefined,
     address,
@@ -357,9 +390,9 @@ async function fetchOsPlacesAddresses(postcode) {
     return [];
   }
 
-  const url = `${OS_PLACES_ENDPOINT}?postcode=${encodeURIComponent(formatted)}&key=${encodeURIComponent(
-    OS_PLACES_API_KEY,
-  )}`;
+  const url =
+    `${OS_PLACES_FIND_ENDPOINT}?postcode=${encodeURIComponent(formatted)}` +
+    `&dataset=LPI&dataset=DPA&output_srs=WGS84&maxresults=100&key=${encodeURIComponent(OS_PLACES_API_KEY)}`;
 
   const response = await fetch(url, {
     headers: {
