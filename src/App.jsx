@@ -218,6 +218,7 @@ const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
 const POSTCODES_IO_ENDPOINT = 'https://api.postcodes.io/postcodes';
 const OS_PLACES_FIND_ENDPOINT = 'https://api.os.uk/search/places/v1/find';
 const OS_PLACES_POSTCODE_ENDPOINT = 'https://api.os.uk/search/places/v1/postcode';
+const OS_PLACES_ADDRESSES_ENDPOINT = 'https://api.os.uk/search/places/v1/addresses';
 const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
 const rawOsPlacesKey =
   typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OS_PLACES_API_KEY
@@ -581,7 +582,7 @@ async function fetchOsPlacesAddresses(postcode) {
   }
 
   const normalised = normalisePostcode(formatted);
-  const collapsed = normalised.replace(/\s+/g, '');
+  const collapsed = normalised ? normalised.replace(/\s+/g, '') : '';
 
   async function requestOsPlaces(url) {
     const response = await fetch(url, {
@@ -603,46 +604,71 @@ async function fetchOsPlacesAddresses(postcode) {
   }
 
   const datasetParams = ['DPA', 'LPI'];
-
-  const findParams = new URLSearchParams({
-    query: formatted,
-    maxresults: '100',
-    output_srs: 'WGS84',
-    key: OS_PLACES_API_KEY,
-  });
-  datasetParams.forEach((dataset) => findParams.append('dataset', dataset));
+  const filters = new Set();
   if (normalised) {
-    findParams.append('fq', `POSTCODE:${normalised}`);
-    findParams.append('fq', `POSTCODE:${collapsed}`);
+    filters.add(`POSTCODE:${normalised}`);
+    filters.add(`POSTCODE:${collapsed}`);
   }
 
-  let combinedResults = [];
+  async function resolveAddresses() {
+    const params = new URLSearchParams({
+      postcode: formatted,
+      maxresults: '100',
+      output_srs: 'WGS84',
+      key: OS_PLACES_API_KEY,
+    });
+    datasetParams.forEach((dataset) => params.append('dataset', dataset));
+    filters.forEach((filter) => params.append('fq', filter));
 
-  try {
-    combinedResults = await requestOsPlaces(`${OS_PLACES_FIND_ENDPOINT}?${findParams.toString()}`);
-  } catch (findError) {
-    console.warn('Failed to resolve OS Places find results', findError);
+    return requestOsPlaces(`${OS_PLACES_ADDRESSES_ENDPOINT}?${params.toString()}`);
   }
 
-  if (!Array.isArray(combinedResults) || combinedResults.length === 0) {
-    const postcodeParams = new URLSearchParams({
+  async function resolveFindFallback() {
+    const params = new URLSearchParams({
+      query: formatted,
+      maxresults: '100',
+      output_srs: 'WGS84',
+      key: OS_PLACES_API_KEY,
+    });
+    datasetParams.forEach((dataset) => params.append('dataset', dataset));
+    filters.forEach((filter) => params.append('fq', filter));
+
+    return requestOsPlaces(`${OS_PLACES_FIND_ENDPOINT}?${params.toString()}`);
+  }
+
+  async function resolvePostcodeFallback() {
+    const params = new URLSearchParams({
       postcode: formatted,
       output_srs: 'WGS84',
       key: OS_PLACES_API_KEY,
     });
-    datasetParams.forEach((dataset) => postcodeParams.append('dataset', dataset));
+    datasetParams.forEach((dataset) => params.append('dataset', dataset));
+    filters.forEach((filter) => params.append('fq', filter));
 
+    return requestOsPlaces(`${OS_PLACES_POSTCODE_ENDPOINT}?${params.toString()}`);
+  }
+
+  const attempts = [resolveAddresses, resolveFindFallback, resolvePostcodeFallback];
+  const aggregated = [];
+
+  for (const attempt of attempts) {
     try {
-      const postcodeResults = await requestOsPlaces(`${OS_PLACES_POSTCODE_ENDPOINT}?${postcodeParams.toString()}`);
-      combinedResults = postcodeResults;
-    } catch (postcodeError) {
-      console.warn('Failed to resolve OS Places postcode results', postcodeError);
+      const resultSet = await attempt();
+      if (Array.isArray(resultSet) && resultSet.length > 0) {
+        aggregated.push(...resultSet);
+      }
+    } catch (error) {
+      console.warn('Failed to resolve OS Places dataset', error);
     }
+  }
+
+  if (aggregated.length === 0) {
+    return [];
   }
 
   const seen = new Set();
   const filtered = [];
-  for (const result of combinedResults ?? []) {
+  for (const result of aggregated) {
     if (!result) {
       continue;
     }
