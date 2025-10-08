@@ -215,9 +215,25 @@ const SENTIMENT_LEVELS = {
 const DEFAULT_POSTCODE = 'FY5 1LH';
 
 const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
+const POSTCODES_IO_ENDPOINT = 'https://api.postcodes.io/postcodes';
 
 function normalisePostcode(postcode) {
   return postcode?.toUpperCase?.().replace(/\s+/g, '') ?? '';
+}
+
+function formatPostcode(postcode) {
+  const normalised = normalisePostcode(postcode);
+  if (!normalised) {
+    return '';
+  }
+
+  if (normalised.length <= 3) {
+    return normalised;
+  }
+
+  const outward = normalised.slice(0, normalised.length - 3);
+  const inward = normalised.slice(-3);
+  return `${outward} ${inward}`;
 }
 
 function pickAddressPart(address, keys, fallback = '') {
@@ -229,7 +245,7 @@ function pickAddressPart(address, keys, fallback = '') {
   return fallback;
 }
 
-function createPropertyOption(item, postcode) {
+function createPropertyOption(item, postcode, fallbackCoordinates = null) {
   const address = item.address ?? {};
   const latitude = parseFloat(item.lat);
   const longitude = parseFloat(item.lon);
@@ -237,9 +253,11 @@ function createPropertyOption(item, postcode) {
   const street = pickAddressPart(address, ['road', 'residential', 'pedestrian', 'footway', 'neighbourhood']);
   const city = pickAddressPart(address, ['city', 'town', 'village', 'hamlet', 'suburb']);
   const county = pickAddressPart(address, ['county', 'state_district', 'state']);
-  const formattedPostcode = address.postcode ?? postcode?.toUpperCase?.();
+  const formattedPostcode = address.postcode ?? formatPostcode(postcode);
   const labelParts = [houseNumber, street, city, county, formattedPostcode].filter(Boolean);
   const label = labelParts.length > 0 ? labelParts.join(', ') : item.display_name;
+  const fallbackLatitude = Number.isFinite(latitude) ? latitude : fallbackCoordinates?.latitude;
+  const fallbackLongitude = Number.isFinite(longitude) ? longitude : fallbackCoordinates?.longitude;
 
   return {
     id: String(item.place_id),
@@ -250,9 +268,46 @@ function createPropertyOption(item, postcode) {
     city: city || undefined,
     county: county || undefined,
     postcode: formattedPostcode,
-    latitude: Number.isFinite(latitude) ? latitude : undefined,
-    longitude: Number.isFinite(longitude) ? longitude : undefined,
+    latitude: Number.isFinite(fallbackLatitude) ? fallbackLatitude : undefined,
+    longitude: Number.isFinite(fallbackLongitude) ? fallbackLongitude : undefined,
   };
+}
+
+function buildBoundingBox(longitude, latitude, offset = 0.01) {
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
+    return null;
+  }
+
+  const west = longitude - offset;
+  const east = longitude + offset;
+  const north = latitude + offset;
+  const south = latitude - offset;
+
+  return [west, north, east, south];
+}
+
+async function fetchPostcodeMetadata(postcode) {
+  const formatted = formatPostcode(postcode);
+  if (!formatted) {
+    return null;
+  }
+
+  const response = await fetch(`${POSTCODES_IO_ENDPOINT}/${encodeURIComponent(formatted)}`, {
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      return null;
+    }
+
+    throw new Error(`Failed to fetch metadata for postcode ${formatted}`);
+  }
+
+  const payload = await response.json();
+  return payload?.result ?? null;
 }
 
 async function fetchPropertiesForPostcode(postcode) {
@@ -261,18 +316,37 @@ async function fetchPropertiesForPostcode(postcode) {
     return [];
   }
 
+  const formattedPostcode = formatPostcode(trimmed);
+  let postcodeMetadata = null;
+
+  try {
+    postcodeMetadata = await fetchPostcodeMetadata(formattedPostcode);
+  } catch (metadataError) {
+    console.warn('Failed to resolve postcode metadata', metadataError);
+  }
+
   const params = new URLSearchParams({
     format: 'jsonv2',
     addressdetails: '1',
     countrycodes: 'gb',
     limit: '25',
-    postalcode: trimmed,
-    q: trimmed,
+    q: formattedPostcode || trimmed,
   });
+
+  if (postcodeMetadata?.longitude && postcodeMetadata?.latitude) {
+    const boundingBox = buildBoundingBox(postcodeMetadata.longitude, postcodeMetadata.latitude, 0.01);
+    if (boundingBox) {
+      params.set('viewbox', boundingBox.join(','));
+      params.set('bounded', '1');
+    }
+  } else {
+    params.set('postalcode', formattedPostcode || trimmed);
+  }
 
   const response = await fetch(`${NOMINATIM_ENDPOINT}?${params.toString()}`, {
     headers: {
       Accept: 'application/json',
+      'Accept-Language': 'en-GB,en;q=0.9',
     },
   });
 
@@ -281,11 +355,14 @@ async function fetchPropertiesForPostcode(postcode) {
   }
 
   const payload = await response.json();
-  const normalisedTarget = normalisePostcode(trimmed);
+  const normalisedTarget = normalisePostcode(formattedPostcode || trimmed);
+  const fallbackCoordinates = postcodeMetadata
+    ? { latitude: postcodeMetadata.latitude, longitude: postcodeMetadata.longitude }
+    : null;
 
   const options = (payload ?? [])
     .filter((item) => item && item.address)
-    .map((item) => createPropertyOption(item, trimmed))
+    .map((item) => createPropertyOption(item, formattedPostcode || trimmed, fallbackCoordinates))
     .filter((option) => {
       if (!option.postcode) {
         return true;
