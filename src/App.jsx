@@ -249,8 +249,22 @@ function createPropertyOption(item, postcode, fallbackCoordinates = null) {
   const address = item.address ?? {};
   const latitude = parseFloat(item.lat);
   const longitude = parseFloat(item.lon);
-  const houseNumber = pickAddressPart(address, ['house_number', 'house_name']);
-  const street = pickAddressPart(address, ['road', 'residential', 'pedestrian', 'footway', 'neighbourhood']);
+  const houseNumber = pickAddressPart(address, [
+    'house_number',
+    'house_name',
+    'building',
+    'industrial',
+    'commercial',
+    'retail',
+  ]);
+  const street = pickAddressPart(address, [
+    'road',
+    'residential',
+    'pedestrian',
+    'footway',
+    'neighbourhood',
+    'suburb',
+  ]);
   const city = pickAddressPart(address, ['city', 'town', 'village', 'hamlet', 'suburb']);
   const county = pickAddressPart(address, ['county', 'state_district', 'state']);
   const formattedPostcode = address.postcode ?? formatPostcode(postcode);
@@ -271,6 +285,49 @@ function createPropertyOption(item, postcode, fallbackCoordinates = null) {
     latitude: Number.isFinite(fallbackLatitude) ? fallbackLatitude : undefined,
     longitude: Number.isFinite(fallbackLongitude) ? fallbackLongitude : undefined,
   };
+}
+
+function isLikelyProperty(item) {
+  if (!item) {
+    return false;
+  }
+
+  const address = item.address ?? {};
+  if (address.house_number || address.house_name) {
+    return true;
+  }
+
+  const type = item.type ?? '';
+  const className = item.class ?? '';
+  const propertyTypes = new Set([
+    'house',
+    'residential',
+    'apartments',
+    'detached',
+    'semidetached_house',
+    'terrace',
+    'building',
+    'bungalow',
+  ]);
+
+  if (propertyTypes.has(type)) {
+    return true;
+  }
+
+  if (className === 'building' || className === 'place') {
+    return true;
+  }
+
+  return Boolean(address.road && (address.suburb || address.city));
+}
+
+function parseHouseNumber(value) {
+  if (!value) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const numeric = Number.parseInt(String(value).replace(/[^0-9]/g, ''), 10);
+  return Number.isFinite(numeric) ? numeric : Number.POSITIVE_INFINITY;
 }
 
 function buildBoundingBox(longitude, latitude, offset = 0.01) {
@@ -329,18 +386,27 @@ async function fetchPropertiesForPostcode(postcode) {
     format: 'jsonv2',
     addressdetails: '1',
     countrycodes: 'gb',
-    limit: '25',
-    q: formattedPostcode || trimmed,
+    limit: '100',
+    dedupe: '0',
+    extratags: '1',
+    namedetails: '1',
+    polygon_geojson: '0',
+    layer: 'address',
   });
 
+  if (formattedPostcode) {
+    params.set('postalcode', formattedPostcode);
+    params.set('q', formattedPostcode);
+  } else {
+    params.set('q', trimmed);
+  }
+
   if (postcodeMetadata?.longitude && postcodeMetadata?.latitude) {
-    const boundingBox = buildBoundingBox(postcodeMetadata.longitude, postcodeMetadata.latitude, 0.01);
+    const boundingBox = buildBoundingBox(postcodeMetadata.longitude, postcodeMetadata.latitude, 0.005);
     if (boundingBox) {
       params.set('viewbox', boundingBox.join(','));
       params.set('bounded', '1');
     }
-  } else {
-    params.set('postalcode', formattedPostcode || trimmed);
   }
 
   const response = await fetch(`${NOMINATIM_ENDPOINT}?${params.toString()}`, {
@@ -354,13 +420,81 @@ async function fetchPropertiesForPostcode(postcode) {
     throw new Error(`Failed to fetch properties for postcode ${trimmed}`);
   }
 
-  const payload = await response.json();
+  let payload = await response.json();
+  if (!Array.isArray(payload)) {
+    payload = [];
+  }
+
   const normalisedTarget = normalisePostcode(formattedPostcode || trimmed);
   const fallbackCoordinates = postcodeMetadata
     ? { latitude: postcodeMetadata.latitude, longitude: postcodeMetadata.longitude }
     : null;
 
-  const options = (payload ?? [])
+  const streetCandidates = Array.from(
+    new Set(
+      payload
+        .map((item) =>
+          item?.address
+            ? pickAddressPart(item.address, ['road', 'residential', 'pedestrian', 'neighbourhood', 'footway'])
+            : null,
+        )
+        .filter(Boolean),
+    ),
+  ).slice(0, 3);
+
+  const fineBoundingBox =
+    postcodeMetadata?.longitude && postcodeMetadata?.latitude
+      ? buildBoundingBox(postcodeMetadata.longitude, postcodeMetadata.latitude, 0.004)
+      : null;
+
+  for (const streetName of streetCandidates) {
+    const streetParams = new URLSearchParams({
+      format: 'jsonv2',
+      addressdetails: '1',
+      countrycodes: 'gb',
+      limit: '100',
+      dedupe: '0',
+      extratags: '1',
+      namedetails: '1',
+      polygon_geojson: '0',
+      layer: 'address',
+      street: streetName,
+    });
+
+    if (formattedPostcode) {
+      streetParams.set('postalcode', formattedPostcode);
+    } else {
+      streetParams.set('q', `${streetName} ${trimmed}`);
+    }
+
+    if (fineBoundingBox) {
+      streetParams.set('viewbox', fineBoundingBox.join(','));
+      streetParams.set('bounded', '1');
+    }
+
+    try {
+      const streetResponse = await fetch(`${NOMINATIM_ENDPOINT}?${streetParams.toString()}`, {
+        headers: {
+          Accept: 'application/json',
+          'Accept-Language': 'en-GB,en;q=0.9',
+        },
+      });
+
+      if (streetResponse.ok) {
+        const streetPayload = await streetResponse.json();
+        if (Array.isArray(streetPayload) && streetPayload.length > 0) {
+          payload = payload.concat(streetPayload);
+        }
+      }
+    } catch (streetError) {
+      console.warn('Failed to enrich street results', streetError);
+    }
+  }
+
+  const sourceItems = payload.filter(isLikelyProperty);
+  const dataset = sourceItems.length > 0 ? sourceItems : payload;
+
+  const options = dataset
     .filter((item) => item && item.address)
     .map((item) => createPropertyOption(item, formattedPostcode || trimmed, fallbackCoordinates))
     .filter((option) => {
@@ -373,14 +507,28 @@ async function fetchPropertiesForPostcode(postcode) {
   const unique = [];
   const seen = new Set();
   for (const option of options) {
-    const key = option.label?.toLowerCase?.() ?? option.id;
+    const slug = [option.postcode, option.houseNumber, option.street].filter(Boolean).join('|');
+    const key = slug ? slug.toLowerCase() : option.id;
     if (key && !seen.has(key)) {
       seen.add(key);
       unique.push(option);
     }
   }
 
-  return unique.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+  return unique.sort((a, b) => {
+    const aNumber = parseHouseNumber(a.houseNumber);
+    const bNumber = parseHouseNumber(b.houseNumber);
+    if (aNumber !== bNumber) {
+      return aNumber - bNumber;
+    }
+
+    const streetCompare = (a.street || '').localeCompare(b.street || '');
+    if (streetCompare !== 0) {
+      return streetCompare;
+    }
+
+    return (a.label || '').localeCompare(b.label || '');
+  });
 }
 
 function inferLocationKey(property) {
@@ -429,6 +577,7 @@ const DEFAULT_SCENARIO_INPUTS = {
   floodZone: 'medium',
   planningPipeline: 36,
   dataGaps: 1,
+  purchasePrice: 245000,
 };
 
 const SCORE_METRICS = {
@@ -540,6 +689,22 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function normaliseCurrencyInput(value) {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^0-9.]/g, '');
+    if (!cleaned) {
+      return Number.NaN;
+    }
+    return Number(cleaned);
+  }
+
+  return Number.NaN;
+}
+
 function buildForecast(inputs, property, locationKey = 'default') {
   const profile = STREET_PROFILES[locationKey] ?? STREET_PROFILES.default;
   const basePrice = LOCATION_BASE_PRICES[locationKey] ?? 275000;
@@ -568,6 +733,11 @@ function buildForecast(inputs, property, locationKey = 'default') {
     energyUpgrade;
 
   const referencePrice = basePrice * compositeFactor;
+  const rawPurchaseInput = normaliseCurrencyInput(inputs.purchasePrice);
+  const purchasePrice =
+    Number.isFinite(rawPurchaseInput) && rawPurchaseInput > 0
+      ? rawPurchaseInput
+      : Math.round(referencePrice * 0.95);
   const dataConfidence = clamp(0.65 + Math.random() * 0.2 - inputs.dataGaps * 0.08, 0.35, 0.92);
 
   const yoyPriceGrowth = 0.024 + sentimentFactor * 0.7 + amenityFactor * 0.5;
@@ -598,6 +768,17 @@ function buildForecast(inputs, property, locationKey = 'default') {
       high: Math.round(projected * (1.08 + (1 - dataConfidence) * 0.25)),
     };
   });
+
+  const forecastHorizonValue = forecastSeries[forecastSeries.length - 1]?.price ?? referencePrice;
+  const priceDelta = Math.round(referencePrice - purchasePrice);
+  const forecastHorizonDelta = Math.round(forecastHorizonValue - purchasePrice);
+  const forecastYears = forecastSeries.length / 12;
+  const forecastCagr =
+    purchasePrice > 0 && forecastHorizonValue > 0
+      ? Math.pow(forecastHorizonValue / purchasePrice, 1 / forecastYears) - 1
+      : 0;
+  const breakevenPoint = forecastSeries.find((point) => point.price >= purchasePrice);
+  const breakevenMonths = breakevenPoint ? breakevenPoint.month : null;
 
   const targetAddress =
     property?.label ||
@@ -755,6 +936,9 @@ function buildForecast(inputs, property, locationKey = 'default') {
     'Primary driver is constrained supply with planning approvals below long-term trend.',
     'Positive social sentiment and search interest signal near-term buyer depth.',
     'Energy performance improvements boost valuation resilience versus local comps.',
+    `At your ${formatCurrency(purchasePrice)} purchase price, the model points to ${formatCurrency(
+      forecastHorizonDelta,
+    )} uplift over 36 months (${formatPercent(forecastCagr)} CAGR).`,
   ];
 
   return {
@@ -776,6 +960,12 @@ function buildForecast(inputs, property, locationKey = 'default') {
     profile,
     targetAddress,
     property,
+    purchasePrice,
+    priceDelta,
+    forecastHorizonValue,
+    forecastHorizonDelta,
+    forecastCagr,
+    breakevenMonths,
   };
 }
 
@@ -893,6 +1083,28 @@ export default function App() {
   );
   const [activeScore, setActiveScore] = useState(null);
   const [isMapOpen, setIsMapOpen] = useState(false);
+  const dealMetrics = useMemo(() => {
+    const priceDelta = Number.isFinite(result?.priceDelta) ? result.priceDelta : 0;
+    const horizonDelta = Number.isFinite(result?.forecastHorizonDelta) ? result.forecastHorizonDelta : 0;
+    const breakeven =
+      typeof result?.breakevenMonths === 'number'
+        ? result.breakevenMonths <= 0
+          ? 'Immediate'
+          : `Month ${result.breakevenMonths}`
+        : 'Beyond 36M horizon';
+
+    const formatDelta = (value) => {
+      const absolute = Math.abs(value);
+      const prefix = value >= 0 ? '+' : '−';
+      return `${prefix}${formatCurrency(absolute)}`;
+    };
+
+    return {
+      priceDeltaDisplay: formatDelta(priceDelta),
+      horizonDeltaDisplay: formatDelta(horizonDelta),
+      breakevenDisplay: breakeven,
+    };
+  }, [result]);
 
   const updatePropertiesForPostcode = useCallback(
       async (targetPostcode, scenarioInputs) => {
@@ -1114,6 +1326,23 @@ export default function App() {
                       Run a postcode lookup to populate property choices and unlock the map preview and forecasts.
                     </p>
                   )}
+                  <label className="flex flex-col gap-1 text-sm text-slate-700">
+                    Purchase price (£)
+                    <input
+                      type="number"
+                      min={0}
+                      step={1000}
+                      value={inputs.purchasePrice ?? ''}
+                      onChange={(event) =>
+                        handleInput('purchasePrice', event.target.value === '' ? '' : Number(event.target.value))
+                      }
+                      placeholder="e.g. 250000"
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                    />
+                    <span className="text-xs text-slate-400">
+                      Used to calculate equity delta and forecast uplift metrics.
+                    </span>
+                  </label>
               </div>
 
               <label className="flex flex-col gap-2 text-sm text-slate-700">
@@ -1340,6 +1569,42 @@ export default function App() {
                 </AreaChart>
               </ResponsiveContainer>
             </div>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Deal economics</h3>
+                <p className="text-sm text-slate-500">
+                  Compares your stated purchase price with the modelled valuation pathway.
+                </p>
+              </div>
+              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                36M CAGR {formatPercent(result.forecastCagr ?? 0)}
+              </span>
+            </div>
+            <dl className="mt-4 grid gap-4 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Purchase price</dt>
+                <dd className="mt-1 text-xl font-semibold text-slate-900">{formatCurrency(result.purchasePrice)}</dd>
+                <p className="text-xs text-slate-500">User input</p>
+              </div>
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Instant equity</dt>
+                <dd className="mt-1 text-xl font-semibold text-slate-900">{dealMetrics.priceDeltaDisplay}</dd>
+                <p className="text-xs text-slate-500">Vs. modelled market value today</p>
+              </div>
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <dt className="text-xs uppercase tracking-wider text-slate-500">36M projected value</dt>
+                <dd className="mt-1 text-xl font-semibold text-slate-900">{formatCurrency(result.forecastHorizonValue)}</dd>
+                <p className="text-xs text-slate-500">{dealMetrics.horizonDeltaDisplay} uplift vs. purchase</p>
+              </div>
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Breakeven timeline</dt>
+                <dd className="mt-1 text-xl font-semibold text-slate-900">{dealMetrics.breakevenDisplay}</dd>
+                <p className="text-xs text-slate-500">Month valuation overtakes purchase price</p>
+              </div>
+            </dl>
           </div>
 
           <div className="rounded-2xl bg-white p-6 shadow-sm">
