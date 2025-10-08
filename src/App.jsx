@@ -218,6 +218,7 @@ const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
 const POSTCODES_IO_ENDPOINT = 'https://api.postcodes.io/postcodes';
 const OS_PLACES_FIND_ENDPOINT = 'https://api.os.uk/search/places/v1/find';
 const OS_PLACES_POSTCODE_ENDPOINT = 'https://api.os.uk/search/places/v1/postcode';
+const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
 const rawOsPlacesKey =
   typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OS_PLACES_API_KEY
     ? import.meta.env.VITE_OS_PLACES_API_KEY
@@ -225,6 +226,8 @@ const rawOsPlacesKey =
 const OS_PLACES_API_KEY = typeof rawOsPlacesKey === 'string' ? rawOsPlacesKey.trim() : '';
 const NOMINATIM_MIN_DELAY_MS = 1100;
 const NOMINATIM_MAX_RETRIES = 2;
+const OVERPASS_MIN_DELAY_MS = 1200;
+const OVERPASS_MAX_RETRIES = 2;
 
 function normalisePostcode(postcode) {
   return postcode?.toUpperCase?.().replace(/\s+/g, '') ?? '';
@@ -289,6 +292,193 @@ async function fetchNominatim(params, { retries = NOMINATIM_MAX_RETRIES } = {}) 
 
   const payload = await response.json();
   return Array.isArray(payload) ? payload : [];
+}
+
+let lastOverpassRequestAt = 0;
+
+async function fetchOverpass(query, { retries = OVERPASS_MAX_RETRIES } = {}) {
+  const elapsed = Date.now() - lastOverpassRequestAt;
+  if (elapsed < OVERPASS_MIN_DELAY_MS) {
+    await wait(OVERPASS_MIN_DELAY_MS - elapsed);
+  }
+
+  const body = new URLSearchParams({ data: query }).toString();
+  lastOverpassRequestAt = Date.now();
+
+  const response = await fetch(OVERPASS_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    },
+    body,
+  });
+
+  if ((response.status === 429 || response.status === 504 || response.status === 502) && retries > 0) {
+    await wait(OVERPASS_MIN_DELAY_MS * 1.5);
+    return fetchOverpass(query, { retries: retries - 1 });
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Overpass data: ${response.status}`);
+  }
+
+  const text = await response.text();
+  if (!text) {
+    return [];
+  }
+
+  try {
+    const payload = JSON.parse(text);
+    return Array.isArray(payload?.elements) ? payload.elements : [];
+  } catch (error) {
+    console.warn('Unable to parse Overpass response', error);
+    return [];
+  }
+}
+
+function normaliseOverpassTags(tags = {}) {
+  const houseNumber = tags['addr:housenumber'] || tags['addr:house_number'] || tags['addr:unit'] || tags.ref;
+  const houseName = tags['addr:housename'] || tags['addr:house_name'];
+  const street =
+    tags['addr:street'] ||
+    tags['addr:road'] ||
+    tags['addr:place'] ||
+    tags['addr:residential'] ||
+    tags['addr:neighbourhood'];
+  const suburb =
+    tags['addr:suburb'] ||
+    tags['addr:quarter'] ||
+    tags['addr:district'] ||
+    tags['addr:village'] ||
+    tags['addr:hamlet'];
+  const city =
+    tags['addr:city'] ||
+    tags['addr:town'] ||
+    tags['addr:village'] ||
+    tags['addr:hamlet'] ||
+    tags['addr:municipality'];
+  const county = tags['addr:county'] || tags['addr:state_district'] || tags['addr:state'];
+  const postcode = formatPostcode(tags['addr:postcode']);
+
+  return {
+    house_number: houseNumber || undefined,
+    house_name: houseName || undefined,
+    road: street || undefined,
+    residential: suburb || undefined,
+    suburb: suburb || undefined,
+    city: city || undefined,
+    county: county || undefined,
+    postcode: postcode || undefined,
+  };
+}
+
+function mapOverpassElementToNominatim(element, fallbackPostcode) {
+  if (!element) {
+    return null;
+  }
+
+  const tags = element.tags ?? {};
+  const address = normaliseOverpassTags(tags);
+  if (!address.postcode && fallbackPostcode) {
+    address.postcode = formatPostcode(fallbackPostcode) || undefined;
+  }
+
+  const latitude =
+    typeof element.lat === 'number'
+      ? element.lat
+      : typeof element.center?.lat === 'number'
+      ? element.center.lat
+      : Array.isArray(element.geometry) && element.geometry.length > 0
+      ? element.geometry[0].lat
+      : undefined;
+  const longitude =
+    typeof element.lon === 'number'
+      ? element.lon
+      : typeof element.center?.lon === 'number'
+      ? element.center.lon
+      : Array.isArray(element.geometry) && element.geometry.length > 0
+      ? element.geometry[0].lon
+      : undefined;
+
+  if (!address.house_number && !address.house_name && tags.name) {
+    address.house_name = tags.name;
+  }
+
+  const labelParts = [
+    address.house_number || address.house_name,
+    address.road || address.residential,
+    address.city,
+    address.county,
+    address.postcode,
+  ].filter(Boolean);
+
+  return {
+    place_id: `overpass-${element.id}`,
+    osm_id: element.id,
+    lat: typeof latitude === 'number' ? String(latitude) : undefined,
+    lon: typeof longitude === 'number' ? String(longitude) : undefined,
+    address,
+    display_name: labelParts.join(', '),
+    type: tags.building ? 'building' : 'address',
+    class: 'building',
+  };
+}
+
+async function fetchOverpassAddresses(postcode) {
+  const formatted = formatPostcode(postcode);
+  if (!formatted) {
+    return [];
+  }
+
+  const normalised = normalisePostcode(formatted);
+  const condensed = normalised.replace(/\s+/g, '');
+  const spaced = normalised.replace(/^(\w+)(\d\w{2})$/, '$1 $2');
+
+  const postcodeFilters = Array.from(new Set([formatted, normalised, condensed, spaced].filter(Boolean)));
+  if (postcodeFilters.length === 0) {
+    return [];
+  }
+
+  const queryParts = postcodeFilters.map((value) => {
+    const escaped = value.replace(/"/g, '\\"');
+    return [
+      `node["addr:postcode"="${escaped}"](area.search);`,
+      `way["addr:postcode"="${escaped}"](area.search);`,
+      `relation["addr:postcode"="${escaped}"](area.search);`,
+    ].join('\n');
+  });
+
+  const query = `[out:json][timeout:30];
+area["ISO3166-1"="GB"][admin_level=2]->.search;
+(
+${queryParts.join('\n')}
+);
+out center;`;
+
+  const elements = await fetchOverpass(query);
+  if (!Array.isArray(elements) || elements.length === 0) {
+    return [];
+  }
+
+  const mapped = elements
+    .map((element) => mapOverpassElementToNominatim(element, formatted))
+    .filter((item) => item && item.address && (item.address.house_number || item.address.house_name));
+
+  const seen = new Set();
+  const deduped = [];
+  for (const item of mapped) {
+    const key = [item.address.postcode, item.address.house_number, item.address.road]
+      .filter(Boolean)
+      .join('|')
+      .toLowerCase();
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      deduped.push(item);
+    }
+  }
+
+  return deduped;
 }
 
 function mapOsPlacesResultToNominatim(item) {
@@ -794,16 +984,40 @@ async function fetchPropertiesForPostcode(postcode) {
     ? { latitude: postcodeMetadata.latitude, longitude: postcodeMetadata.longitude }
     : null;
 
+  const aggregatedResults = [];
+
+  if (formattedPostcode) {
+    try {
+      const overpassResults = await fetchOverpassAddresses(formattedPostcode);
+      if (Array.isArray(overpassResults) && overpassResults.length > 0) {
+        aggregatedResults.push(...overpassResults);
+      }
+    } catch (overpassError) {
+      console.warn('Failed to resolve Overpass addresses', overpassError);
+    }
+  }
+
   if (formattedPostcode && OS_PLACES_API_KEY) {
     try {
       const osResults = await fetchOsPlacesAddresses(formattedPostcode);
       if (Array.isArray(osResults) && osResults.length > 0) {
-        const osOptions = normalisePropertyOptions(osResults, formattedPostcode, fallbackCoordinates, normalisedTarget);
-        propertyLookupCache.set(cacheKey, osOptions);
-        return osOptions;
+        aggregatedResults.push(...osResults);
       }
     } catch (osError) {
       console.warn('Failed to resolve OS Places addresses', osError);
+    }
+  }
+
+  if (aggregatedResults.length > 0) {
+    const enrichedOptions = normalisePropertyOptions(
+      aggregatedResults,
+      formattedPostcode,
+      fallbackCoordinates,
+      normalisedTarget,
+    );
+    if (enrichedOptions.length > 0) {
+      propertyLookupCache.set(cacheKey, enrichedOptions);
+      return enrichedOptions;
     }
   }
 
