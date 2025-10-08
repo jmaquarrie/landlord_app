@@ -96,6 +96,13 @@ const SERIES_COLORS = {
   irrSeries: '#7c3aed',
   irrHurdle: '#f43f5e',
   npvToDate: '#0f172a',
+  operatingCash: '#0ea5e9',
+  saleProceeds: '#a855f7',
+  totalCash: '#facc15',
+  discountedContribution: '#f97316',
+  cumulativeDiscounted: '#0f172a',
+  cumulativeUndiscounted: '#94a3b8',
+  discountFactor: '#64748b',
 };
 
 const SERIES_LABELS = {
@@ -115,6 +122,13 @@ const SERIES_LABELS = {
   irrSeries: 'IRR',
   irrHurdle: 'IRR hurdle',
   npvToDate: 'Net present value',
+  operatingCash: 'After-tax cash flow',
+  saleProceeds: 'Net sale proceeds',
+  totalCash: 'Total cash',
+  discountedContribution: 'Discounted contribution',
+  cumulativeDiscounted: 'NPV to date',
+  cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
+  discountFactor: 'Discount factor',
 };
 
 const CASHFLOW_BAR_COLORS = {
@@ -134,6 +148,15 @@ const LEVERAGE_LTV_OPTIONS = Array.from({ length: 18 }, (_, index) =>
 const LEVERAGE_SAFE_MAX_LTV = 0.75;
 const LEVERAGE_MAX_LTV = LEVERAGE_LTV_OPTIONS[LEVERAGE_LTV_OPTIONS.length - 1];
 const CRIME_SERIES_LIMIT = 400;
+const NPV_BAR_KEYS = ['operatingCash', 'saleProceeds'];
+const NPV_LINE_KEYS = [
+  'totalCash',
+  'discountedContribution',
+  'cumulativeDiscounted',
+  'cumulativeUndiscounted',
+  'discountFactor',
+];
+const NPV_SERIES_KEYS = [...NPV_BAR_KEYS, ...NPV_LINE_KEYS];
 
 const formatCrimeCategory = (value) => {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -2589,13 +2612,22 @@ export default function App() {
     efficiency: true,
     irrHurdle: true,
   });
+  const [npvSeriesActive, setNpvSeriesActive] = useState(() =>
+    NPV_SERIES_KEYS.reduce((acc, key) => {
+      acc[key] = true;
+      return acc;
+    }, {})
+  );
   const [roiHeatmapMetric, setRoiHeatmapMetric] = useState('irr');
   const [showChartModal, setShowChartModal] = useState(false);
   const [showRatesModal, setShowRatesModal] = useState(false);
+  const [showNpvModal, setShowNpvModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
   const [rateChartRange, setRateChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [rateRangeTouched, setRateRangeTouched] = useState(false);
+  const [npvChartRange, setNpvChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
+  const [npvRangeTouched, setNpvRangeTouched] = useState(false);
   const [chartFocus, setChartFocus] = useState(null);
   const [chartFocusLocked, setChartFocusLocked] = useState(false);
   const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
@@ -2653,11 +2685,14 @@ export default function App() {
       rateSeriesActive: rateActive,
       cashflowSeriesActive: cashActive,
       leverageSeriesActive: leverageActive,
+      npvSeriesActive: npvActive,
       roiHeatmapMetric: metric,
       chartRange: chartRangeValue,
       chartRangeTouched: chartRangeTouchedValue,
       rateChartRange: rateChartRangeValue,
       rateRangeTouched: rateRangeTouchedValue,
+      npvChartRange: npvRangeValue,
+      npvRangeTouched: npvRangeTouchedValue,
       rateChartSettings: rateSettingsValue,
       performanceYear: performanceYearValue,
       scenarioAlignInputs: alignValue,
@@ -2681,11 +2716,21 @@ export default function App() {
     if (leverageActive && typeof leverageActive === 'object') {
       setLeverageSeriesActive((prev) => mergeBooleanMap(prev, leverageActive));
     }
+    if (npvActive && typeof npvActive === 'object') {
+      setNpvSeriesActive((prev) => mergeBooleanMap(prev, npvActive));
+    }
     if (typeof metric === 'string' && (metric === 'irr' || metric === 'roi')) {
       setRoiHeatmapMetric(metric);
     }
     if (overviewMode === 'map' || overviewMode === 'scatter') {
       setScenarioOverviewMode(overviewMode === 'map' ? 'map' : 'scatter');
+    }
+    if (npvRangeValue && typeof npvRangeValue === 'object') {
+      const start = Number(npvRangeValue.start);
+      const end = Number(npvRangeValue.end);
+      if (Number.isFinite(start) && Number.isFinite(end)) {
+        setNpvChartRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+      }
     }
     if (chartRangeValue && typeof chartRangeValue === 'object') {
       const start = Number(chartRangeValue.start);
@@ -2706,6 +2751,9 @@ export default function App() {
     }
     if (typeof rateRangeTouchedValue === 'boolean') {
       setRateRangeTouched(rateRangeTouchedValue);
+    }
+    if (typeof npvRangeTouchedValue === 'boolean') {
+      setNpvRangeTouched(npvRangeTouchedValue);
     }
     if (rateSettingsValue && typeof rateSettingsValue === 'object') {
       setRateChartSettings((prev) => {
@@ -3775,6 +3823,23 @@ export default function App() {
     });
   }, [rateRangeTouched, maxChartYear]);
 
+  useEffect(() => {
+    setNpvChartRange((prev) => {
+      let safeStart = Math.max(0, Math.min(prev.start, maxChartYear));
+      let safeEnd = Math.max(safeStart, Math.min(prev.end, maxChartYear));
+      if (!npvRangeTouched) {
+        safeStart = 0;
+        safeEnd = maxChartYear;
+      } else if (maxChartYear > 0 && safeEnd === 0) {
+        safeEnd = maxChartYear;
+      }
+      if (safeStart === prev.start && safeEnd === prev.end) {
+        return prev;
+      }
+      return { start: safeStart, end: safeEnd };
+    });
+  }, [npvRangeTouched, maxChartYear]);
+
   const filteredChartData = useMemo(() => {
     const data = Array.isArray(equity.chart) ? equity.chart : [];
     if (data.length === 0) {
@@ -3888,7 +3953,7 @@ export default function App() {
         year,
         operatingCash,
         saleProceeds: saleComponent,
-        cashflow: totalCash,
+        totalCash,
         discountFactor,
         discountedContribution,
         cumulativeDiscounted,
@@ -3915,6 +3980,20 @@ export default function App() {
     inputs.discountRate,
     inputs.exitYear,
   ]);
+
+  const npvTimelineFilteredData = useMemo(() => {
+    if (!Array.isArray(npvTimelineData) || npvTimelineData.length === 0) {
+      return [];
+    }
+    const startYear = Math.max(0, Math.min(npvChartRange.start, npvChartRange.end));
+    const endYear = Math.max(startYear, npvChartRange.end);
+    return npvTimelineData.filter((point) => {
+      const year = Number(point?.year);
+      return Number.isFinite(year) && year >= startYear && year <= endYear;
+    });
+  }, [npvChartRange, npvTimelineData]);
+
+  const hasNpvTimelineData = npvTimelineFilteredData.length > 0;
 
   const interestSplitChartData = useMemo(() => {
     const payments = Array.isArray(equity.annualDebtService) ? equity.annualDebtService : [];
@@ -4320,6 +4399,234 @@ export default function App() {
     },
     [maxChartYear]
   );
+
+  const handleNpvChartRangeChange = useCallback(
+    (key, value) => {
+      setNpvRangeTouched(true);
+      setNpvChartRange((prev) => {
+        const sanitized = Number.isFinite(value) ? Math.round(value) : 0;
+        const clamped = Math.max(0, Math.min(sanitized, maxChartYear));
+        if (key === 'start') {
+          const nextStart = clamped;
+          const nextEnd = Math.max(nextStart, Math.min(prev.end, maxChartYear));
+          if (nextStart === prev.start && nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: nextStart, end: nextEnd };
+        }
+        if (key === 'end') {
+          const nextEnd = Math.max(prev.start, clamped);
+          if (nextEnd === prev.end) {
+            return prev;
+          }
+          return { start: prev.start, end: nextEnd };
+        }
+        return prev;
+      });
+    },
+    [maxChartYear]
+  );
+
+  const resetNpvChartRange = useCallback(() => {
+    setNpvRangeTouched(false);
+    setNpvChartRange({ start: 0, end: maxChartYear });
+  }, [maxChartYear]);
+
+  const toggleNpvSeries = useCallback((key) => {
+    if (!NPV_SERIES_KEYS.includes(key)) {
+      return;
+    }
+    setNpvSeriesActive((prev) => {
+      const current = prev?.[key] !== false;
+      return { ...prev, [key]: !current };
+    });
+  }, []);
+
+  const renderNpvChart = (heightClass = 'h-72') => {
+    const hasData = Array.isArray(npvTimelineFilteredData) && npvTimelineFilteredData.length > 0;
+    if (!hasData) {
+      return (
+        <div className={`flex ${heightClass} items-center justify-center rounded-xl border border-dashed border-slate-200 px-3 text-center text-[11px] text-slate-500`}>
+          Provide an exit year and discount rate to calculate net present value.
+        </div>
+      );
+    }
+    return (
+      <div className={`${heightClass} w-full`}>
+        <ResponsiveContainer>
+          <ComposedChart
+            data={npvTimelineFilteredData}
+            margin={{ top: 12, right: 36, left: 16, bottom: 8 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              dataKey="year"
+              tickFormatter={(value) => (value === 0 ? 'Y0' : `Y${value}`)}
+              tick={{ fontSize: 10, fill: '#475569' }}
+            />
+            <YAxis
+              yAxisId="cash"
+              tickFormatter={(value) => currency(value)}
+              tick={{ fontSize: 10, fill: '#475569' }}
+              width={88}
+            />
+            <YAxis
+              yAxisId="discount"
+              orientation="right"
+              tickFormatter={(value) => formatPercent(value)}
+              tick={{ fontSize: 10, fill: '#475569' }}
+              width={56}
+              domain={[0, (dataMax) => Math.max(1, Number(dataMax) || 0)]}
+            />
+            <Tooltip
+              content={({ active, payload, label }) => {
+                if (!active || !payload || payload.length === 0) {
+                  return null;
+                }
+                const point = payload[0]?.payload;
+                if (!point) {
+                  return null;
+                }
+                const yearLabel = label === 0 ? 'Today' : `Year ${label}`;
+                const tooltipRows = [
+                  {
+                    key: 'operatingCash',
+                    label: SERIES_LABELS.operatingCash,
+                    formatter: currency,
+                    shouldDisplay: npvSeriesActive.operatingCash !== false,
+                  },
+                  {
+                    key: 'saleProceeds',
+                    label: SERIES_LABELS.saleProceeds,
+                    formatter: currency,
+                    shouldDisplay:
+                      npvSeriesActive.saleProceeds !== false && (Number(point.saleProceeds) || 0) !== 0,
+                  },
+                  {
+                    key: 'totalCash',
+                    label: SERIES_LABELS.totalCash,
+                    formatter: currency,
+                    shouldDisplay: npvSeriesActive.totalCash !== false,
+                  },
+                  {
+                    key: 'discountFactor',
+                    label: SERIES_LABELS.discountFactor,
+                    formatter: formatPercent,
+                    shouldDisplay: npvSeriesActive.discountFactor !== false,
+                  },
+                  {
+                    key: 'discountedContribution',
+                    label: SERIES_LABELS.discountedContribution,
+                    formatter: currency,
+                    shouldDisplay: npvSeriesActive.discountedContribution !== false,
+                  },
+                  {
+                    key: 'cumulativeDiscounted',
+                    label: SERIES_LABELS.cumulativeDiscounted,
+                    formatter: currency,
+                    shouldDisplay: npvSeriesActive.cumulativeDiscounted !== false,
+                  },
+                  {
+                    key: 'cumulativeUndiscounted',
+                    label: SERIES_LABELS.cumulativeUndiscounted,
+                    formatter: currency,
+                    shouldDisplay: npvSeriesActive.cumulativeUndiscounted !== false,
+                  },
+                ];
+                return (
+                  <div className="space-y-1 rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-700 shadow-lg">
+                    <div className="font-semibold text-slate-800">{yearLabel}</div>
+                    {tooltipRows
+                      .filter((row) => row.shouldDisplay)
+                      .map((row) => (
+                        <div key={row.key}>
+                          {row.label}: {row.formatter(point[row.key] ?? 0)}
+                        </div>
+                      ))}
+                  </div>
+                );
+              }}
+            />
+            <Legend
+              content={(props) => (
+                <ChartLegend {...props} activeSeries={npvSeriesActive} onToggle={toggleNpvSeries} />
+              )}
+            />
+            <ReferenceLine y={0} yAxisId="cash" stroke="#cbd5f5" strokeDasharray="4 4" />
+            {NPV_BAR_KEYS.map((key) => (
+              <Bar
+                key={key}
+                yAxisId="cash"
+                dataKey={key}
+                name={SERIES_LABELS[key] ?? key}
+                stackId="cashflow"
+                fill={SERIES_COLORS[key]}
+                isAnimationActive={false}
+                hide={npvSeriesActive[key] === false}
+              />
+            ))}
+            <RechartsLine
+              type="monotone"
+              dataKey="totalCash"
+              name={SERIES_LABELS.totalCash}
+              stroke={SERIES_COLORS.totalCash}
+              strokeWidth={2}
+              dot={{ r: 2 }}
+              yAxisId="cash"
+              isAnimationActive={false}
+              hide={npvSeriesActive.totalCash === false}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="discountedContribution"
+              name={SERIES_LABELS.discountedContribution}
+              stroke={SERIES_COLORS.discountedContribution}
+              strokeWidth={2}
+              dot={{ r: 2 }}
+              yAxisId="cash"
+              isAnimationActive={false}
+              hide={npvSeriesActive.discountedContribution === false}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="cumulativeDiscounted"
+              name={SERIES_LABELS.cumulativeDiscounted}
+              stroke={SERIES_COLORS.cumulativeDiscounted}
+              strokeWidth={2}
+              dot={{ r: 2 }}
+              yAxisId="cash"
+              isAnimationActive={false}
+              hide={npvSeriesActive.cumulativeDiscounted === false}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="cumulativeUndiscounted"
+              name={SERIES_LABELS.cumulativeUndiscounted}
+              stroke={SERIES_COLORS.cumulativeUndiscounted}
+              strokeWidth={1.5}
+              strokeDasharray="4 2"
+              dot={{ r: 2 }}
+              yAxisId="cash"
+              isAnimationActive={false}
+              hide={npvSeriesActive.cumulativeUndiscounted === false}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="discountFactor"
+              name={SERIES_LABELS.discountFactor}
+              stroke={SERIES_COLORS.discountFactor}
+              strokeWidth={1.5}
+              strokeDasharray="3 3"
+              dot={false}
+              yAxisId="discount"
+              isAnimationActive={false}
+              hide={npvSeriesActive.discountFactor === false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  };
 
   const handleChartHover = useCallback(
     (event) => {
@@ -5654,11 +5961,14 @@ export default function App() {
       rateSeriesActive: { ...rateSeriesActive },
       cashflowSeriesActive: { ...cashflowSeriesActive },
       leverageSeriesActive: { ...leverageSeriesActive },
+      npvSeriesActive: { ...npvSeriesActive },
       roiHeatmapMetric,
       chartRange: sanitizeRange(chartRange),
       chartRangeTouched: Boolean(chartRangeTouched),
       rateChartRange: sanitizeRange(rateChartRange),
       rateRangeTouched: Boolean(rateRangeTouched),
+      npvChartRange: sanitizeRange(npvChartRange),
+      npvRangeTouched: Boolean(npvRangeTouched),
       rateChartSettings: {
         showMovingAverage: Boolean(rateChartSettings.showMovingAverage),
         movingAverageWindow: Number.isFinite(sanitizeWindow) ? sanitizeWindow : 0,
@@ -7080,130 +7390,54 @@ export default function App() {
                       knowledgeKey="npv"
                     />
                   </div>
+                  {!collapsedSections.npvTimeline ? (
+                    <div className="flex items-center gap-2">
+                      {hasNpvTimelineData ? (
+                        <button
+                          type="button"
+                          onClick={resetNpvChartRange}
+                          className="hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                        >
+                          Reset range
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => setShowNpvModal(true)}
+                        className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                      >
+                        Expand chart
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 {!collapsedSections.npvTimeline ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
                       Compare undiscounted cash with its discounted contribution to see how each year builds the overall NPV.
                     </p>
-                    <div className="h-72 w-full">
-                      {npvTimelineData.length > 0 ? (
-                        <ResponsiveContainer>
-                          <ComposedChart data={npvTimelineData} margin={{ top: 10, right: 90, left: 0, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis
-                              dataKey="year"
-                              tickFormatter={(value) => (value === 0 ? 'Y0' : `Y${value}`)}
-                              tick={{ fontSize: 10, fill: '#475569' }}
-                            />
-                            <YAxis
-                              yAxisId="cash"
-                              tickFormatter={(value) => currency(value)}
-                              tick={{ fontSize: 10, fill: '#475569' }}
-                              width={100}
-                            />
-                            <YAxis
-                              yAxisId="discount"
-                              orientation="right"
-                              tickFormatter={(value) => formatPercent(value)}
-                              tick={{ fontSize: 10, fill: '#475569' }}
-                              width={70}
-                              domain={[0, 'auto']}
-                            />
-                            <Tooltip
-                              content={({ active, payload, label }) => {
-                                if (!active || !payload || payload.length === 0) {
-                                  return null;
-                                }
-                                const point = payload[0]?.payload;
-                                if (!point) {
-                                  return null;
-                                }
-                                const yearLabel = label === 0 ? 'Today' : `Year ${label}`;
-                                return (
-                                  <div className="space-y-1 rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-700 shadow-lg">
-                                    <div className="font-semibold text-slate-800">{yearLabel}</div>
-                                    <div>After-tax cash flow: {currency(point.operatingCash)}</div>
-                                    {point.saleProceeds !== 0 ? (
-                                      <div>Net sale proceeds: {currency(point.saleProceeds)}</div>
-                                    ) : null}
-                                    <div>Total cash this year: {currency(point.cashflow)}</div>
-                                    <div>Discount factor: {formatPercent(point.discountFactor)}</div>
-                                    <div>Discounted contribution: {currency(point.discountedContribution)}</div>
-                                    <div>NPV to date: {currency(point.cumulativeDiscounted)}</div>
-                                    <div>Cumulative cash (undiscounted): {currency(point.cumulativeUndiscounted)}</div>
-                                  </div>
-                                );
-                              }}
-                            />
-                            <Legend />
-                            <ReferenceLine y={0} yAxisId="cash" stroke="#cbd5f5" strokeDasharray="4 4" />
-                            <Bar
-                              yAxisId="cash"
-                              dataKey="operatingCash"
-                              name="After-tax cash flow"
-                              stackId="cashflow"
-                              fill="#38bdf8"
-                              isAnimationActive={false}
-                            />
-                            <Bar
-                              yAxisId="cash"
-                              dataKey="saleProceeds"
-                              name="Net sale proceeds"
-                              stackId="cashflow"
-                              fill="#a855f7"
-                              isAnimationActive={false}
-                            />
-                            <RechartsLine
-                              type="monotone"
-                              dataKey="discountedContribution"
-                              name="Discounted contribution"
-                              stroke="#f97316"
-                              strokeWidth={2}
-                              dot={{ r: 2 }}
-                              yAxisId="cash"
-                              isAnimationActive={false}
-                            />
-                            <RechartsLine
-                              type="monotone"
-                              dataKey="cumulativeDiscounted"
-                              name="NPV to date"
-                              stroke="#0f172a"
-                              strokeWidth={2}
-                              dot={{ r: 2 }}
-                              yAxisId="cash"
-                              isAnimationActive={false}
-                            />
-                            <RechartsLine
-                              type="monotone"
-                              dataKey="cumulativeUndiscounted"
-                              name="Cumulative cash (undiscounted)"
-                              stroke="#94a3b8"
-                              strokeWidth={1.5}
-                              strokeDasharray="4 2"
-                              dot={{ r: 2 }}
-                              yAxisId="cash"
-                              isAnimationActive={false}
-                            />
-                            <RechartsLine
-                              type="monotone"
-                              dataKey="discountFactor"
-                              name="Discount factor"
-                              stroke="#64748b"
-                              strokeWidth={1.5}
-                              strokeDasharray="3 3"
-                              dot={false}
-                              yAxisId="discount"
-                              isAnimationActive={false}
-                            />
-                          </ComposedChart>
-                        </ResponsiveContainer>
-                      ) : (
-                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
-                          Provide an exit year and discount rate to calculate net present value.
+                    {hasNpvTimelineData ? (
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>
+                            Years {npvChartRange.start} – {npvChartRange.end}
+                          </span>
+                          <span>Discount rate: {formatPercent(inputs.discountRate)}</span>
                         </div>
-                      )}
-                    </div>
+                        <button
+                          type="button"
+                          onClick={resetNpvChartRange}
+                          className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 sm:hidden"
+                        >
+                          Reset range
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="mb-2 text-[11px] text-slate-500">
+                        Discount rate: {formatPercent(inputs.discountRate)}
+                      </p>
+                    )}
+                    {renderNpvChart()}
                   </>
                 ) : null}
               </div>
@@ -8848,6 +9082,102 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showNpvModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Net present value explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowNpvModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+            <aside className="w-full border-b border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-b-0 md:border-r">
+              <div className="h-full overflow-y-auto p-5">
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Series visibility</h3>
+                    <p className="mt-1 text-[11px] text-slate-500">Choose which components to plot.</p>
+                    <div className="mt-3 space-y-2">
+                      {NPV_SERIES_KEYS.map((key) => (
+                        <label
+                          key={`npv-series-${key}`}
+                          className="flex items-center justify-between gap-3 rounded-lg border border-transparent px-2 py-1 hover:border-slate-200"
+                        >
+                          <span className="text-slate-700">{SERIES_LABELS[key] ?? key}</span>
+                          <input
+                            type="checkbox"
+                            checked={npvSeriesActive[key] !== false}
+                            onChange={(event) =>
+                              setNpvSeriesActive((prev) => ({
+                                ...prev,
+                                [key]: event.target.checked,
+                              }))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Year range</h3>
+                    <p className="mt-1 text-[11px] text-slate-500">Focus on part of the hold period.</p>
+                    <div className="mt-3 space-y-3">
+                      <label className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-slate-500">Start year</span>
+                        <input
+                          type="number"
+                          value={npvChartRange.start}
+                          min={0}
+                          max={npvChartRange.end}
+                          onChange={(event) => handleNpvChartRangeChange('start', Number(event.target.value))}
+                          className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] text-slate-500">End year</span>
+                        <input
+                          type="number"
+                          value={npvChartRange.end}
+                          min={npvChartRange.start}
+                          max={maxChartYear}
+                          onChange={(event) => handleNpvChartRangeChange('end', Number(event.target.value))}
+                          className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={resetNpvChartRange}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      >
+                        Reset range
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                    <div className="text-sm font-semibold text-slate-700">Discount rate</div>
+                    <p className="text-[11px] text-slate-500">
+                      NPV is discounted using your scenario discount rate of {formatPercent(inputs.discountRate)}.
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Adjust the field in Extra settings to update the discount factor applied to each year.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </aside>
+            <div className="flex-1 overflow-auto p-5">
+              {renderNpvChart('h-full min-h-[320px]')}
             </div>
           </div>
         </div>
