@@ -216,8 +216,8 @@ const DEFAULT_POSTCODE = 'FY5 1LH';
 
 const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
 const POSTCODES_IO_ENDPOINT = 'https://api.postcodes.io/postcodes';
-const OS_PLACES_ENDPOINT = 'https://api.os.uk/search/places/v1/postcode';
 const OS_PLACES_FIND_ENDPOINT = 'https://api.os.uk/search/places/v1/find';
+const OS_PLACES_POSTCODE_ENDPOINT = 'https://api.os.uk/search/places/v1/postcode';
 const rawOsPlacesKey =
   typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OS_PLACES_API_KEY
     ? import.meta.env.VITE_OS_PLACES_API_KEY
@@ -390,26 +390,86 @@ async function fetchOsPlacesAddresses(postcode) {
     return [];
   }
 
-  const url =
-    `${OS_PLACES_FIND_ENDPOINT}?postcode=${encodeURIComponent(formatted)}` +
-    `&dataset=LPI&dataset=DPA&output_srs=WGS84&maxresults=100&key=${encodeURIComponent(OS_PLACES_API_KEY)}`;
+  const normalised = normalisePostcode(formatted);
+  const collapsed = normalised.replace(/\s+/g, '');
 
-  const response = await fetch(url, {
-    headers: {
-      Accept: 'application/json',
-    },
-  });
+  async function requestOsPlaces(url) {
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+      },
+    });
 
-  if (!response.ok) {
-    if (response.status === 404) {
-      return [];
+    if (!response.ok) {
+      if (response.status === 404) {
+        return [];
+      }
+      throw new Error(`Failed to fetch OS Places data: ${response.status}`);
     }
-    throw new Error(`Failed to fetch OS Places data: ${response.status}`);
+
+    const payload = await response.json();
+    const items = Array.isArray(payload?.results) ? payload.results : [];
+    return items.map(mapOsPlacesResultToNominatim).filter(Boolean);
   }
 
-  const payload = await response.json();
-  const items = Array.isArray(payload?.results) ? payload.results : [];
-  return items.map(mapOsPlacesResultToNominatim).filter(Boolean);
+  const datasetParams = ['DPA', 'LPI'];
+
+  const findParams = new URLSearchParams({
+    query: formatted,
+    maxresults: '100',
+    output_srs: 'WGS84',
+    key: OS_PLACES_API_KEY,
+  });
+  datasetParams.forEach((dataset) => findParams.append('dataset', dataset));
+  if (normalised) {
+    findParams.append('fq', `POSTCODE:${normalised}`);
+    findParams.append('fq', `POSTCODE:${collapsed}`);
+  }
+
+  let combinedResults = [];
+
+  try {
+    combinedResults = await requestOsPlaces(`${OS_PLACES_FIND_ENDPOINT}?${findParams.toString()}`);
+  } catch (findError) {
+    console.warn('Failed to resolve OS Places find results', findError);
+  }
+
+  if (!Array.isArray(combinedResults) || combinedResults.length === 0) {
+    const postcodeParams = new URLSearchParams({
+      postcode: formatted,
+      output_srs: 'WGS84',
+      key: OS_PLACES_API_KEY,
+    });
+    datasetParams.forEach((dataset) => postcodeParams.append('dataset', dataset));
+
+    try {
+      const postcodeResults = await requestOsPlaces(`${OS_PLACES_POSTCODE_ENDPOINT}?${postcodeParams.toString()}`);
+      combinedResults = postcodeResults;
+    } catch (postcodeError) {
+      console.warn('Failed to resolve OS Places postcode results', postcodeError);
+    }
+  }
+
+  const seen = new Set();
+  const filtered = [];
+  for (const result of combinedResults ?? []) {
+    if (!result) {
+      continue;
+    }
+
+    const candidate = normalisePostcode(result.address?.postcode ?? '');
+    if (normalised && candidate && candidate !== normalised) {
+      continue;
+    }
+
+    const key = result.place_id ?? `${result.address?.postcode}|${result.address?.road}|${result.address?.house_number}`;
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      filtered.push(result);
+    }
+  }
+
+  return filtered;
 }
 
 const propertyLookupCache = new Map();
