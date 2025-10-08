@@ -17,6 +17,7 @@ const LOCATION_BASE_PRICES = {
   bristol: 355000,
   leeds: 240000,
   liverpool: 215000,
+  cleveleys: 205000,
 };
 
 const STREET_PROFILES = {
@@ -134,6 +135,25 @@ const STREET_PROFILES = {
     airQualityIndex: 29,
     floodInsuranceClaims: 1,
   },
+  cleveleys: {
+    streetName: 'Green Drive, FY5',
+    lsoa: 'E01000001',
+    footfallIndex: 84,
+    footfallTrend: 0.04,
+    planningApprovalsLast12M: 3,
+    noiseComplaints: 9,
+    broadbandMbps: 420,
+    greenspaceShare: 0.33,
+    vacancyRate: 0.035,
+    housePriceVolatility: 0.07,
+    crimeRate: 34,
+    microbusinessDensity: 180,
+    walkScore: 71,
+    avgDom: 52,
+    transactionVelocity: 0.58,
+    airQualityIndex: 18,
+    floodInsuranceClaims: 0,
+  },
   default: {
     streetName: 'Sample Street, UK',
     lsoa: 'N/A',
@@ -154,15 +174,6 @@ const STREET_PROFILES = {
     floodInsuranceClaims: 1,
   },
 };
-
-const LOCATION_OPTIONS = [
-  { value: 'london', label: 'Redchurch Street (E2 7DP, London)' },
-  { value: 'manchester', label: 'Ancoats Marina (M4, Manchester)' },
-  { value: 'bristol', label: 'Stokes Croft (BS5, Bristol)' },
-  { value: 'birmingham', label: 'Jewellery Quarter (B3, Birmingham)' },
-  { value: 'leeds', label: 'Chapel Allerton (LS7/LS8, Leeds)' },
-  { value: 'liverpool', label: 'Baltic Triangle (L1, Liverpool)' },
-];
 
 const PROPERTY_TYPE_PREMIUM = {
   flat: -0.04,
@@ -199,6 +210,262 @@ const SENTIMENT_LEVELS = {
   positive: 0.03,
   neutral: 0,
   negative: -0.04,
+};
+
+const DEFAULT_POSTCODE = 'FY5 1LH';
+
+const MOCK_PROPERTY_DIRECTORY = {
+  'FY5 1LH': [
+    {
+      id: 'uprn-fy5-0001',
+      uprn: '100010000001',
+      label: '27 Green Drive, Cleveleys, Lancashire FY5 1LH',
+      houseNumber: '27',
+      street: 'Green Drive',
+      city: 'Cleveleys',
+      county: 'Lancashire',
+      postcode: 'FY5 1LH',
+      latitude: 53.8732,
+      longitude: -3.0265,
+    },
+    {
+      id: 'uprn-fy5-0002',
+      uprn: '100010000002',
+      label: '25 Green Drive, Cleveleys, Lancashire FY5 1LH',
+      houseNumber: '25',
+      street: 'Green Drive',
+      city: 'Cleveleys',
+      county: 'Lancashire',
+      postcode: 'FY5 1LH',
+      latitude: 53.873,
+      longitude: -3.0262,
+    },
+    {
+      id: 'uprn-fy5-0003',
+      uprn: '100010000003',
+      label: '29 Green Drive, Cleveleys, Lancashire FY5 1LH',
+      houseNumber: '29',
+      street: 'Green Drive',
+      city: 'Cleveleys',
+      county: 'Lancashire',
+      postcode: 'FY5 1LH',
+      latitude: 53.8734,
+      longitude: -3.0268,
+    },
+    {
+      id: 'uprn-fy5-0004',
+      uprn: '100010000004',
+      label: '31 Green Drive, Cleveleys, Lancashire FY5 1LH',
+      houseNumber: '31',
+      street: 'Green Drive',
+      city: 'Cleveleys',
+      county: 'Lancashire',
+      postcode: 'FY5 1LH',
+      latitude: 53.8736,
+      longitude: -3.0271,
+    },
+  ],
+  'E2 7DP': [
+    {
+      id: 'uprn-e27dp-0001',
+      uprn: '100020000001',
+      label: '1 Redchurch Street, Shoreditch, London E2 7DP',
+      houseNumber: '1',
+      street: 'Redchurch Street',
+      city: 'London',
+      county: 'Greater London',
+      postcode: 'E2 7DP',
+      latitude: 51.5249,
+      longitude: -0.0742,
+    },
+    {
+      id: 'uprn-e27dp-0002',
+      uprn: '100020000002',
+      label: '5 Redchurch Street, Shoreditch, London E2 7DP',
+      houseNumber: '5',
+      street: 'Redchurch Street',
+      city: 'London',
+      county: 'Greater London',
+      postcode: 'E2 7DP',
+      latitude: 51.5247,
+      longitude: -0.0745,
+    },
+    {
+      id: 'uprn-e27dp-0003',
+      uprn: '100020000003',
+      label: '7 Redchurch Street, Shoreditch, London E2 7DP',
+      houseNumber: '7',
+      street: 'Redchurch Street',
+      city: 'London',
+      county: 'Greater London',
+      postcode: 'E2 7DP',
+      latitude: 51.5246,
+      longitude: -0.0748,
+    },
+    {
+      id: 'uprn-e27dp-0004',
+      uprn: '100020000004',
+      label: '11 Redchurch Street, Shoreditch, London E2 7DP',
+      houseNumber: '11',
+      street: 'Redchurch Street',
+      city: 'London',
+      county: 'Greater London',
+      postcode: 'E2 7DP',
+      latitude: 51.5244,
+      longitude: -0.0751,
+    },
+  ],
+  'M4 6BF': [
+    {
+      id: 'uprn-m46bf-0001',
+      uprn: '100030000001',
+      label: '1 Cotton Field Wharf, Ancoats, Manchester M4 6BF',
+      houseNumber: '1',
+      street: 'Cotton Field Wharf',
+      city: 'Manchester',
+      county: 'Greater Manchester',
+      postcode: 'M4 6BF',
+      latitude: 53.4842,
+      longitude: -2.2204,
+    },
+    {
+      id: 'uprn-m46bf-0002',
+      uprn: '100030000002',
+      label: '3 Cotton Field Wharf, Ancoats, Manchester M4 6BF',
+      houseNumber: '3',
+      street: 'Cotton Field Wharf',
+      city: 'Manchester',
+      county: 'Greater Manchester',
+      postcode: 'M4 6BF',
+      latitude: 53.4844,
+      longitude: -2.2207,
+    },
+    {
+      id: 'uprn-m46bf-0003',
+      uprn: '100030000003',
+      label: '5 Cotton Field Wharf, Ancoats, Manchester M4 6BF',
+      houseNumber: '5',
+      street: 'Cotton Field Wharf',
+      city: 'Manchester',
+      county: 'Greater Manchester',
+      postcode: 'M4 6BF',
+      latitude: 53.4846,
+      longitude: -2.221,
+    },
+    {
+      id: 'uprn-m46bf-0004',
+      uprn: '100030000004',
+      label: '7 Cotton Field Wharf, Ancoats, Manchester M4 6BF',
+      houseNumber: '7',
+      street: 'Cotton Field Wharf',
+      city: 'Manchester',
+      county: 'Greater Manchester',
+      postcode: 'M4 6BF',
+      latitude: 53.4848,
+      longitude: -2.2213,
+    },
+  ],
+};
+
+function normalisePostcode(postcode) {
+  return postcode?.toUpperCase?.().replace(/\s+/g, '') ?? '';
+}
+
+function stringHash(value) {
+  const input = value ?? '';
+  let hash = 0;
+  for (let idx = 0; idx < input.length; idx += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(idx);
+    hash |= 0; // eslint-disable-line no-bitwise
+  }
+  return Math.abs(hash);
+}
+
+function generateFallbackProperties(postcode) {
+  const normalised = normalisePostcode(postcode);
+  const hash = stringHash(normalised);
+  const baseLat = 51.2 + ((hash % 1500) / 1000);
+  const baseLon = -1 - ((hash % 2500) / 1000);
+  const formattedPostcode = postcode?.toUpperCase?.() ?? 'UNKNOWN';
+  const outward = formattedPostcode.split(' ')[0] || formattedPostcode;
+  const streetName = `${outward || 'Sample'} Street`;
+
+  return Array.from({ length: 5 }, (_, index) => {
+    const houseNumber = 10 + ((hash + index * 7) % 60);
+    const latitude = parseFloat((baseLat + index * 0.0012).toFixed(6));
+    const longitude = parseFloat((baseLon - index * 0.001).toFixed(6));
+    return {
+      id: `${normalised || 'generic'}-${index}`,
+      uprn: `${hash}${index}`,
+      label: `${houseNumber} ${streetName}, Prototype City ${formattedPostcode}`,
+      houseNumber: String(houseNumber),
+      street: streetName,
+      city: 'Prototype City',
+      county: 'Prototype County',
+      postcode: formattedPostcode,
+      latitude,
+      longitude,
+    };
+  });
+}
+
+function mockPropertyLookup(postcode) {
+  const normalised = normalisePostcode(postcode);
+  const matchedKey = Object.keys(MOCK_PROPERTY_DIRECTORY).find(
+    (key) => normalisePostcode(key) === normalised,
+  );
+  if (matchedKey) {
+    return MOCK_PROPERTY_DIRECTORY[matchedKey];
+  }
+  return generateFallbackProperties(postcode);
+}
+
+function inferLocationKey(property) {
+  const postcode = normalisePostcode(property?.postcode);
+  const city = property?.city?.toLowerCase?.() ?? '';
+
+  if (postcode.startsWith('FY5') || city.includes('cleveleys') || city.includes('blackpool')) {
+    return 'cleveleys';
+  }
+  if (postcode.startsWith('E2') || city.includes('shoreditch') || city.includes('london')) {
+    return 'london';
+  }
+  if (postcode.startsWith('M4') || city.includes('manchester')) {
+    return 'manchester';
+  }
+  if (postcode.startsWith('B3') || city.includes('birmingham')) {
+    return 'birmingham';
+  }
+  if (postcode.startsWith('BS5') || city.includes('bristol')) {
+    return 'bristol';
+  }
+  if (postcode.startsWith('LS') || city.includes('leeds')) {
+    return 'leeds';
+  }
+  if (postcode.startsWith('L1') || city.includes('liverpool')) {
+    return 'liverpool';
+  }
+  return 'default';
+}
+
+const DEFAULT_PROPERTY_OPTIONS = mockPropertyLookup(DEFAULT_POSTCODE);
+const DEFAULT_SELECTED_PROPERTY = DEFAULT_PROPERTY_OPTIONS[0] ?? null;
+const DEFAULT_LOCATION_KEY = inferLocationKey(DEFAULT_SELECTED_PROPERTY);
+
+const DEFAULT_SCENARIO_INPUTS = {
+  propertyType: 'flat',
+  bedrooms: 2,
+  bathrooms: 1,
+  internalArea: 68,
+  energyRating: 'C',
+  amenityLevel: 'medium',
+  schoolQuality: 'good',
+  sentiment: 'positive',
+  isNewBuild: false,
+  plannedRetrofit: true,
+  floodZone: 'medium',
+  planningPipeline: 36,
+  dataGaps: 1,
 };
 
 const SCORE_METRICS = {
@@ -310,9 +577,9 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function buildForecast(inputs) {
-  const profile = STREET_PROFILES[inputs.location] ?? STREET_PROFILES.default;
-  const basePrice = LOCATION_BASE_PRICES[inputs.location] ?? 275000;
+function buildForecast(inputs, property, locationKey = 'default') {
+  const profile = STREET_PROFILES[locationKey] ?? STREET_PROFILES.default;
+  const basePrice = LOCATION_BASE_PRICES[locationKey] ?? 275000;
   const typePremium = PROPERTY_TYPE_PREMIUM[inputs.propertyType] ?? 0;
   const energyFactor = ENERGY_RATING_FACTORS[inputs.energyRating] ?? 0;
   const amenityFactor = AMENITY_LEVELS[inputs.amenityLevel] ?? 0;
@@ -369,17 +636,13 @@ function buildForecast(inputs) {
     };
   });
 
-  const targetAddress = [
-    typeof inputs.houseNumber === 'number' ? String(inputs.houseNumber) : inputs.houseNumber?.trim?.(),
-    inputs.street?.trim?.(),
-    inputs.city?.trim?.(),
-    inputs.county?.trim?.(),
-    inputs.postcode?.trim?.(),
-  ]
-    .filter(Boolean)
-    .join(', ');
+  const targetAddress =
+    property?.label ||
+    [property?.houseNumber, property?.street, property?.city, property?.county, property?.postcode]
+      .filter(Boolean)
+      .join(', ');
 
-  const comparableStreet = [inputs.street?.trim?.() || 'Sample Street', inputs.city?.trim?.() || inputs.location]
+  const comparableStreet = [property?.street || 'Sample Street', property?.city || property?.postcode || locationKey]
     .filter(Boolean)
     .join(', ');
 
@@ -549,6 +812,7 @@ function buildForecast(inputs) {
     scoreDrivers,
     profile,
     targetAddress,
+    property,
   };
 }
 
@@ -649,29 +913,21 @@ function buildDataSourceSections(result, inputs) {
 }
 
 export default function App() {
-  const [inputs, setInputs] = useState({
-    location: 'london',
-    houseNumber: '27',
-    street: 'Green Drive',
-    city: 'Cleveleys',
-    county: 'Lancashire',
-    postcode: 'FY5 1LH',
-    propertyType: 'flat',
-    bedrooms: 2,
-    bathrooms: 1,
-    internalArea: 68,
-    energyRating: 'C',
-    amenityLevel: 'medium',
-    schoolQuality: 'good',
-    sentiment: 'positive',
-    isNewBuild: false,
-    plannedRetrofit: true,
-    floodZone: 'medium',
-    planningPipeline: 36,
-    dataGaps: 1,
-  });
+  const [inputs, setInputs] = useState(() => ({ ...DEFAULT_SCENARIO_INPUTS }));
+  const [postcode, setPostcode] = useState(DEFAULT_POSTCODE);
+  const [propertyOptions, setPropertyOptions] = useState(() => [...DEFAULT_PROPERTY_OPTIONS]);
+  const [selectedPropertyId, setSelectedPropertyId] = useState(
+    () => DEFAULT_SELECTED_PROPERTY?.id ?? null,
+  );
+  const selectedProperty = useMemo(
+    () => propertyOptions.find((property) => property.id === selectedPropertyId) ?? null,
+    [propertyOptions, selectedPropertyId],
+  );
+  const locationKey = useMemo(() => inferLocationKey(selectedProperty), [selectedProperty]);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(() => buildForecast(inputs));
+  const [result, setResult] = useState(() =>
+    buildForecast(DEFAULT_SCENARIO_INPUTS, DEFAULT_SELECTED_PROPERTY, DEFAULT_LOCATION_KEY),
+  );
   const [activeScore, setActiveScore] = useState(null);
   const [isMapOpen, setIsMapOpen] = useState(false);
 
@@ -679,44 +935,70 @@ export default function App() {
     setInputs((prev) => ({ ...prev, [field]: value }));
   };
 
+  const handlePropertyLookup = () => {
+    const nextOptions = mockPropertyLookup(postcode);
+    setPropertyOptions(nextOptions);
+    const nextProperty = nextOptions[0] ?? null;
+    setSelectedPropertyId(nextProperty?.id ?? null);
+    setResult(buildForecast({ ...inputs }, nextProperty, inferLocationKey(nextProperty)));
+  };
+
+  const handleSelectProperty = (event) => {
+    const propertyId = event.target.value;
+    setSelectedPropertyId(propertyId);
+    const property = propertyOptions.find((option) => option.id === propertyId) ?? null;
+    setResult(buildForecast({ ...inputs }, property, inferLocationKey(property)));
+  };
+
   const runForecast = (event) => {
     event?.preventDefault();
     setLoading(true);
     setTimeout(() => {
-      setResult(buildForecast(inputs));
+      setResult(buildForecast(inputs, selectedProperty, locationKey));
       setLoading(false);
     }, 450);
   };
 
   const chartData = useMemo(() => result?.forecastSeries ?? [], [result]);
-  const activeProfile = result?.profile ?? STREET_PROFILES[inputs.location] ?? STREET_PROFILES.default;
+  const activeProfile = result?.profile ?? STREET_PROFILES[locationKey] ?? STREET_PROFILES.default;
   const dataSourceSections = useMemo(() => buildDataSourceSections(result, inputs), [result, inputs]);
   const liveAddress = useMemo(() => {
-    return [
-      inputs.houseNumber?.trim?.(),
-      inputs.street?.trim?.(),
-      inputs.city?.trim?.(),
-      inputs.county?.trim?.(),
-      inputs.postcode?.trim?.(),
-    ]
-      .filter(Boolean)
-      .join(', ');
-  }, [inputs.houseNumber, inputs.street, inputs.city, inputs.county, inputs.postcode]);
+    return (
+      selectedProperty?.label ||
+      [
+        selectedProperty?.houseNumber,
+        selectedProperty?.street,
+        selectedProperty?.city,
+        selectedProperty?.county,
+        selectedProperty?.postcode,
+      ]
+        .filter(Boolean)
+        .join(', ')
+    );
+  }, [selectedProperty]);
   const scenarioAddress = result?.targetAddress || liveAddress;
   const openStreetMapEmbedUrl = useMemo(() => {
+    if (selectedProperty?.latitude && selectedProperty?.longitude) {
+      const { latitude, longitude } = selectedProperty;
+      return `https://www.openstreetmap.org/export/embed.html?layer=mapnik&marker=${latitude},${longitude}&zoom=17`;
+    }
     if (!liveAddress) {
       return 'https://www.openstreetmap.org/export/embed.html?bbox=-3.06,53.84,-2.97,53.89&layer=mapnik&marker=53.873,-3.026';
     }
     const encoded = encodeURIComponent(liveAddress);
     return `https://www.openstreetmap.org/export/embed.html?search=${encoded}&layer=mapnik`;
-  }, [liveAddress]);
+  }, [liveAddress, selectedProperty]);
   const openStreetMapExternalUrl = useMemo(() => {
+    if (selectedProperty?.latitude && selectedProperty?.longitude) {
+      const { latitude, longitude } = selectedProperty;
+      return `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=17/${latitude}/${longitude}`;
+    }
     if (!liveAddress) {
       return 'https://www.openstreetmap.org';
     }
     const encoded = encodeURIComponent(liveAddress);
     return `https://www.openstreetmap.org/search?query=${encoded}`;
-  }, [liveAddress]);
+  }, [liveAddress, selectedProperty]);
 
   return (
     <div className="min-h-screen bg-slate-100 pb-20">
@@ -751,80 +1033,70 @@ export default function App() {
 
           <form className="space-y-5" onSubmit={runForecast}>
             <div className="grid grid-cols-1 gap-4">
-              <label className="flex flex-col gap-2 text-sm text-slate-700">
-                Target geography
-                <select
-                  value={inputs.location}
-                  onChange={(event) => handleInput('location', event.target.value)}
-                  className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
-                >
-                  {LOCATION_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
               <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs uppercase tracking-wider text-slate-500">Property address</p>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-slate-500">Property selector</p>
+                    <p className="text-xs text-slate-400">
+                      Lookup mocked OpenStreetMap / AddressBase results by postcode, then drill into a specific UPRN.
+                    </p>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => setIsMapOpen(true)}
-                    className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700"
+                    onClick={() => selectedProperty && setIsMapOpen(true)}
+                    disabled={!selectedProperty}
+                    className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
                   >
-                    Preview on map
+                    Open map preview
                   </button>
                 </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr),auto]">
                   <label className="flex flex-col gap-1 text-sm text-slate-700">
-                    House number
-                    <input
-                      type="text"
-                      value={inputs.houseNumber}
-                      onChange={(event) => handleInput('houseNumber', event.target.value)}
-                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm text-slate-700 sm:col-span-1">
-                    Street
-                    <input
-                      type="text"
-                      value={inputs.street}
-                      onChange={(event) => handleInput('street', event.target.value)}
-                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm text-slate-700">
-                    City / Town
-                    <input
-                      type="text"
-                      value={inputs.city}
-                      onChange={(event) => handleInput('city', event.target.value)}
-                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm text-slate-700">
-                    County
-                    <input
-                      type="text"
-                      value={inputs.county}
-                      onChange={(event) => handleInput('county', event.target.value)}
-                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm text-slate-700 sm:col-span-2">
                     Postcode
                     <input
                       type="text"
-                      value={inputs.postcode}
-                      onChange={(event) => handleInput('postcode', event.target.value)}
+                      value={postcode}
+                      onChange={(event) => setPostcode(event.target.value)}
+                      placeholder="e.g. FY5 1LH"
                       className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
                     />
                   </label>
+                  <button
+                    type="button"
+                    onClick={handlePropertyLookup}
+                    className="inline-flex items-center justify-center rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-400"
+                  >
+                    Lookup addresses
+                  </button>
                 </div>
-                <p className="text-xs text-slate-400">Defaults to 27 Green Drive, Cleveleys, Lancashire, FY5 1LH.</p>
+                <label className="flex flex-col gap-1 text-sm text-slate-700">
+                  Available properties
+                  <select
+                    value={selectedPropertyId ?? ''}
+                    onChange={handleSelectProperty}
+                    className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                  >
+                    <option value="" disabled={propertyOptions.length > 0}>
+                      {propertyOptions.length ? 'Select a property' : 'No properties found'}
+                    </option>
+                    {propertyOptions.map((property) => (
+                      <option key={property.id} value={property.id}>
+                        {property.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedProperty ? (
+                  <div className="rounded-lg border border-slate-200 bg-white/70 p-3 text-xs text-slate-500">
+                    <p className="font-semibold text-slate-700">Selected property context</p>
+                    <p className="mt-1">UPRN: {selectedProperty.uprn || 'N/A'}</p>
+                    <p>Lat / Lon: {selectedProperty.latitude?.toFixed?.(5) ?? '—'} / {selectedProperty.longitude?.toFixed?.(5) ?? '—'}</p>
+                  </div>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-slate-300 bg-white/60 p-3 text-xs text-slate-400">
+                    Run a postcode lookup to populate property choices and unlock the map preview.
+                  </p>
+                )}
               </div>
 
               <label className="flex flex-col gap-2 text-sm text-slate-700">
@@ -1013,8 +1285,9 @@ export default function App() {
                   <span className="text-slate-600">{scenarioAddress || 'Awaiting address details'}</span>
                   <button
                     type="button"
-                    onClick={() => setIsMapOpen(true)}
-                    className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700"
+                    onClick={() => selectedProperty && setIsMapOpen(true)}
+                    disabled={!selectedProperty}
+                    className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
                   >
                     View map
                   </button>
