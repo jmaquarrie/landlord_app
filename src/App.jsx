@@ -241,6 +241,30 @@ function formatPostcode(postcode) {
   return `${outward} ${inward}`;
 }
 
+function escapeRegex(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/[.*+?^${}()|[\]]/g, '\\$&');
+}
+
+function escapeOverpassString(value) {
+  return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function buildPostcodeRegex(postcode) {
+  const normalised = normalisePostcode(postcode);
+  if (!normalised) {
+    return '';
+  }
+
+  const tokens = normalised.split('').map((char) => escapeRegex(char));
+  if (tokens.length === 0) {
+    return '';
+  }
+
+  return `^${tokens.join('\\s*')}\\s*$`;
+}
+
 function wait(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -303,16 +327,54 @@ function buildOverpassQuery(postcode, boundingBox = null) {
     return null;
   }
 
+  const formatted = formatPostcode(postcode);
+  const normalised = normalisePostcode(postcode);
+  const regex = buildPostcodeRegex(postcode);
+
   const bboxFilter = boundingBox
     ? `(${boundingBox.south},${boundingBox.west},${boundingBox.north},${boundingBox.east})`
     : '';
 
+  const filters = [];
+
+  if (formatted) {
+    filters.push({ key: 'addr:postcode', type: 'exact', value: escapeOverpassString(formatted) });
+  }
+
+  if (normalised && normalised !== formatted.replace(/\s+/g, '')) {
+    filters.push({ key: 'addr:postcode', type: 'exact', value: escapeOverpassString(normalised) });
+  }
+
+  if (regex) {
+    const regexEscaped = regex;
+    const regexTargets = ['addr:postcode', 'postal_code', 'postcode'];
+    for (const key of regexTargets) {
+      filters.push({ key, type: 'regex', value: regexEscaped });
+    }
+  }
+
+  if (filters.length === 0) {
+    filters.push({ key: 'addr:postcode', type: 'exact', value: escapeOverpassString(postcode) });
+  }
+
+  const buildStatements = (filter) => {
+    const selector =
+      filter.type === 'regex'
+        ? `"${filter.key}"~"${filter.value}",i`
+        : `"${filter.key}"="${filter.value}"`;
+    return [
+      `  node[${selector}]${bboxFilter};`,
+      `  way[${selector}]${bboxFilter};`,
+      `  relation[${selector}]${bboxFilter};`,
+    ];
+  };
+
+  const statements = filters.flatMap((filter) => buildStatements(filter));
+
   return `
 [out:json][timeout:30];
 (
-  node["addr:postcode"="${postcode}"]${bboxFilter};
-  way["addr:postcode"="${postcode}"]${bboxFilter};
-  relation["addr:postcode"="${postcode}"]${bboxFilter};
+${statements.join('\n')}
 );
 out center tags;
 `;
@@ -680,6 +742,25 @@ async function fetchPropertiesForPostcode(postcode) {
       } catch (streetError) {
         console.warn('Failed to enrich street results', streetError);
       }
+    }
+  }
+
+  if (payload.length === 0) {
+    const broadParams = new URLSearchParams({
+      format: 'jsonv2',
+      addressdetails: '1',
+      countrycodes: 'gb',
+      limit: '100',
+      q: formattedPostcode || trimmed,
+    });
+
+    try {
+      const broadPayload = await fetchNominatim(broadParams);
+      if (Array.isArray(broadPayload) && broadPayload.length > 0) {
+        payload = payload.concat(broadPayload);
+      }
+    } catch (broadError) {
+      console.warn('Failed to resolve fallback postcode search', broadError);
     }
   }
 
