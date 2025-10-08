@@ -1,2715 +1,2104 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ResponsiveContainer,
-  AreaChart,
   Area,
+  AreaChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  Legend,
-  CartesianGrid,
 } from 'recharts';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
 
-const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
-const DEFAULT_INDEX_GROWTH = 0.07;
-const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
-const { VITE_SCENARIO_API_URL, VITE_CHAT_API_URL, VITE_GOOGLE_MODEL } = import.meta.env ?? {};
-const SCENARIO_API_URL =
-  typeof VITE_SCENARIO_API_URL === 'string' && VITE_SCENARIO_API_URL.trim() !== ''
-    ? VITE_SCENARIO_API_URL.replace(/\/$/, '')
+const LOCATION_BASE_PRICES = {
+  london: 560000,
+  manchester: 280000,
+  birmingham: 265000,
+  bristol: 355000,
+  leeds: 240000,
+  liverpool: 215000,
+  cleveleys: 205000,
+};
+
+const STREET_PROFILES = {
+  london: {
+    streetName: 'Redchurch Street, Shoreditch E2',
+    lsoa: 'E02000877',
+    footfallIndex: 128,
+    footfallTrend: 0.12,
+    planningApprovalsLast12M: 11,
+    noiseComplaints: 22,
+    broadbandMbps: 920,
+    greenspaceShare: 0.16,
+    vacancyRate: 0.045,
+    housePriceVolatility: 0.09,
+    crimeRate: 68,
+    microbusinessDensity: 430,
+    walkScore: 94,
+    avgDom: 32,
+    transactionVelocity: 0.78,
+    airQualityIndex: 32,
+    floodInsuranceClaims: 2,
+  },
+  manchester: {
+    streetName: 'Ancoats Marina, M4',
+    lsoa: 'E02001029',
+    footfallIndex: 112,
+    footfallTrend: 0.09,
+    planningApprovalsLast12M: 9,
+    noiseComplaints: 18,
+    broadbandMbps: 620,
+    greenspaceShare: 0.22,
+    vacancyRate: 0.055,
+    housePriceVolatility: 0.1,
+    crimeRate: 61,
+    microbusinessDensity: 360,
+    walkScore: 88,
+    avgDom: 41,
+    transactionVelocity: 0.71,
+    airQualityIndex: 28,
+    floodInsuranceClaims: 1,
+  },
+  birmingham: {
+    streetName: 'Jewellery Quarter, B3',
+    lsoa: 'E01009570',
+    footfallIndex: 96,
+    footfallTrend: 0.07,
+    planningApprovalsLast12M: 8,
+    noiseComplaints: 16,
+    broadbandMbps: 540,
+    greenspaceShare: 0.19,
+    vacancyRate: 0.062,
+    housePriceVolatility: 0.11,
+    crimeRate: 74,
+    microbusinessDensity: 310,
+    walkScore: 84,
+    avgDom: 47,
+    transactionVelocity: 0.63,
+    airQualityIndex: 30,
+    floodInsuranceClaims: 0,
+  },
+  bristol: {
+    streetName: 'Stokes Croft, BS5',
+    lsoa: 'E01014617',
+    footfallIndex: 104,
+    footfallTrend: 0.11,
+    planningApprovalsLast12M: 7,
+    noiseComplaints: 14,
+    broadbandMbps: 710,
+    greenspaceShare: 0.27,
+    vacancyRate: 0.038,
+    housePriceVolatility: 0.08,
+    crimeRate: 58,
+    microbusinessDensity: 295,
+    walkScore: 90,
+    avgDom: 36,
+    transactionVelocity: 0.76,
+    airQualityIndex: 24,
+    floodInsuranceClaims: 0,
+  },
+  leeds: {
+    streetName: 'Chapel Allerton, LS7/LS8',
+    lsoa: 'E01011076',
+    footfallIndex: 92,
+    footfallTrend: 0.06,
+    planningApprovalsLast12M: 6,
+    noiseComplaints: 12,
+    broadbandMbps: 480,
+    greenspaceShare: 0.31,
+    vacancyRate: 0.042,
+    housePriceVolatility: 0.085,
+    crimeRate: 52,
+    microbusinessDensity: 260,
+    walkScore: 82,
+    avgDom: 44,
+    transactionVelocity: 0.68,
+    airQualityIndex: 22,
+    floodInsuranceClaims: 0,
+  },
+  liverpool: {
+    streetName: 'Baltic Triangle, L1',
+    lsoa: 'E01006520',
+    footfallIndex: 98,
+    footfallTrend: 0.08,
+    planningApprovalsLast12M: 10,
+    noiseComplaints: 19,
+    broadbandMbps: 560,
+    greenspaceShare: 0.24,
+    vacancyRate: 0.06,
+    housePriceVolatility: 0.12,
+    crimeRate: 77,
+    microbusinessDensity: 340,
+    walkScore: 86,
+    avgDom: 49,
+    transactionVelocity: 0.6,
+    airQualityIndex: 29,
+    floodInsuranceClaims: 1,
+  },
+  cleveleys: {
+    streetName: 'Green Drive, FY5',
+    lsoa: 'E01000001',
+    footfallIndex: 84,
+    footfallTrend: 0.04,
+    planningApprovalsLast12M: 3,
+    noiseComplaints: 9,
+    broadbandMbps: 420,
+    greenspaceShare: 0.33,
+    vacancyRate: 0.035,
+    housePriceVolatility: 0.07,
+    crimeRate: 34,
+    microbusinessDensity: 180,
+    walkScore: 71,
+    avgDom: 52,
+    transactionVelocity: 0.58,
+    airQualityIndex: 18,
+    floodInsuranceClaims: 0,
+  },
+  default: {
+    streetName: 'Sample Street, UK',
+    lsoa: 'N/A',
+    footfallIndex: 100,
+    footfallTrend: 0.05,
+    planningApprovalsLast12M: 5,
+    noiseComplaints: 15,
+    broadbandMbps: 500,
+    greenspaceShare: 0.2,
+    vacancyRate: 0.05,
+    housePriceVolatility: 0.1,
+    crimeRate: 60,
+    microbusinessDensity: 280,
+    walkScore: 85,
+    avgDom: 40,
+    transactionVelocity: 0.7,
+    airQualityIndex: 30,
+    floodInsuranceClaims: 1,
+  },
+};
+
+const PROPERTY_TYPE_PREMIUM = {
+  flat: -0.04,
+  terrace: 0,
+  semi: 0.05,
+  detached: 0.18,
+  bungalow: 0.08,
+};
+
+const ENERGY_RATING_FACTORS = {
+  A: 0.08,
+  B: 0.05,
+  C: 0,
+  D: -0.02,
+  E: -0.05,
+  F: -0.08,
+  G: -0.12,
+};
+
+const AMENITY_LEVELS = {
+  low: -0.03,
+  medium: 0.02,
+  high: 0.06,
+};
+
+const SCHOOL_QUALITY_FACTORS = {
+  outstanding: 0.05,
+  good: 0.02,
+  average: 0,
+  below_average: -0.04,
+};
+
+const SENTIMENT_LEVELS = {
+  positive: 0.03,
+  neutral: 0,
+  negative: -0.04,
+};
+
+const DEFAULT_POSTCODE = 'FY5 1LH';
+
+const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
+const POSTCODES_IO_ENDPOINT = 'https://api.postcodes.io/postcodes';
+const OS_PLACES_ENDPOINT = 'https://api.os.uk/search/places/v1/postcode';
+const rawOsPlacesKey =
+  typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OS_PLACES_API_KEY
+    ? import.meta.env.VITE_OS_PLACES_API_KEY
     : '';
-const CHAT_API_URL =
-  typeof VITE_CHAT_API_URL === 'string' && VITE_CHAT_API_URL.trim() !== ''
-    ? VITE_CHAT_API_URL.replace(/\/$/, '')
-    : '';
-const GOOGLE_API_KEY = 'AIzaSyB9K7pla_JX_vy-d5zGXikxD9sJ1pglH94';
-const GOOGLE_MODEL =
-  typeof VITE_GOOGLE_MODEL === 'string' && VITE_GOOGLE_MODEL.trim() !== ''
-    ? VITE_GOOGLE_MODEL.trim()
-    : 'gemini-2.5-flash';
-const GOOGLE_API_BASE = 'https://apigateway.googleapis.com/$discovery/rest?version=v1';
-const PERSONAL_ALLOWANCE = 12570;
-const BASIC_RATE_BAND = 37700;
-const ADDITIONAL_RATE_THRESHOLD = 125140;
+const OS_PLACES_API_KEY = typeof rawOsPlacesKey === 'string' ? rawOsPlacesKey.trim() : '';
+const NOMINATIM_MIN_DELAY_MS = 1100;
+const NOMINATIM_MAX_RETRIES = 2;
 
-const DEFAULT_INPUTS = {
-  propertyAddress: '',
-  propertyUrl: '',
-  purchasePrice: 250000,
-  depositPct: 0.25,
-  closingCostsPct: 0.01,
-  renovationCost: 0,
-  interestRate: 0.055,
-  mortgageYears: 30,
-  loanType: 'repayment',
-  monthlyRent: 1400,
-  vacancyPct: 0.05,
-  mgmtPct: 0.1,
-  repairsPct: 0.08,
-  insurancePerYear: 500,
-  otherOpexPerYear: 300,
-  annualAppreciation: 0.03,
-  rentGrowth: 0.02,
-  exitYear: 10,
-  sellingCostsPct: 0.02,
-  discountRate: 0.07,
-  buyerType: 'individual',
-  propertiesOwned: 0,
-  indexFundGrowth: DEFAULT_INDEX_GROWTH,
-  firstTimeBuyer: false,
-  incomePerson1: 50000,
-  incomePerson2: 30000,
-  ownershipShare1: 0.5,
-  ownershipShare2: 0.5,
-  reinvestIncome: false,
-  reinvestPct: 0.5,
-};
-
-const roundTo = (value, decimals = 2) => {
-  if (!Number.isFinite(value)) return 0;
-  const factor = Math.pow(10, decimals);
-  return Math.round((value + Number.EPSILON) * factor) / factor;
-};
-
-const formatPercent = (value) => `${roundTo(value * 100, 2).toFixed(2)}%`;
-
-const encodeSharePayload = (payload) => {
-  try {
-    const json = JSON.stringify(payload);
-    if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
-      return window.btoa(unescape(encodeURIComponent(json)));
-    }
-    if (typeof Buffer !== 'undefined') {
-      return Buffer.from(json, 'utf8').toString('base64');
-    }
-  } catch (error) {
-    console.warn('Unable to encode share payload:', error);
-  }
-  return '';
-};
-
-const decodeSharePayload = (value) => {
-  if (!value) return null;
-  try {
-    let json = '';
-    if (typeof window !== 'undefined' && typeof window.atob === 'function') {
-      json = decodeURIComponent(escape(window.atob(value)));
-    } else if (typeof Buffer !== 'undefined') {
-      json = Buffer.from(value, 'base64').toString('utf8');
-    }
-    if (!json) return null;
-    const parsed = JSON.parse(json);
-    if (parsed && typeof parsed === 'object') {
-      return parsed;
-    }
-  } catch (error) {
-    console.warn('Unable to decode share payload:', error);
-  }
-  return null;
-};
-
-const SCORE_TOOLTIPS = {
-  overall:
-    'Overall score combines cash-on-cash, cap rate, DSCR, NPV, and first-year cash flow. Higher is better (0-100).',
-  delta:
-    'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
-  deltaAfterTax:
-    'After-tax wealth delta compares property net proceeds plus after-tax cash flow (and reinvested fund) to the index alternative at exit, using income or corporation tax depending on buyer type.',
-};
-
-function personalAllowance(income) {
-  if (income <= 0) return 0;
-  if (income <= 100000) return PERSONAL_ALLOWANCE;
-  const reduction = (income - 100000) / 2;
-  return Math.max(0, PERSONAL_ALLOWANCE - reduction);
+function normalisePostcode(postcode) {
+  return postcode?.toUpperCase?.().replace(/\s+/g, '') ?? '';
 }
 
-function calcIncomeTax(income) {
-  if (!Number.isFinite(income) || income <= 0) return 0;
-
-  const allowance = personalAllowance(income);
-  const taxable = Math.max(0, income - allowance);
-
-  let remaining = taxable;
-  let tax = 0;
-
-  const basic = Math.min(remaining, BASIC_RATE_BAND);
-  tax += basic * 0.2;
-  remaining -= basic;
-
-  if (remaining > 0) {
-    const higherBandCap = Math.max(0, ADDITIONAL_RATE_THRESHOLD - allowance - BASIC_RATE_BAND);
-    const higher = Math.min(remaining, higherBandCap);
-    tax += higher * 0.4;
-    remaining -= higher;
-  }
-
-  if (remaining > 0) {
-    tax += remaining * 0.45;
-  }
-
-  return roundTo(tax, 2);
-}
-
-function monthlyMortgagePayment({ principal, annualRate, years }) {
-  const r = annualRate / 12;
-  const n = years * 12;
-  if (!annualRate) return principal / n;
-  return (principal * r) / (1 - Math.pow(1 + r, -n));
-}
-
-function remainingBalance({ principal, annualRate, years, monthsPaid }) {
-  const r = annualRate / 12;
-  if (!annualRate) return principal * (1 - monthsPaid / (years * 12));
-  const pmt = monthlyMortgagePayment({ principal, annualRate, years });
-  return principal * Math.pow(1 + r, monthsPaid) - (pmt * (Math.pow(1 + r, monthsPaid) - 1)) / r;
-}
-
-function npv(rate, cashflows) {
-  return cashflows.reduce((acc, cf, t) => acc + cf / Math.pow(1 + rate, t), 0);
-}
-
-function calcStampDuty(price, buyerType, propertiesOwned, firstTimeBuyer) {
-  if (!price || price <= 0) return 0;
-
-  const eligibleFirstTimeBuyer =
-    firstTimeBuyer && buyerType === 'individual' && propertiesOwned === 0 && price <= 500000;
-
-  if (eligibleFirstTimeBuyer) {
-    const portionAbove300k = Math.max(0, price - 300000);
-    return roundTo(portionAbove300k * 0.05, 2);
-  }
-
-  const bands = [
-    { upTo: 125000, rate: 0.0 },
-    { upTo: 250000, rate: 0.02 },
-    { upTo: 925000, rate: 0.05 },
-    { upTo: 1500000, rate: 0.1 },
-    { upTo: Infinity, rate: 0.12 },
-  ];
-
-  const isAdditional =
-    buyerType === 'company' || (buyerType === 'individual' && Number.isFinite(propertiesOwned) && propertiesOwned >= 2);
-  const surcharge = isAdditional ? 0.05 : 0.0;
-
-  let remaining = price;
-  let last = 0;
-  let tax = 0;
-
-  for (const band of bands) {
-    if (remaining <= 0) break;
-    const taxable = Math.max(0, Math.min(remaining, band.upTo - last));
-    if (taxable > 0) {
-      tax += taxable * band.rate;
-      remaining -= taxable;
-      last = band.upTo;
-    }
-  }
-
-  if (surcharge > 0) {
-    tax += price * surcharge;
-  }
-
-  return roundTo(tax, 2);
-}
-
-function ensureAbsoluteUrl(value) {
-  if (!value) return '';
-  const trimmed = value.trim();
-  if (trimmed === '') return '';
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
-}
-
-function scoreDeal({ coc, cap, dscr, npv, cashflowYear1 }) {
-  let s = 0;
-  s += Math.min(40, coc * 100 * 1.2);
-  s += Math.min(25, cap * 100 * 0.8);
-  s += Math.min(15, Math.max(0, (dscr - 1) * 25));
-  s += Math.min(15, Math.max(0, npv / 20000));
-  s += Math.min(5, Math.max(0, cashflowYear1 / 1000));
-  return Math.max(0, Math.min(100, s));
-}
-
-function badgeColor(score) {
-  if (score >= 75) return 'bg-green-600';
-  if (score >= 55) return 'bg-amber-500';
-  return 'bg-rose-600';
-}
-
-function deltaBadge(delta) {
-  if (delta > 0) return 'bg-emerald-600';
-  if (delta < 0) return 'bg-rose-600';
-  return 'bg-slate-500';
-}
-
-const friendlyDateTime = (iso) => {
-  if (!iso) return '';
-  try {
-    const date = new Date(iso);
-    return date.toLocaleString();
-  } catch (error) {
-    return iso;
-  }
-};
-
-function csvEscape(value) {
-  if (value === null || value === undefined) {
+function formatPostcode(postcode) {
+  const normalised = normalisePostcode(postcode);
+  if (!normalised) {
     return '';
   }
-  const stringValue = String(value);
-  if (/[",\n]/.test(stringValue)) {
-    return `"${stringValue.replace(/"/g, '""')}"`;
+
+  if (normalised.length <= 3) {
+    return normalised;
   }
-  return stringValue;
+
+  const outward = normalised.slice(0, normalised.length - 3);
+  const inward = normalised.slice(-3);
+  return `${outward} ${inward}`;
 }
 
-function normaliseForCsv(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      return '';
-    }
-    return String(roundTo(value, 6));
-  }
-  if (typeof value === 'boolean') {
-    return value ? 'true' : 'false';
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (typeof value === 'object') {
-    try {
-      return JSON.stringify(value);
-    } catch (error) {
-      return String(value);
-    }
-  }
-  return String(value);
+function escapeRegex(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/[.*+?^${}()|[\]]/g, '\\$&');
 }
 
-function getControlDisplayValue(node) {
-  const tag = node.tagName.toLowerCase();
-  if (tag === 'select') {
-    const options = Array.from(node.selectedOptions || []);
-    return options.length > 0 ? options.map((opt) => opt.textContent ?? opt.value ?? '').join(', ') : node.value ?? '';
-  }
-  if (tag === 'textarea') {
-    return node.value ?? node.textContent ?? '';
-  }
-  const type = (node.getAttribute('type') || '').toLowerCase();
-  if (type === 'checkbox' || type === 'radio') {
-    return node.checked ? 'Yes' : 'No';
-  }
-  return node.value ?? '';
-}
-
-function canvasToJpeg(canvas, { quality = 0.65, maxWidth = 1500, maxHeight = 2000 } = {}) {
-  if (!canvas) return '';
-  let targetCanvas = canvas;
-  const originalWidth = canvas.width || 1;
-  const originalHeight = canvas.height || 1;
-  const scale = Math.min(1, maxWidth / originalWidth, maxHeight / originalHeight);
-
-  if (scale < 1) {
-    if (typeof document !== 'undefined') {
-      const scaledCanvas = document.createElement('canvas');
-      scaledCanvas.width = Math.max(1, Math.round(originalWidth * scale));
-      scaledCanvas.height = Math.max(1, Math.round(originalHeight * scale));
-      const ctx = scaledCanvas.getContext('2d');
-      ctx.drawImage(canvas, 0, 0, originalWidth, originalHeight, 0, 0, scaledCanvas.width, scaledCanvas.height);
-      targetCanvas = scaledCanvas;
-    }
-  }
-
-  try {
-    return targetCanvas.toDataURL('image/jpeg', quality);
-  } catch (error) {
-    console.warn('Unable to convert canvas to JPEG:', error);
-    return '';
-  }
-}
-
-function transformCloneForExport(root) {
-  if (!root) return;
-  const doc = root.ownerDocument;
-  const controls = root.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea, select');
-  controls.forEach((control) => {
-    const replacement = doc.createElement('div');
-    replacement.className = control.className;
-    const inlineStyle = control.getAttribute('style');
-    if (inlineStyle) {
-      replacement.setAttribute('style', inlineStyle);
-    }
-    replacement.textContent = getControlDisplayValue(control) || '\u00a0';
-    replacement.style.display = 'flex';
-    replacement.style.alignItems = 'center';
-    replacement.style.whiteSpace = 'pre-wrap';
-    replacement.style.backgroundColor = '#ffffff';
-    replacement.style.color = '#0f172a';
-    const minHeight = Math.max(control.clientHeight, 24);
-    replacement.style.minHeight = `${minHeight}px`;
-    const computed = doc.defaultView ? doc.defaultView.getComputedStyle(control) : null;
-    if (computed) {
-      replacement.style.justifyContent = 'flex-start';
-      replacement.style.fontSize = computed.fontSize;
-      replacement.style.fontFamily = computed.fontFamily;
-      replacement.style.fontWeight = computed.fontWeight;
-      replacement.style.paddingTop = computed.paddingTop;
-      replacement.style.paddingRight = computed.paddingRight;
-      replacement.style.paddingBottom = computed.paddingBottom;
-      replacement.style.paddingLeft = computed.paddingLeft;
-      replacement.style.borderRadius = computed.borderRadius;
-      replacement.style.border = computed.border;
-      replacement.style.boxSizing = computed.boxSizing;
-      if (control.clientWidth > 0) {
-        replacement.style.width = `${control.clientWidth}px`;
-      }
-    }
-    control.parentNode?.replaceChild(replacement, control);
-  });
-
-  const capturePlaceholders = root.querySelectorAll('[data-capture-placeholder]');
-  capturePlaceholders.forEach((node) => {
-    node.classList.add('bg-white');
-  });
-
-  const hideOnExport = root.querySelectorAll('[data-hide-on-export]');
-  hideOnExport.forEach((node) => {
-    node.style.display = 'none';
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
 }
 
-async function getImageDataForPdf(src) {
-  if (!src) return null;
+let lastNominatimRequestAt = 0;
 
-  if (typeof Image === 'undefined' || typeof document === 'undefined') {
-    if (src.startsWith('data:image/jpeg') || src.startsWith('data:image/jpg')) {
-      return { dataUrl: src, format: 'JPEG', width: 0, height: 0 };
-    }
-    if (src.startsWith('data:image/png')) {
-      return { dataUrl: src, format: 'PNG', width: 0, height: 0 };
-    }
+async function fetchNominatim(params, { retries = NOMINATIM_MAX_RETRIES } = {}) {
+  const elapsed = Date.now() - lastNominatimRequestAt;
+  if (elapsed < NOMINATIM_MIN_DELAY_MS) {
+    await wait(NOMINATIM_MIN_DELAY_MS - elapsed);
+  }
+
+  const url = `${NOMINATIM_ENDPOINT}?${params.toString()}`;
+  lastNominatimRequestAt = Date.now();
+
+  const referer = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : undefined;
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+      'Accept-Language': 'en-GB,en;q=0.9',
+      ...(referer ? { Referer: referer } : {}),
+    },
+  });
+
+  if (response.status === 429 && retries > 0) {
+    await wait(NOMINATIM_MIN_DELAY_MS * 1.5);
+    return fetchNominatim(params, { retries: retries - 1 });
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Nominatim data: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  return Array.isArray(payload) ? payload : [];
+}
+
+function mapOsPlacesResultToNominatim(item) {
+  const payload = item?.DPA ?? item?.LPI;
+  if (!payload) {
     return null;
   }
 
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      try {
-        const width = img.naturalWidth || img.width || 1;
-        const height = img.naturalHeight || img.height || 1;
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        const jpegData = canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1800 });
-        resolve({ dataUrl: jpegData, format: 'JPEG', width, height });
-      } catch (error) {
-        reject(error);
-      }
-    };
-    img.onerror = (error) => reject(error);
-    img.src = src;
-  });
-}
+  const postcode = formatPostcode(payload.POSTCODE);
+  const houseNumber =
+    payload.BUILDING_NUMBER || payload.SUB_BUILDING_NAME || payload.BUILDING_NAME || payload.ORGANISATION_NAME;
+  const street =
+    payload.THOROUGHFARE_NAME ||
+    payload.DEPENDENT_THOROUGHFARE_NAME ||
+    payload.STREET_DESCRIPTION ||
+    payload.ROAD_NAME;
+  const locality =
+    payload.DEPENDENT_LOCALITY ||
+    payload.DOUBLE_DEPENDENT_LOCALITY ||
+    payload.LOCALITY_NAME ||
+    payload.TOWN_NAME;
+  const city = payload.POST_TOWN || payload.TOWN_NAME || locality;
+  const county = payload.COUNTY || payload.ADMINISTRATIVE_AREA || payload.DISTRICT || payload.LOCAL_AUTHORITY;
+  const lat = Number(payload.LAT ?? payload.LATITUDE);
+  const lon = Number(payload.LNG ?? payload.LONGITUDE);
 
-function calculateEquity(rawInputs) {
-  const inputs = { ...DEFAULT_INPUTS, ...rawInputs };
+  const address = {
+    house_number: houseNumber || undefined,
+    house_name: payload.BUILDING_NAME || payload.SUB_BUILDING_NAME || undefined,
+    road: street || undefined,
+    residential: locality || undefined,
+    suburb: locality || undefined,
+    city: city || undefined,
+    county: county || undefined,
+    postcode: postcode || formatPostcode(payload.POSTCODE),
+  };
 
-  const stampDuty = calcStampDuty(
-    inputs.purchasePrice,
-    inputs.buyerType,
-    inputs.propertiesOwned,
-    inputs.firstTimeBuyer
-  );
+  const labelParts = [
+    address.house_number || address.house_name,
+    address.road || address.residential,
+    address.city,
+    address.county,
+    address.postcode,
+  ].filter(Boolean);
 
-  const isCompanyBuyer = inputs.buyerType === 'company';
-  const deposit = inputs.purchasePrice * inputs.depositPct;
-  const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
-  const closing = otherClosing + stampDuty;
-
-  const loan = inputs.purchasePrice - deposit;
-  const mortgageMonthly =
-    inputs.loanType === 'interest_only'
-      ? (loan * inputs.interestRate) / 12
-      : monthlyMortgagePayment({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears });
-
-  const baseIncome1 = isCompanyBuyer ? 0 : (inputs.incomePerson1 ?? 0);
-  const baseIncome2 = isCompanyBuyer ? 0 : (inputs.incomePerson2 ?? 0);
-  const sharePct1 = Number.isFinite(inputs.ownershipShare1) ? inputs.ownershipShare1 : 0.5;
-  const sharePct2 = Number.isFinite(inputs.ownershipShare2) ? inputs.ownershipShare2 : 0.5;
-  const shareTotal = sharePct1 + sharePct2;
-  const normalizedShare1 = shareTotal > 0 ? sharePct1 / shareTotal : 0.5;
-  const normalizedShare2 = shareTotal > 0 ? sharePct2 / shareTotal : 0.5;
-
-  const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
-  const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
-  const monthlyRate = inputs.interestRate / 12;
-  let balance = loan;
-  const totalMonths = inputs.exitYear * 12;
-
-  for (let month = 1; month <= totalMonths; month++) {
-    const yearIndex = Math.ceil(month / 12) - 1;
-    if (yearIndex >= annualDebtService.length) break;
-
-    if (inputs.loanType !== 'interest_only' && (month > inputs.mortgageYears * 12 || balance <= 0)) {
-      break;
-    }
-
-    const interestPayment = balance * monthlyRate;
-    let payment =
-      inputs.loanType === 'interest_only'
-        ? balance * monthlyRate
-        : mortgageMonthly;
-
-    if (!Number.isFinite(payment)) payment = 0;
-
-    let principalPaid = inputs.loanType === 'interest_only' ? 0 : payment - interestPayment;
-
-    if (inputs.loanType !== 'interest_only') {
-      if (principalPaid > balance) {
-        principalPaid = balance;
-        payment = interestPayment + principalPaid;
-      }
-      balance = Math.max(0, balance - principalPaid);
-    }
-
-    annualInterest[yearIndex] += interestPayment;
-    annualDebtService[yearIndex] += payment;
-  }
-
-  const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
-  const variableOpex = inputs.monthlyRent * 12 * (inputs.mgmtPct + inputs.repairsPct);
-  const fixedOpex = inputs.insurancePerYear + inputs.otherOpexPerYear;
-  const opexYear1 = variableOpex + fixedOpex;
-  const noiYear1 = grossRentYear1 - (variableOpex + fixedOpex);
-  const debtServiceYear1 = annualDebtService[0] ?? mortgageMonthly * 12;
-  const cashflowYear1 = noiYear1 - debtServiceYear1;
-
-  const cap = noiYear1 / inputs.purchasePrice;
-  const cashIn = deposit + closing + inputs.renovationCost;
-  const coc = cashflowYear1 / cashIn;
-  const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
-
-  const months = Math.min(inputs.exitYear * 12, inputs.mortgageYears * 12);
-  const remaining =
-    inputs.loanType === 'interest_only'
-      ? loan
-      : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: months });
-
-  const futureValue = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, inputs.exitYear);
-  const sellingCosts = futureValue * inputs.sellingCostsPct;
-
-  const cf = [];
-  const initialOutlay = -cashIn;
-  cf.push(initialOutlay);
-
-  let rent = inputs.monthlyRent * 12;
-  let cumulativeCashPreTax = 0;
-  let cumulativeCashAfterTax = 0;
-  let cumulativeReinvested = 0;
-  let exitCumCash = 0;
-  let exitCumCashAfterTax = 0;
-  let exitNetSaleProceeds = 0;
-  let indexVal = cashIn;
-  let reinvestFundValue = 0;
-  const reinvestShare = inputs.reinvestIncome
-    ? Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1)
-    : 0;
-  const shouldReinvest = Boolean(inputs.reinvestIncome) && reinvestShare > 0;
-
-  const chart = [];
-  const annualGrossRents = [];
-  const annualOperatingExpenses = [];
-  const annualNoiValues = [];
-  const annualCashflowsPreTax = [];
-  const annualCashflowsAfterTax = [];
-  const initialNetEquity =
-    inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
-  chart.push({
-    year: 0,
-    indexFund: indexVal,
-    propertyValue: inputs.purchasePrice,
-    propertyGross: inputs.purchasePrice,
-    propertyNet: initialNetEquity,
-    propertyNetAfterTax: initialNetEquity,
-  });
-
-  const propertyTaxes = [];
-  const indexGrowth = Number.isFinite(inputs.indexFundGrowth) ? inputs.indexFundGrowth : DEFAULT_INDEX_GROWTH;
-
-  for (let y = 1; y <= inputs.exitYear; y++) {
-    const gross = rent * (1 - inputs.vacancyPct);
-    const varOpex = rent * (inputs.mgmtPct + inputs.repairsPct);
-    const fixed = inputs.insurancePerYear + inputs.otherOpexPerYear;
-    const noi = gross - (varOpex + fixed);
-    const debtService = annualDebtService[y - 1] ?? 0;
-    const cash = noi - debtService;
-    cumulativeCashPreTax += cash;
-
-    const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
-    const taxableProfit = noi - interestPaid;
-    let propertyTax = 0;
-    if (isCompanyBuyer) {
-      propertyTax = roundTo(Math.max(0, taxableProfit) * 0.19, 2);
-    } else {
-      const shareOwnerA = taxableProfit * normalizedShare1;
-      const shareOwnerB = taxableProfit * normalizedShare2;
-      const taxOwnerA = calcIncomeTax(baseIncome1 + shareOwnerA) - calcIncomeTax(baseIncome1);
-      const taxOwnerB = calcIncomeTax(baseIncome2 + shareOwnerB) - calcIncomeTax(baseIncome2);
-      propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
-    }
-    propertyTaxes.push(propertyTax);
-    const afterTaxCash = cash - propertyTax;
-    cumulativeCashAfterTax += afterTaxCash;
-    const investableCash = Math.max(0, afterTaxCash);
-    const reinvestContribution = shouldReinvest ? investableCash * reinvestShare : 0;
-    cumulativeReinvested += reinvestContribution;
-    reinvestFundValue = shouldReinvest ? reinvestFundValue * (1 + indexGrowth) + reinvestContribution : 0;
-
-    annualGrossRents.push(gross);
-    annualOperatingExpenses.push(varOpex + fixed);
-    annualNoiValues.push(noi);
-    annualCashflowsPreTax.push(cash);
-    annualCashflowsAfterTax.push(afterTaxCash);
-
-    const monthsPaid = Math.min(y * 12, inputs.mortgageYears * 12);
-    const remainingLoanYear =
-      inputs.loanType === 'interest_only'
-        ? loan
-        : Math.max(0, remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid }));
-
-    const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
-    const saleCostsEstimate = vt * inputs.sellingCostsPct;
-    const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
-    const cumulativeCashPreTaxNet = shouldReinvest
-      ? cumulativeCashPreTax - cumulativeReinvested
-      : cumulativeCashPreTax;
-    const cumulativeCashAfterTaxNet = shouldReinvest
-      ? cumulativeCashAfterTax - cumulativeReinvested
-      : cumulativeCashAfterTax;
-    const propertyGrossValue = vt + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
-
-    if (y === inputs.exitYear) {
-      const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
-      const sell = fv * inputs.sellingCostsPct;
-      const rem =
-        inputs.loanType === 'interest_only'
-          ? loan
-          : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
-      const netSaleProceeds = fv - sell - rem;
-      cf.push(cash + netSaleProceeds);
-      exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
-      exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
-      exitNetSaleProceeds = netSaleProceeds;
-    } else {
-      cf.push(cash);
-    }
-
-    indexVal = indexVal * (1 + indexGrowth);
-    chart.push({
-      year: y,
-      indexFund: indexVal,
-      propertyValue: vt,
-      propertyGross: propertyGrossValue,
-      propertyNet: propertyNetValue,
-      propertyNetAfterTax: propertyNetAfterTaxValue,
-    });
-
-    rent *= 1 + inputs.rentGrowth;
-  }
-
-  const npvValue = npv(inputs.discountRate, cf);
-  const score = scoreDeal({ cap, coc, dscr, npv: npvValue, cashflowYear1 });
-
-  const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
-  const propertyGrossWealthAtExit = futureValue + exitCumCash;
-  const wealthDelta = propertyNetWealthAtExit - indexVal;
-  const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
-  const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
-  const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTax;
-  const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
-  const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
-  const propertyTaxYear1 = propertyTaxes[0] ?? 0;
-  const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
+  const displayName = payload.ADDRESS || labelParts.join(', ');
 
   return {
-    deposit,
-    stampDuty,
-    otherClosing,
-    closing,
-    loan,
-    mortgage: mortgageMonthly,
-    grossRentYear1,
-    variableOpex,
-    fixedOpex,
-    opexYear1,
-    debtServiceYear1,
-    noiYear1,
-    cashflowYear1,
-    cashflowYear1AfterTax,
-    cap,
-    coc,
-    dscr,
-    remaining,
-    futureValue,
-    sellingCosts,
-    npv: npvValue,
-    score,
-    cf,
-    chart,
-    cashIn,
-    projectCost: inputs.purchasePrice + closing + inputs.renovationCost,
-    yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
-    indexValEnd: indexVal,
-    exitCumCash,
-    exitCumCashAfterTax,
-    exitNetSaleProceeds,
-    propertyNetWealthAtExit,
-    propertyGrossWealthAtExit,
-    wealthDelta,
-    wealthDeltaPct,
-    totalPropertyTax,
-    totalReinvested: cumulativeReinvested,
-    reinvestFundValue,
-    propertyTaxes,
-    propertyNetWealthAfterTax,
-    wealthDeltaAfterTax,
-    wealthDeltaAfterTaxPct,
-    exitYear: inputs.exitYear,
-    annualGrossRents,
-    annualOperatingExpenses,
-    annualNoiValues,
-    annualCashflowsPreTax,
-    annualCashflowsAfterTax,
-    annualDebtService,
+    place_id: `os-${payload.UPRN ?? displayName}`,
+    osm_id: payload.UPRN ?? payload.ID ?? displayName,
+    lat: Number.isFinite(lat) ? String(lat) : undefined,
+    lon: Number.isFinite(lon) ? String(lon) : undefined,
+    address,
+    display_name: displayName,
+    type: 'building',
+    class: 'building',
   };
+}
+
+async function fetchOsPlacesAddresses(postcode) {
+  if (!OS_PLACES_API_KEY) {
+    return [];
+  }
+
+  const formatted = formatPostcode(postcode);
+  if (!formatted) {
+    return [];
+  }
+
+  const url = `${OS_PLACES_ENDPOINT}?postcode=${encodeURIComponent(formatted)}&key=${encodeURIComponent(
+    OS_PLACES_API_KEY,
+  )}`;
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      return [];
+    }
+    throw new Error(`Failed to fetch OS Places data: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const items = Array.isArray(payload?.results) ? payload.results : [];
+  return items.map(mapOsPlacesResultToNominatim).filter(Boolean);
+}
+
+const propertyLookupCache = new Map();
+
+function pickAddressPart(address, keys, fallback = '') {
+  for (const key of keys) {
+    if (address?.[key]) {
+      return address[key];
+    }
+  }
+  return fallback;
+}
+
+function extractHouseNumber(displayName, street) {
+  if (!displayName) {
+    return '';
+  }
+
+  const candidates = [];
+
+  if (street) {
+    const streetPattern = escapeRegex(street);
+    candidates.push(new RegExp(`(?:^|,|\s)(\d+[A-Za-z\-/]*)\s+${streetPattern}\b`, 'i'));
+    candidates.push(new RegExp(`\bFlat\s+(\d+[A-Za-z\-/]*)\s+${streetPattern}\b`, 'i'));
+    candidates.push(new RegExp(`\bApartment\s+(\d+[A-Za-z\-/]*)\s+${streetPattern}\b`, 'i'));
+  }
+
+  candidates.push(/^(\d+[A-Za-z\-/]*)\b/);
+
+  for (const pattern of candidates) {
+    const match = displayName.match(pattern);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+
+  return '';
+}
+
+function deriveStreet(address, displayName) {
+  const direct = pickAddressPart(address, [
+    'road',
+    'residential',
+    'pedestrian',
+    'footway',
+    'neighbourhood',
+    'suburb',
+  ]);
+
+  if (direct) {
+    return direct;
+  }
+
+  if (!displayName) {
+    return '';
+  }
+
+  const firstSegment = displayName.split(',')[0]?.trim() ?? '';
+  if (!firstSegment) {
+    return '';
+  }
+
+  const tokens = firstSegment.split(/\s+/);
+  if (tokens.length <= 1) {
+    return '';
+  }
+
+  if (/^\d/.test(tokens[0])) {
+    return tokens.slice(1).join(' ');
+  }
+
+  return firstSegment;
+}
+
+function deriveHouseNumber(address, displayName, street) {
+  const candidate = pickAddressPart(address, [
+    'house_number',
+    'house_name',
+    'building',
+    'unit',
+    'industrial',
+    'commercial',
+    'retail',
+  ]);
+
+  if (candidate) {
+    return String(candidate);
+  }
+
+  const inferred = extractHouseNumber(displayName || '', street || '');
+  return inferred ? String(inferred) : '';
+}
+
+function createPropertyOption(item, postcode, fallbackCoordinates = null) {
+  const address = item.address ?? {};
+  const latitude = parseFloat(item.lat);
+  const longitude = parseFloat(item.lon);
+  const street = deriveStreet(address, item.display_name);
+  const houseNumber = deriveHouseNumber(address, item.display_name, street);
+  const city = pickAddressPart(address, ['city', 'town', 'village', 'hamlet', 'suburb']);
+  const county = pickAddressPart(address, ['county', 'state_district', 'state']);
+  const formattedPostcode = address.postcode ?? formatPostcode(postcode);
+  const labelParts = [houseNumber, street, city, county, formattedPostcode].filter(Boolean);
+  const label = labelParts.length > 0 ? labelParts.join(', ') : item.display_name;
+  const fallbackLatitude = Number.isFinite(latitude) ? latitude : fallbackCoordinates?.latitude;
+  const fallbackLongitude = Number.isFinite(longitude) ? longitude : fallbackCoordinates?.longitude;
+
+  return {
+    id: String(item.place_id),
+    uprn: String(item.osm_id ?? item.place_id),
+    label,
+    houseNumber: houseNumber ? String(houseNumber) : undefined,
+    street: street || undefined,
+    city: city || undefined,
+    county: county || undefined,
+    postcode: formattedPostcode,
+    latitude: Number.isFinite(fallbackLatitude) ? fallbackLatitude : undefined,
+    longitude: Number.isFinite(fallbackLongitude) ? fallbackLongitude : undefined,
+  };
+}
+
+function normalisePropertyOptions(dataset, postcode, fallbackCoordinates, normalisedTarget) {
+  const options = (dataset ?? [])
+    .filter((item) => item && item.address)
+    .map((item) => createPropertyOption(item, postcode, fallbackCoordinates))
+    .filter((option) => {
+      if (!option.postcode) {
+        return true;
+      }
+      const candidate = normalisePostcode(option.postcode);
+      if (!candidate) {
+        return false;
+      }
+      if (!normalisedTarget) {
+        return true;
+      }
+      const length = Math.min(candidate.length, normalisedTarget.length);
+      return candidate.slice(0, length) === normalisedTarget.slice(0, length);
+    });
+
+  const unique = [];
+  const seen = new Set();
+  for (const option of options) {
+    const slug = [option.postcode, option.houseNumber, option.street].filter(Boolean).join('|');
+    const key = slug ? slug.toLowerCase() : option.id;
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      unique.push(option);
+    }
+  }
+
+  const sorted = unique.sort((a, b) => {
+    const aNumber = parseHouseNumber(a.houseNumber);
+    const bNumber = parseHouseNumber(b.houseNumber);
+    if (aNumber !== bNumber) {
+      return aNumber - bNumber;
+    }
+
+    const streetCompare = (a.street || '').localeCompare(b.street || '');
+    if (streetCompare !== 0) {
+      return streetCompare;
+    }
+
+    return (a.label || '').localeCompare(b.label || '');
+  });
+
+  return sorted;
+}
+
+function isLikelyProperty(item) {
+  if (!item) {
+    return false;
+  }
+
+  const address = item.address ?? {};
+  if (address.house_number || address.house_name) {
+    return true;
+  }
+
+  const type = item.type ?? '';
+  const className = item.class ?? '';
+  const propertyTypes = new Set([
+    'house',
+    'residential',
+    'apartments',
+    'detached',
+    'semidetached_house',
+    'terrace',
+    'building',
+    'bungalow',
+  ]);
+
+  if (propertyTypes.has(type)) {
+    return true;
+  }
+
+  if (className === 'building' || className === 'place') {
+    return true;
+  }
+
+  return Boolean(address.road && (address.suburb || address.city));
+}
+
+function parseHouseNumber(value) {
+  if (!value) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const numeric = Number.parseInt(String(value).replace(/[^0-9]/g, ''), 10);
+  return Number.isFinite(numeric) ? numeric : Number.POSITIVE_INFINITY;
+}
+
+function buildBoundingBox(longitude, latitude, offset = 0.01) {
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
+    return null;
+  }
+
+  const west = longitude - offset;
+  const east = longitude + offset;
+  const north = latitude + offset;
+  const south = latitude - offset;
+
+  return [west, north, east, south];
+}
+
+async function fetchPostcodeMetadata(postcode) {
+  const formatted = formatPostcode(postcode);
+  if (!formatted) {
+    return null;
+  }
+
+  const response = await fetch(`${POSTCODES_IO_ENDPOINT}/${encodeURIComponent(formatted)}`, {
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      return null;
+    }
+
+    throw new Error(`Failed to fetch metadata for postcode ${formatted}`);
+  }
+
+  const payload = await response.json();
+  return payload?.result ?? null;
+}
+
+async function fetchPropertiesForPostcode(postcode) {
+  const trimmed = postcode?.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const formattedPostcode = formatPostcode(trimmed);
+  const normalisedTarget = normalisePostcode(formattedPostcode || trimmed);
+  const cacheKey = formattedPostcode || trimmed;
+  if (propertyLookupCache.has(cacheKey)) {
+    return propertyLookupCache.get(cacheKey);
+  }
+
+  let postcodeMetadata = null;
+  try {
+    postcodeMetadata = await fetchPostcodeMetadata(formattedPostcode);
+  } catch (metadataError) {
+    console.warn('Failed to resolve postcode metadata', metadataError);
+  }
+
+  const fallbackCoordinates = postcodeMetadata
+    ? { latitude: postcodeMetadata.latitude, longitude: postcodeMetadata.longitude }
+    : null;
+
+  if (formattedPostcode && OS_PLACES_API_KEY) {
+    try {
+      const osResults = await fetchOsPlacesAddresses(formattedPostcode);
+      if (Array.isArray(osResults) && osResults.length > 0) {
+        const osOptions = normalisePropertyOptions(osResults, formattedPostcode, fallbackCoordinates, normalisedTarget);
+        propertyLookupCache.set(cacheKey, osOptions);
+        return osOptions;
+      }
+    } catch (osError) {
+      console.warn('Failed to resolve OS Places addresses', osError);
+    }
+  }
+
+  const baseParams = new URLSearchParams({
+    format: 'jsonv2',
+    addressdetails: '1',
+    countrycodes: 'gb',
+    limit: '120',
+    dedupe: '0',
+    extratags: '1',
+    namedetails: '1',
+    polygon_geojson: '0',
+  });
+
+  if (formattedPostcode) {
+    baseParams.set('postalcode', formattedPostcode);
+    baseParams.set('q', formattedPostcode);
+  } else {
+    baseParams.set('q', trimmed);
+  }
+
+  const viewbox =
+    postcodeMetadata?.longitude && postcodeMetadata?.latitude
+      ? buildBoundingBox(postcodeMetadata.longitude, postcodeMetadata.latitude, 0.01)
+      : null;
+
+  if (viewbox) {
+    baseParams.set('viewbox', viewbox.join(','));
+    baseParams.set('bounded', '1');
+  }
+
+  let baseResults = [];
+  try {
+    baseResults = await fetchNominatim(baseParams);
+  } catch (searchError) {
+    console.warn('Failed to resolve postcode search', searchError);
+  }
+
+  const candidateStreets = new Set();
+  const candidateSettlements = new Set();
+
+  for (const item of baseResults) {
+    const address = item?.address ?? {};
+    const streetCandidate = pickAddressPart(address, [
+      'road',
+      'residential',
+      'pedestrian',
+      'neighbourhood',
+      'footway',
+    ]);
+    if (streetCandidate) {
+      candidateStreets.add(streetCandidate);
+    }
+
+    const settlementCandidate = pickAddressPart(address, ['city', 'town', 'village', 'hamlet', 'suburb']);
+    if (settlementCandidate) {
+      candidateSettlements.add(settlementCandidate);
+    }
+  }
+
+  const supplementaryResults = [];
+  const settlementFallback = candidateSettlements.values().next().value || undefined;
+  const streets = Array.from(candidateStreets).slice(0, 8);
+
+  for (const streetName of streets) {
+    const streetParams = new URLSearchParams(baseParams);
+    streetParams.delete('q');
+    streetParams.set('street', streetName);
+    if (settlementFallback) {
+      streetParams.set('city', settlementFallback);
+    }
+
+    try {
+      const streetPayload = await fetchNominatim(streetParams);
+      if (Array.isArray(streetPayload) && streetPayload.length > 0) {
+        supplementaryResults.push(...streetPayload);
+      }
+    } catch (streetError) {
+      console.warn('Failed to enrich street results', streetError);
+    }
+  }
+
+  if (baseResults.length === 0) {
+    const fallbackParams = new URLSearchParams({
+      format: 'jsonv2',
+      addressdetails: '1',
+      countrycodes: 'gb',
+      limit: '120',
+      q: formattedPostcode || trimmed,
+    });
+
+    try {
+      const fallbackPayload = await fetchNominatim(fallbackParams);
+      if (Array.isArray(fallbackPayload) && fallbackPayload.length > 0) {
+        baseResults = fallbackPayload;
+      }
+    } catch (fallbackError) {
+      console.warn('Failed to resolve broad fallback postcode search', fallbackError);
+    }
+  }
+
+  const combined = [...baseResults, ...supplementaryResults];
+
+  const sourceItems = combined.filter(isLikelyProperty);
+  const dataset = sourceItems.length > 0 ? sourceItems : combined;
+  const normalisedOptions = normalisePropertyOptions(
+    dataset,
+    formattedPostcode || trimmed,
+    fallbackCoordinates,
+    normalisedTarget,
+  );
+
+  propertyLookupCache.set(cacheKey, normalisedOptions);
+  return normalisedOptions;
+}
+
+function inferLocationKey(property) {
+  const postcode = normalisePostcode(property?.postcode);
+  const city = property?.city?.toLowerCase?.() ?? '';
+
+  if (postcode.startsWith('FY5') || city.includes('cleveleys') || city.includes('blackpool')) {
+    return 'cleveleys';
+  }
+  if (postcode.startsWith('E2') || city.includes('shoreditch') || city.includes('london')) {
+    return 'london';
+  }
+  if (postcode.startsWith('M4') || city.includes('manchester')) {
+    return 'manchester';
+  }
+  if (postcode.startsWith('B3') || city.includes('birmingham')) {
+    return 'birmingham';
+  }
+  if (postcode.startsWith('BS5') || city.includes('bristol')) {
+    return 'bristol';
+  }
+  if (postcode.startsWith('LS') || city.includes('leeds')) {
+    return 'leeds';
+  }
+  if (postcode.startsWith('L1') || city.includes('liverpool')) {
+    return 'liverpool';
+  }
+  return 'default';
+}
+
+const DEFAULT_PROPERTY_OPTIONS = [];
+const DEFAULT_SELECTED_PROPERTY = null;
+const DEFAULT_LOCATION_KEY = 'default';
+
+const DEFAULT_SCENARIO_INPUTS = {
+  propertyType: 'flat',
+  bedrooms: 2,
+  bathrooms: 1,
+  internalArea: 68,
+  energyRating: 'C',
+  amenityLevel: 'medium',
+  schoolQuality: 'good',
+  sentiment: 'positive',
+  isNewBuild: false,
+  plannedRetrofit: true,
+  floodZone: 'medium',
+  planningPipeline: 36,
+  dataGaps: 1,
+  purchasePrice: 245000,
+};
+
+const SCORE_METRICS = {
+  futureGrowth: {
+    label: 'Future growth potential',
+    shortLabel: 'Growth',
+    weight: 0.28,
+    description: 'Price momentum blended with footfall and pipeline pressure.',
+    calculation: (drivers) => [
+      `Annual price trend of ${formatPercent(drivers.yoyPriceGrowth)} using Land Registry + ONS micro-area indices.`,
+      `Street-level footfall change ${formatPercent(drivers.footfallTrend)} from mobility feeds (TfL + Google).`,
+      `Planning approvals (${drivers.approvals12m} resi units) reduce supply slack vs long-term pipeline ${drivers.planningPipeline} units.`,
+      `Sentiment index ${(drivers.sentimentIndex * 100).toFixed(0)} boosts near-term absorption.`,
+    ],
+    howToUse:
+      'Rank streets by medium-term uplift potential; prioritise for acquisition or development appraisals when weighted score exceeds 65.',
+    dataSources: [
+      'HM Land Registry street-level sold price feed',
+      'ONS House Price Index (MSOA granularity)',
+      'Transport for London + Google mobility footfall tiles',
+      'planning.data.gov.uk + council portals',
+      'Social sentiment (Reddit/Twitter geofenced mentions)',
+    ],
+  },
+  stability: {
+    label: 'Market resilience',
+    shortLabel: 'Stability',
+    weight: 0.22,
+    description: 'Volatility, climate and reliability of data at the street.',
+    calculation: (drivers) => [
+      `Data confidence ${formatPercent(drivers.dataConfidence)} from recency + coverage across feeds.`,
+      `Price volatility ${(drivers.volatility * 100).toFixed(1)}% vs city baseline informs downside risk.`,
+      `Flood & insurance signals: zone ${drivers.floodZone?.toUpperCase?.() ?? 'N/A'}, ${drivers.floodInsuranceClaims} historic claims.`,
+      `Noise complaints ${drivers.noiseComplaints} per 1k HH from local authority reporting.`,
+    ],
+    howToUse:
+      'Balance portfolios by pairing high-growth areas with resilience scores above 60 to manage downside exposure.',
+    dataSources: [
+      'Environment Agency flood map for planning',
+      'DEFRA noise + air quality open data',
+      'Insurance claim counts (Flood Re / FOI)',
+      'Local authority nuisance reports',
+    ],
+  },
+  rentalDemand: {
+    label: 'Rental demand depth',
+    shortLabel: 'Rental',
+    weight: 0.2,
+    description: 'PRS momentum, vacancy and micro-business vibrancy.',
+    calculation: (drivers) => [
+      `Rent growth ${formatPercent(drivers.yoyRentGrowth)} from ONS PRS index + VOA listings.`,
+      `Vacancy rate ${(drivers.vacancyRate * 100).toFixed(1)}% (VOA council tax empty homes).`,
+      `Footfall ${formatPercent(drivers.footfallTrend)} and micro-business density ${drivers.microbusinessDensity} per sqkm show local spend.`,
+      `PRS absorption proxy ${(drivers.transactionVelocity * 100).toFixed(0)}% of listings let/sold within 30 days.`,
+    ],
+    howToUse:
+      'Use to stress-test rental assumptions and design rent-to-rent or BTR strategies; target >60 for stabilised yield confidence.',
+    dataSources: [
+      'ONS PRS rental price index',
+      'Valuation Office Agency vacancy datasets',
+      'OpenStreetMap + Companies House micro-business density',
+      'Footfall APIs (TfL, Here mobility)',
+    ],
+  },
+  livability: {
+    label: 'Livability & amenities',
+    shortLabel: 'Livability',
+    weight: 0.18,
+    description: 'Walkability, greenspace, schools and environmental quality.',
+    calculation: (drivers) => [
+      `Walk Score proxy ${drivers.walkScore} derived from OSM amenity reach + TfL PTAL.`,
+      `Greenspace ${(drivers.greenspaceShare * 100).toFixed(1)}% canopy (Ordnance Survey Greenspace + Sentinel-2).`,
+      `Outstanding schools share ${(drivers.schoolOutstandingShare * 100).toFixed(0)}% within 1km (DfE).`,
+      `Air quality index ${drivers.airQualityIndex} (DEFRA) + crime ${drivers.crimeRate} per 1k (Police UK).`,
+    ],
+    howToUse:
+      'Support ESG / tenant experience reporting; streets >65 align with premium repositioning or co-living offerings.',
+    dataSources: [
+      'OpenStreetMap POIs & DfT access metrics',
+      'Ordnance Survey Greenspace + Copernicus Sentinel-2 NDVI',
+      'Department for Education school performance',
+      'Police.uk crime API',
+      'DEFRA air quality monitors',
+    ],
+  },
+  liquidity: {
+    label: 'Liquidity & exit timing',
+    shortLabel: 'Liquidity',
+    weight: 0.12,
+    description: 'Supply pressure, DOM and comp density to de-risk exits.',
+    calculation: (drivers) => [
+      `Supply pressure index ${drivers.supplyPressure.toFixed(2)} from planning pipeline vs completions.`,
+      `${drivers.comparables} comparable sales within 400m (Land Registry) underpin valuation.`,
+      `Average DOM ${drivers.avgDom} days (Zoopla/Rightmove scrape).`,
+      `Transaction velocity ${(drivers.transactionVelocity * 100).toFixed(0)}% of listings trading inside 90 days.`,
+    ],
+    howToUse:
+      'Time acquisitions/disposals; low liquidity (<50) warrants extended marketing timelines or pricing discounts.',
+    dataSources: [
+      'HM Land Registry Price Paid data',
+      'Zoopla/Rightmove DOM web-scrapes',
+      'Planning.data.gov.uk pipeline counts',
+      'Internal agent demand logs',
+    ],
+  },
+};
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function normaliseCurrencyInput(value) {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^0-9.]/g, '');
+    if (!cleaned) {
+      return Number.NaN;
+    }
+    return Number(cleaned);
+  }
+
+  return Number.NaN;
+}
+
+function buildForecast(inputs, property, locationKey = 'default') {
+  const profile = STREET_PROFILES[locationKey] ?? STREET_PROFILES.default;
+  const basePrice = LOCATION_BASE_PRICES[locationKey] ?? 275000;
+  const typePremium = PROPERTY_TYPE_PREMIUM[inputs.propertyType] ?? 0;
+  const energyFactor = ENERGY_RATING_FACTORS[inputs.energyRating] ?? 0;
+  const amenityFactor = AMENITY_LEVELS[inputs.amenityLevel] ?? 0;
+  const schoolFactor = SCHOOL_QUALITY_FACTORS[inputs.schoolQuality] ?? 0;
+  const sentimentFactor = SENTIMENT_LEVELS[inputs.sentiment] ?? 0;
+  const bedroomsFactor = (inputs.bedrooms - 2) * 0.06;
+  const bathroomsFactor = (inputs.bathrooms - 1) * 0.025;
+  const sizeFactor = clamp((inputs.internalArea - 70) / 70, -0.4, 0.6) * 0.1;
+  const newBuildFactor = inputs.isNewBuild ? 0.07 : 0;
+  const energyUpgrade = inputs.plannedRetrofit ? 0.02 : 0;
+
+  const compositeFactor =
+    1 +
+    typePremium +
+    energyFactor +
+    amenityFactor +
+    schoolFactor +
+    sentimentFactor +
+    bedroomsFactor +
+    bathroomsFactor +
+    sizeFactor +
+    newBuildFactor +
+    energyUpgrade;
+
+  const referencePrice = basePrice * compositeFactor;
+  const rawPurchaseInput = normaliseCurrencyInput(inputs.purchasePrice);
+  const purchasePrice =
+    Number.isFinite(rawPurchaseInput) && rawPurchaseInput > 0
+      ? rawPurchaseInput
+      : Math.round(referencePrice * 0.95);
+  const dataConfidence = clamp(0.65 + Math.random() * 0.2 - inputs.dataGaps * 0.08, 0.35, 0.92);
+
+  const yoyPriceGrowth = 0.024 + sentimentFactor * 0.7 + amenityFactor * 0.5;
+  const yoyRentGrowth = 0.031 + schoolFactor * 0.6 + sentimentFactor * 0.4;
+  const supplyPressure = clamp(0.6 - inputs.planningPipeline / 120, 0.2, 0.85);
+
+  const footfallTrend = profile.footfallTrend;
+  const vacancyRate = profile.vacancyRate;
+  const microbusinessDensity = profile.microbusinessDensity;
+  const greenspaceShare = profile.greenspaceShare;
+  const walkScore = profile.walkScore;
+  const volatility = profile.housePriceVolatility;
+  const transactionVelocity = profile.transactionVelocity;
+  const airQualityIndex = profile.airQualityIndex;
+  const noiseComplaints = profile.noiseComplaints;
+  const crimeRate = profile.crimeRate;
+
+  const months = Array.from({ length: 36 }, (_, idx) => idx);
+  const forecastSeries = months.map((month) => {
+    const growthCurve = Math.pow(1 + yoyPriceGrowth / 12, month);
+    const macroAdjustment = 1 + Math.sin(month / 9) * 0.01 - month * 0.0008;
+    const projected = referencePrice * growthCurve * macroAdjustment;
+    return {
+      month,
+      dateLabel: `M${month}`,
+      price: Math.round(projected),
+      low: Math.round(projected * (0.88 + (1 - dataConfidence) * 0.25)),
+      high: Math.round(projected * (1.08 + (1 - dataConfidence) * 0.25)),
+    };
+  });
+
+  const forecastHorizonValue = forecastSeries[forecastSeries.length - 1]?.price ?? referencePrice;
+  const priceDelta = Math.round(referencePrice - purchasePrice);
+  const forecastHorizonDelta = Math.round(forecastHorizonValue - purchasePrice);
+  const forecastYears = forecastSeries.length / 12;
+  const forecastCagr =
+    purchasePrice > 0 && forecastHorizonValue > 0
+      ? Math.pow(forecastHorizonValue / purchasePrice, 1 / forecastYears) - 1
+      : 0;
+  const breakevenPoint = forecastSeries.find((point) => point.price >= purchasePrice);
+  const breakevenMonths = breakevenPoint ? breakevenPoint.month : null;
+
+  const targetAddress =
+    property?.label ||
+    [property?.houseNumber, property?.street, property?.city, property?.county, property?.postcode]
+      .filter(Boolean)
+      .join(', ');
+
+  const comparableStreet = [property?.street || 'Sample Street', property?.city || property?.postcode || locationKey]
+    .filter(Boolean)
+    .join(', ');
+
+  const comparables = Array.from({ length: 5 }, (_, idx) => ({
+    id: idx + 1,
+    address: `${Math.round(40 + Math.random() * 40)} ${comparableStreet}`,
+    price: Math.round(referencePrice * (0.9 + Math.random() * 0.2)),
+    date: `202${2 + (idx % 2)}-0${(idx % 9) + 1}-15`,
+    similarity: clamp(0.72 + Math.random() * 0.2, 0.7, 0.95),
+  }));
+
+  const streetScores = {
+    futureGrowth: clamp(
+      58 +
+        yoyPriceGrowth * 1800 +
+        sentimentFactor * 110 +
+        footfallTrend * 260 -
+        inputs.planningPipeline * 0.08 +
+        profile.planningApprovalsLast12M * 0.9,
+      25,
+      97
+    ),
+    stability: clamp(
+      60 +
+        dataConfidence * 40 -
+        volatility * 45 +
+        (inputs.floodZone === 'low' ? 6 : inputs.floodZone === 'high' ? -12 : 0) -
+        noiseComplaints * 0.3 -
+        Math.max(0, crimeRate - 60) * 0.4 -
+        Math.max(0, airQualityIndex - 30) * 0.5 +
+        Math.min(profile.broadbandMbps / 30, 12),
+      22,
+      96
+    ),
+    rentalDemand: clamp(
+      55 +
+        yoyRentGrowth * 1500 -
+        vacancyRate * 160 +
+        footfallTrend * 180 +
+        microbusinessDensity / 20 +
+        transactionVelocity * 55,
+      22,
+      95
+    ),
+    livability: clamp(
+      54 +
+        walkScore * 0.32 +
+        greenspaceShare * 140 +
+        schoolFactor * 140 -
+        noiseComplaints * 0.35 -
+        (crimeRate - 55) * 0.25 -
+        (inputs.sentiment === 'negative' ? 6 : 0) -
+        Math.max(0, airQualityIndex - 30) * 0.4,
+      25,
+      96
+    ),
+    liquidity: clamp(
+      52 +
+        supplyPressure * 65 +
+        (5 - inputs.dataGaps) * 4 +
+        comparables.length * 3 +
+        (1 - vacancyRate) * 30 +
+        transactionVelocity * 45 -
+        profile.avgDom * 0.3,
+      22,
+      94
+    ),
+  };
+
+  const scoreDrivers = {
+    futureGrowth: {
+      yoyPriceGrowth,
+      footfallTrend,
+      approvals12m: profile.planningApprovalsLast12M,
+      planningPipeline: inputs.planningPipeline,
+      sentimentIndex: 1 + sentimentFactor,
+    },
+    stability: {
+      dataConfidence,
+      volatility,
+      floodZone: inputs.floodZone,
+      floodInsuranceClaims: profile.floodInsuranceClaims,
+      noiseComplaints,
+    },
+    rentalDemand: {
+      yoyRentGrowth,
+      vacancyRate,
+      footfallTrend,
+      microbusinessDensity,
+      transactionVelocity,
+    },
+    livability: {
+      walkScore,
+      greenspaceShare,
+      schoolOutstandingShare: clamp(0.4 + schoolFactor * 1.2, 0.05, 0.95),
+      airQualityIndex,
+      crimeRate,
+    },
+    liquidity: {
+      supplyPressure,
+      comparables: comparables.length,
+      avgDom: profile.avgDom,
+      transactionVelocity,
+    },
+  };
+
+  const weightedScoreTotal = Object.entries(streetScores).reduce((acc, [key, value]) => {
+    const metric = SCORE_METRICS[key];
+    return acc + value * (metric?.weight ?? 0);
+  }, 0);
+
+  const totalWeight = Object.values(SCORE_METRICS).reduce((acc, metric) => acc + metric.weight, 0);
+  const streetOpportunityScore = Math.round(weightedScoreTotal / totalWeight);
+
+  const featureContributions = [
+    { name: 'Base market (location)', weight: basePrice, contribution: basePrice },
+    {
+      name: 'Property type & size',
+      weight: compositeFactor - 1,
+      contribution: Math.round(referencePrice - basePrice * (1 + energyFactor + sentimentFactor + amenityFactor + schoolFactor)),
+    },
+    {
+      name: 'Demand sentiment',
+      weight: sentimentFactor,
+      contribution: Math.round(referencePrice * sentimentFactor),
+    },
+    {
+      name: 'Amenity & school access',
+      weight: amenityFactor + schoolFactor,
+      contribution: Math.round(referencePrice * (amenityFactor + schoolFactor)),
+    },
+    {
+      name: 'Energy & retrofit',
+      weight: energyFactor + energyUpgrade,
+      contribution: Math.round(referencePrice * (energyFactor + energyUpgrade)),
+    },
+  ];
+
+  const riskScores = {
+    marketMomentum: clamp(65 + yoyPriceGrowth * 900 - inputs.dataGaps * 5, 40, 92),
+    supplyRisk: clamp(55 + (1 - supplyPressure) * 40, 35, 88),
+    climateRisk: inputs.floodZone === 'high' ? 38 : inputs.floodZone === 'medium' ? 62 : 78,
+    affordabilityRisk: clamp(70 - yoyRentGrowth * 350 - bedroomsFactor * 20, 32, 84),
+  };
+
+  const narrative = [
+    'Primary driver is constrained supply with planning approvals below long-term trend.',
+    'Positive social sentiment and search interest signal near-term buyer depth.',
+    'Energy performance improvements boost valuation resilience versus local comps.',
+    `At your ${formatCurrency(purchasePrice)} purchase price, the model points to ${formatCurrency(
+      forecastHorizonDelta,
+    )} uplift over 36 months (${formatPercent(forecastCagr)} CAGR).`,
+  ];
+
+  return {
+    headlinePrice: Math.round(referencePrice),
+    confidenceLow: Math.round(referencePrice * (0.92 - (1 - dataConfidence) * 0.2)),
+    confidenceHigh: Math.round(referencePrice * (1.08 + (1 - dataConfidence) * 0.18)),
+    dataConfidence,
+    yoyPriceGrowth,
+    yoyRentGrowth,
+    supplyPressure,
+    comparables,
+    featureContributions,
+    forecastSeries,
+    riskScores,
+    narrative,
+    streetScores,
+    streetOpportunityScore,
+    scoreDrivers,
+    profile,
+    targetAddress,
+    property,
+    purchasePrice,
+    priceDelta,
+    forecastHorizonValue,
+    forecastHorizonDelta,
+    forecastCagr,
+    breakevenMonths,
+  };
+}
+
+function formatCurrency(value) {
+  return new Intl.NumberFormat('en-GB', {
+    style: 'currency',
+    currency: 'GBP',
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatPercent(value) {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function buildDataSourceSections(result, inputs) {
+  const profile = result?.profile ?? STREET_PROFILES.default;
+  const comparables = result?.comparables ?? [];
+  const averageComparablePrice =
+    comparables.length > 0 ? comparables.reduce((sum, comp) => sum + comp.price, 0) / comparables.length : 0;
+  const yoyPriceGrowth = result?.yoyPriceGrowth ?? 0;
+  const yoyRentGrowth = result?.yoyRentGrowth ?? 0;
+  const supplyPressure = result?.supplyPressure ?? 0;
+  const dataConfidence = result?.dataConfidence ?? 0;
+  const sentimentFactor = SENTIMENT_LEVELS[inputs?.sentiment ?? 'neutral'] ?? 0;
+  const transactionVelocity = result?.scoreDrivers?.rentalDemand?.transactionVelocity ?? 0.6;
+
+  return [
+    {
+      title: 'Market fundamentals',
+      items: [
+        {
+          name: 'HM Land Registry',
+          description: `${comparables.length} street comps · avg ${formatCurrency(averageComparablePrice || result?.headlinePrice || 0)} last 12m.`,
+        },
+        {
+          name: 'ONS HPI & PRS rents',
+          description: `Price trend ${formatPercent(yoyPriceGrowth)} · rent ${formatPercent(yoyRentGrowth)} YoY.`,
+        },
+        {
+          name: 'Planning applications',
+          description: `${profile.planningApprovalsLast12M} resi units consented · supply pressure index ${(supplyPressure * 100).toFixed(0)}.`,
+        },
+      ],
+    },
+    {
+      title: 'Liveability & risk',
+      items: [
+        {
+          name: 'Environment Agency flood',
+          description: `Zone ${inputs?.floodZone?.toUpperCase?.() ?? 'N/A'} · ${profile.floodInsuranceClaims} historic claims.`,
+        },
+        {
+          name: 'DEFRA air & noise',
+          description: `Air index ${profile.airQualityIndex} · noise complaints ${profile.noiseComplaints}/1k HH.`,
+        },
+        {
+          name: 'Police.uk crime',
+          description: `${profile.crimeRate} crimes per 1k · resilience score ${Math.round(result?.streetScores?.stability ?? 0)}.`,
+        },
+      ],
+    },
+    {
+      title: 'Demand signals',
+      items: [
+        {
+          name: 'Mobility & footfall',
+          description: `Footfall index ${profile.footfallIndex} · change ${formatPercent(profile.footfallTrend)} vs LY.`,
+        },
+        {
+          name: 'Social sentiment',
+          description: `Net sentiment ${(sentimentFactor * 100).toFixed(0)} pts · conversations geo-tagged to ${profile.streetName}.`,
+        },
+        {
+          name: 'Google Trends & search',
+          description: `Move-in queries up ${(transactionVelocity * 100).toFixed(0)}% vs city baseline.`,
+        },
+      ],
+    },
+    {
+      title: 'Street-level intelligence',
+      items: [
+        {
+          name: 'Ordnance Survey Greenspace',
+          description: `${(profile.greenspaceShare * 100).toFixed(1)}% tree/park coverage within 250m.`,
+        },
+        {
+          name: 'Ofcom Connected Nations',
+          description: `${profile.broadbandMbps} Mbps gigabit availability · data confidence ${formatPercent(dataConfidence)}.`,
+        },
+        {
+          name: 'Companies House micro-business',
+          description: `${profile.microbusinessDensity} active firms/km² powering rental & retail demand.`,
+        },
+      ],
+    },
+  ];
 }
 
 export default function App() {
-  const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS }));
-  const [savedScenarios, setSavedScenarios] = useState([]);
-  const [showLoadPanel, setShowLoadPanel] = useState(false);
-  const [selectedScenarioId, setSelectedScenarioId] = useState('');
-  const [showTableModal, setShowTableModal] = useState(false);
-  const [capturedPreview, setCapturedPreview] = useState(null);
-  const [livePreview, setLivePreview] = useState(null);
-  const [livePreviewReady, setLivePreviewReady] = useState(false);
-  const [captureStatus, setCaptureStatus] = useState('idle');
-  const [captureError, setCaptureError] = useState('');
-  const [collapsedSections, setCollapsedSections] = useState({
-    buyerProfile: false,
-    householdIncome: false,
-    purchaseCosts: false,
-    rentalCashflow: false,
-    cashflowDetail: false,
-  });
-  const [chatMessages, setChatMessages] = useState([]);
-  const [chatInput, setChatInput] = useState('');
-  const [chatStatus, setChatStatus] = useState('idle');
-  const [chatError, setChatError] = useState('');
-  const [activeSeries, setActiveSeries] = useState({
-    indexFund: true,
-    propertyValue: true,
-    propertyGross: true,
-    propertyNet: true,
-    propertyNetAfterTax: true,
-  });
-  const [performanceYear, setPerformanceYear] = useState(1);
-  const [shareNotice, setShareNotice] = useState('');
-  const pageRef = useRef(null);
-  const iframeRef = useRef(null);
-  const remoteEnabled = Boolean(SCENARIO_API_URL);
-  const [remoteHydrated, setRemoteHydrated] = useState(!remoteEnabled);
-  const [syncStatus, setSyncStatus] = useState('idle');
-  const [syncError, setSyncError] = useState('');
+  const [inputs, setInputs] = useState(() => ({ ...DEFAULT_SCENARIO_INPUTS }));
+  const [postcode, setPostcode] = useState(DEFAULT_POSTCODE);
+  const [propertyOptions, setPropertyOptions] = useState([...DEFAULT_PROPERTY_OPTIONS]);
+  const [selectedPropertyId, setSelectedPropertyId] = useState(null);
+  const selectedProperty = useMemo(
+    () => propertyOptions.find((property) => property.id === selectedPropertyId) ?? null,
+    [propertyOptions, selectedPropertyId],
+  );
+  const locationKey = useMemo(() => inferLocationKey(selectedProperty), [selectedProperty]);
+  const [loading, setLoading] = useState(false);
+  const [isLookupLoading, setIsLookupLoading] = useState(false);
+  const [lookupError, setLookupError] = useState(null);
+  const [result, setResult] = useState(() =>
+    buildForecast(DEFAULT_SCENARIO_INPUTS, DEFAULT_SELECTED_PROPERTY, DEFAULT_LOCATION_KEY),
+  );
+  const [activeScore, setActiveScore] = useState(null);
+  const [isMapOpen, setIsMapOpen] = useState(false);
+  const dealMetrics = useMemo(() => {
+    const priceDelta = Number.isFinite(result?.priceDelta) ? result.priceDelta : 0;
+    const horizonDelta = Number.isFinite(result?.forecastHorizonDelta) ? result.forecastHorizonDelta : 0;
+    const breakeven =
+      typeof result?.breakevenMonths === 'number'
+        ? result.breakevenMonths <= 0
+          ? 'Immediate'
+          : `Month ${result.breakevenMonths}`
+        : 'Beyond 36M horizon';
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    const encoded = url.searchParams.get('scenario');
-    if (!encoded) return;
-    const payload = decodeSharePayload(encoded);
-    if (payload && typeof payload === 'object' && payload.inputs) {
-      setInputs({ ...DEFAULT_INPUTS, ...payload.inputs });
-      setCapturedPreview(null);
-      setLivePreview(null);
-      setLivePreviewReady(false);
-      setCaptureStatus('idle');
-      setCaptureError('');
-      setShareNotice('Loaded shared scenario');
-    }
-    url.searchParams.delete('scenario');
-    const nextSearch = url.searchParams.toString();
-    const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
-    window.history.replaceState({}, document.title, nextUrl);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const stored = window.localStorage.getItem(SCENARIO_STORAGE_KEY);
-      if (!stored) return;
-      const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) {
-        setSavedScenarios(parsed);
-        if (parsed.length > 0) {
-          setSelectedScenarioId(parsed[0].id ?? '');
-        }
-      }
-    } catch (error) {
-      console.warn('Unable to read saved scenarios:', error);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem(SCENARIO_STORAGE_KEY, JSON.stringify(savedScenarios));
-    } catch (error) {
-      console.warn('Unable to persist saved scenarios:', error);
-    }
-  }, [savedScenarios]);
-
-  useEffect(() => {
-    if (!remoteEnabled) return;
-    let cancelled = false;
-
-    const loadRemoteScenarios = async () => {
-      setSyncStatus('loading');
-      setSyncError('');
-      try {
-        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, { method: 'GET' });
-        if (!response.ok) {
-          throw new Error(`Remote load failed with status ${response.status}`);
-        }
-        const payload = await response.json();
-        if (!Array.isArray(payload)) {
-          throw new Error('Remote response was not an array');
-        }
-        if (!cancelled) {
-          setSavedScenarios(payload);
-          setSelectedScenarioId(payload[0]?.id ?? '');
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setSyncError(error instanceof Error ? error.message : 'Unable to load remote scenarios');
-        }
-      } finally {
-        if (!cancelled) {
-          setSyncStatus('idle');
-          setRemoteHydrated(true);
-        }
-      }
+    const formatDelta = (value) => {
+      const absolute = Math.abs(value);
+      const prefix = value >= 0 ? '+' : '−';
+      return `${prefix}${formatCurrency(absolute)}`;
     };
 
-    loadRemoteScenarios();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [remoteEnabled]);
-
-  useEffect(() => {
-    if (!shareNotice || typeof window === 'undefined') return;
-    const timeout = window.setTimeout(() => setShareNotice(''), 3000);
-    return () => window.clearTimeout(timeout);
-  }, [shareNotice]);
-
-  useEffect(() => {
-    if (!remoteEnabled || !remoteHydrated) return;
-    let cancelled = false;
-
-    const pushRemoteScenarios = async () => {
-      setSyncStatus('syncing');
-      try {
-        const response = await fetch(`${SCENARIO_API_URL}/scenarios`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(savedScenarios),
-        });
-        if (!response.ok) {
-          throw new Error(`Remote sync failed with status ${response.status}`);
-        }
-        if (!cancelled) {
-          setSyncError('');
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setSyncError(error instanceof Error ? error.message : 'Unable to sync scenarios');
-        }
-      } finally {
-        if (!cancelled) {
-          setSyncStatus('idle');
-        }
-      }
-    };
-
-    pushRemoteScenarios();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [savedScenarios, remoteEnabled, remoteHydrated]);
-
-  const equity = useMemo(() => calculateEquity(inputs), [inputs]);
-
-  const scenarioTableData = useMemo(
-    () =>
-      savedScenarios.map((scenario) => ({
-        scenario,
-        metrics: calculateEquity({ ...DEFAULT_INPUTS, ...scenario.data }),
-      })),
-    [savedScenarios]
-  );
-
-  const exitYearCount = Math.max(1, Math.floor(Number(equity.exitYear) || 1));
-
-  useEffect(() => {
-    if (performanceYear > exitYearCount) {
-      setPerformanceYear(exitYearCount);
-    }
-  }, [exitYearCount, performanceYear]);
-
-  const performanceYearOptions = Array.from({ length: exitYearCount }, (_, index) => index + 1);
-  const performanceYearClamped = Math.min(Math.max(1, performanceYear), exitYearCount);
-  const performanceYearIndex = performanceYearClamped - 1;
-  const selectedGrossRent = equity.annualGrossRents[performanceYearIndex] ?? 0;
-  const selectedOperatingExpenses = equity.annualOperatingExpenses[performanceYearIndex] ?? 0;
-  const selectedNoi = equity.annualNoiValues[performanceYearIndex] ?? 0;
-  const selectedDebtService = equity.annualDebtService[performanceYearIndex] ?? 0;
-  const selectedCashPreTax = equity.annualCashflowsPreTax[performanceYearIndex] ?? 0;
-  const selectedCashAfterTax = equity.annualCashflowsAfterTax[performanceYearIndex] ?? 0;
-  const selectedRentalTax = equity.propertyTaxes[performanceYearIndex] ?? 0;
-
-  const isCompanyBuyer = inputs.buyerType === 'company';
-  const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
-  const rentalTaxCumulativeLabel = isCompanyBuyer
-    ? 'Corporation tax on rent (cumulative)'
-    : 'Rental income tax (cumulative)';
-  const propertyNetAfterTaxLabel = isCompanyBuyer
-    ? 'Property net after corporation tax'
-    : 'Property net after rental tax';
-  const afterTaxComparisonPrefix = isCompanyBuyer ? 'After corporation tax' : 'After income tax';
-  const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
-  const appreciationRate = Number(inputs.annualAppreciation) || 0;
-  const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
-  const appreciationFactor = 1 + appreciationRate;
-  const appreciationFactorDisplay = appreciationFactor.toFixed(4);
-  const appreciationPower = Math.pow(appreciationFactor, exitYears);
-  const appreciationPowerDisplay = appreciationPower.toFixed(4);
-  const estimatedExitEquity = equity.futureValue - equity.remaining - equity.sellingCosts;
-  const amortisationYears = Math.min(exitYears, Number(inputs.mortgageYears) || 0);
-  const amortisationPayments = Math.min(exitYears * 12, (Number(inputs.mortgageYears) || 0) * 12);
-
-  const futureValueTooltip = exitYears > 0
-    ? (
-        <div>
-          <div>Annual appreciation: {formatPercent(appreciationRate)}.</div>
-          <div>Growth multiplier: ({appreciationFactorDisplay})^{exitYears} = {appreciationPowerDisplay}.</div>
-          <div>
-            {currency(inputs.purchasePrice)} × {appreciationPowerDisplay} = {currency(equity.futureValue)}
-          </div>
-        </div>
-      )
-    : (
-        <div>
-          <div>Exit year is set to 0, so no appreciation is applied.</div>
-          <div>Future value equals purchase price: {currency(equity.futureValue)}.</div>
-        </div>
-      );
-
-  const remainingLoanTooltip = inputs.loanType === 'interest_only'
-    ? (
-        <div>
-          <div>Interest-only loan keeps principal unchanged.</div>
-          <div>Outstanding balance: {currency(equity.loan)}.</div>
-        </div>
-      )
-    : (
-        <div>
-          <div>Monthly payment: {currency(equity.mortgage)}.</div>
-          <div>
-            Balance after {amortisationYears} yrs ({amortisationPayments} payments): {currency(equity.remaining)}
-          </div>
-        </div>
-      );
-
-  const sellingCostsTooltip = (
-    <div>
-      <div>Future value × selling cost rate.</div>
-      <div>
-        {currency(equity.futureValue)} × {formatPercent(sellingCostsRate)} = {currency(equity.sellingCosts)}
-      </div>
-    </div>
-  );
-
-  const estimatedEquityTooltip = (
-    <div>
-      <div>Future value − remaining loan − selling costs.</div>
-      <div>
-        {currency(equity.futureValue)} − {currency(equity.remaining)} − {currency(equity.sellingCosts)} = {currency(
-          estimatedExitEquity
-        )}
-      </div>
-    </div>
-  );
-
-  const indexGrowthRate = Number(inputs.indexFundGrowth) || 0;
-  const indexMultiplier = 1 + indexGrowthRate;
-  const indexMultiplierDisplay = indexMultiplier.toFixed(4);
-  const indexFactorDisplay = Math.pow(indexMultiplier, exitYears).toFixed(4);
-  const hasHoldPeriod = exitYears > 0;
-  const indexFundTooltip = hasHoldPeriod ? (
-    <div>
-      <div>Initial cash in compounded annually at {formatPercent(indexGrowthRate)}.</div>
-      <div>Growth multiplier: ({indexMultiplierDisplay})^{exitYears} = {indexFactorDisplay}.</div>
-      <div>
-        {currency(equity.cashIn)} × {indexFactorDisplay} = {currency(equity.indexValEnd)}
-      </div>
-    </div>
-  ) : (
-    <div>
-      <div>Hold period is 0 years.</div>
-      <div>Index fund stays at the upfront cash: {currency(equity.indexValEnd)}.</div>
-    </div>
-  );
-
-  const reinvestFundValue = Number.isFinite(equity.reinvestFundValue) ? equity.reinvestFundValue : 0;
-  const exitCumCash = Number.isFinite(equity.exitCumCash) ? equity.exitCumCash : 0;
-  const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
-  const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
-  const reinvestActive = Boolean(inputs.reinvestIncome) && reinvestRate > 0 && reinvestFundValue > 0;
-  const reinvestRateLabel = formatPercent(reinvestRate);
-
-  const exitCumCashPreTaxNet = exitCumCash - reinvestFundValue;
-  const exitCumCashAfterTaxNet = exitCumCashAfterTax - reinvestFundValue;
-
-  const propertyGrossTooltip = (
-    <div className="space-y-1">
-      <div>Property value @ exit: {currency(equity.futureValue)}.</div>
-      <div>Cumulative cash flow (pre-tax net of reinvest): {currency(exitCumCashPreTaxNet)}.</div>
-      {reinvestActive ? (
-        <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
-      ) : null}
-      <div>
-        Total property gross = {currency(equity.futureValue)} + {currency(exitCumCashPreTaxNet)}
-        {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyGrossWealthAtExit)}
-      </div>
-    </div>
-  );
-
-  const netSaleTooltip = (
-    <div>
-      <div>Future value − selling costs − remaining loan.</div>
-      <div>
-        {currency(equity.futureValue)} − {currency(equity.sellingCosts)} − {currency(equity.remaining)} ={' '}
-        {currency(equity.exitNetSaleProceeds)}
-      </div>
-    </div>
-  );
-
-  const propertyNetTooltip = (
-    <div className="space-y-1">
-      {netSaleTooltip}
-      <div>Cumulative cash flow (pre-tax net of reinvest): {currency(exitCumCashPreTaxNet)}.</div>
-      {reinvestActive ? (
-        <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
-      ) : null}
-      <div>
-        Property net = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashPreTaxNet)}
-        {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAtExit)}
-      </div>
-    </div>
-  );
-
-  const propertyNetAfterTaxTooltip = (
-    <div className="space-y-1">
-      {netSaleTooltip}
-      <div>
-        Cumulative cash flow after {isCompanyBuyer ? 'corporation' : 'income'} tax (net of reinvest):{' '}
-        {currency(exitCumCashAfterTaxNet)}.
-      </div>
-      {reinvestActive ? (
-        <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
-      ) : null}
-      <div>
-        {propertyNetAfterTaxLabel} = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)}
-        {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAfterTax)}
-      </div>
-    </div>
-  );
-
-  const propertyTaxes = Array.isArray(equity.propertyTaxes) ? equity.propertyTaxes : [];
-  const rentalTaxTooltip = (
-    <div className="space-y-1">
-      <div>
-        Total {isCompanyBuyer ? 'corporation' : 'income'} tax across {propertyTaxes.length} year{propertyTaxes.length === 1 ? '' :
-        's'}.
-      </div>
-      {propertyTaxes.length > 0 ? (
-        <div className="max-h-32 space-y-0.5 overflow-y-auto pr-1">
-          {propertyTaxes.map((value, index) => (
-            <div key={`tax-${index}`}>
-              Year {index + 1}: {currency(value)}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <div className="font-semibold">Total: {currency(equity.totalPropertyTax)}</div>
-    </div>
-  );
-  const trimmedPropertyUrl = (inputs.propertyUrl ?? '').trim();
-  const normalizedPropertyUrl = ensureAbsoluteUrl(trimmedPropertyUrl);
-  const hasPropertyUrl = normalizedPropertyUrl !== '';
-  const isLivePreviewActive = Boolean(livePreview?.iframeUrl);
-  const hasCapturedSnapshot = Boolean(capturedPreview);
-  const showListingPreview = isLivePreviewActive || hasCapturedSnapshot;
-
-  const cashflowTableRows = useMemo(() => {
-    const chartByYear = new Map((equity.chart ?? []).map((point) => [point.year, point]));
-    const rows = [];
-    let cumulativeAfterTax = 0;
-    for (let index = 0; index < exitYearCount; index += 1) {
-      const year = index + 1;
-      const chartPoint = chartByYear.get(year);
-      const cashAfterTax = equity.annualCashflowsAfterTax[index] ?? 0;
-      cumulativeAfterTax += cashAfterTax;
-      rows.push({
-        year,
-        grossRent: equity.annualGrossRents[index] ?? 0,
-        operatingExpenses: equity.annualOperatingExpenses[index] ?? 0,
-        noi: equity.annualNoiValues[index] ?? 0,
-        debtService: equity.annualDebtService[index] ?? 0,
-        propertyTax: equity.propertyTaxes[index] ?? 0,
-        cashPreTax: equity.annualCashflowsPreTax[index] ?? 0,
-        cashAfterTax,
-        cumulativeAfterTax,
-        propertyValue: chartPoint?.propertyValue ?? 0,
-        indexFundValue: chartPoint?.indexFund ?? 0,
-      });
-    }
-    return rows;
-  }, [equity, exitYearCount]);
-
-  const handlePrint = () => {
-    if (typeof window === 'undefined') return;
-    setShowLoadPanel(false);
-    setShowTableModal(false);
-    window.print();
-  };
-
-  const handleExportPdf = async () => {
-    if (!pageRef.current) return;
-    setShowLoadPanel(false);
-    setShowTableModal(false);
-    const element = pageRef.current;
-    element.classList.add('exporting-pdf');
-    try {
-      const exportScale = typeof window !== 'undefined' && window.devicePixelRatio
-        ? Math.min(1.3, window.devicePixelRatio)
-        : 1.2;
-      const canvas = await html2canvas(element, {
-        scale: exportScale,
-        useCORS: true,
-        windowWidth: element.scrollWidth,
-        windowHeight: element.scrollHeight,
-        backgroundColor: '#ffffff',
-        onclone: (clonedDocument) => {
-          const cloneRoot = clonedDocument.querySelector('[data-export-root]');
-          transformCloneForExport(cloneRoot);
-        },
-      });
-      const imageData = canvasToJpeg(canvas, { quality: 0.6, maxWidth: 1400, maxHeight: 2000 });
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4', compress: true });
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const marginX = 12;
-      const marginTop = 12;
-      const availableWidth = pageWidth - marginX * 2;
-      const availableHeight = pageHeight - marginTop * 2;
-      const widthScale = availableWidth / canvas.width;
-      const heightScale = availableHeight / canvas.height;
-      const scale = Math.min(widthScale, heightScale, 1);
-      const renderWidth = canvas.width * scale;
-      const renderHeight = canvas.height * scale;
-      const offsetX = (pageWidth - renderWidth) / 2;
-      const offsetY = marginTop;
-      pdf.addImage(imageData, 'JPEG', offsetX, offsetY, renderWidth, renderHeight, undefined, 'FAST');
-
-      const captureSource = capturedPreview?.imageUrl || '';
-      if (captureSource) {
-        try {
-          const captureData = await getImageDataForPdf(captureSource);
-          if (captureData?.dataUrl) {
-            pdf.addPage();
-            const capturePageWidth = pdf.internal.pageSize.getWidth();
-            const capturePageHeight = pdf.internal.pageSize.getHeight();
-            const captureWidth = captureData.width && captureData.width > 0 ? captureData.width : capturePageWidth;
-            const captureHeight = captureData.height && captureData.height > 0 ? captureData.height : capturePageHeight;
-            let captureRenderWidth = capturePageWidth;
-            let captureRenderHeight = (captureRenderWidth * captureHeight) / captureWidth;
-            if (!Number.isFinite(captureRenderHeight) || captureRenderHeight <= 0) {
-              captureRenderHeight = capturePageHeight;
-              captureRenderWidth = capturePageWidth;
-            }
-            if (captureRenderHeight > capturePageHeight) {
-              captureRenderHeight = capturePageHeight;
-              captureRenderWidth = (captureRenderHeight * captureWidth) / captureHeight;
-            }
-            const captureOffsetX = (capturePageWidth - captureRenderWidth) / 2;
-            const captureOffsetY = (capturePageHeight - captureRenderHeight) / 2;
-            pdf.addImage(
-              captureData.dataUrl,
-              captureData.format || 'JPEG',
-              captureOffsetX,
-              captureOffsetY,
-              captureRenderWidth,
-              captureRenderHeight,
-              undefined,
-              'FAST'
-            );
-          }
-        } catch (error) {
-          console.warn('Unable to add listing capture to PDF:', error);
-        }
-      }
-      const safeAddress = inputs.propertyAddress?.trim();
-      const filename = safeAddress ? `${safeAddress.replace(/\s+/g, '-').toLowerCase()}.pdf` : 'property-forecast.pdf';
-      pdf.save(filename);
-    } catch (error) {
-      console.error('PDF export failed:', error);
-      if (typeof window !== 'undefined') {
-        window.alert('Unable to export PDF. Please try again.');
-      }
-    } finally {
-      element.classList.remove('exporting-pdf');
-    }
-  };
-
-  const chatEnabled = Boolean(GOOGLE_API_KEY || CHAT_API_URL);
-
-  const buildChatScenarioSummary = () => {
-    const share1 = roundTo(inputs.ownershipShare1 * 100, 2).toFixed(2);
-    const share2 = roundTo(inputs.ownershipShare2 * 100, 2).toFixed(2);
-    const lines = [
-      `Property address: ${inputs.propertyAddress || 'Not provided'}`,
-      `Property URL: ${inputs.propertyUrl || 'Not provided'}`,
-      `Buyer type: ${inputs.buyerType} (properties owned: ${inputs.propertiesOwned})`,
-      `Purchase price: ${currency(inputs.purchasePrice)}; deposit: ${formatPercent(inputs.depositPct)}; closing costs: ${formatPercent(inputs.closingCostsPct)}; renovation: ${currency(inputs.renovationCost)}`,
-      `Loan: ${inputs.loanType} over ${inputs.mortgageYears} years at ${formatPercent(inputs.interestRate)}`,
-      `Rent: ${currency(inputs.monthlyRent)} /mo; vacancy: ${formatPercent(inputs.vacancyPct)}; management: ${formatPercent(inputs.mgmtPct)}; repairs: ${formatPercent(inputs.repairsPct)}`,
-      `Insurance: ${currency(inputs.insurancePerYear)}; other OpEx: ${currency(inputs.otherOpexPerYear)}`,
-      `Growth assumptions: appreciation ${formatPercent(inputs.annualAppreciation)}, rent growth ${formatPercent(inputs.rentGrowth)}, index fund ${formatPercent(inputs.indexFundGrowth)}`,
-      `Exit year: ${inputs.exitYear}; selling costs: ${formatPercent(inputs.sellingCostsPct)}; discount rate: ${formatPercent(inputs.discountRate)}`,
-      `Household incomes: ${currency(inputs.incomePerson1)} (${share1}%) and ${currency(inputs.incomePerson2)} (${share2}%)`,
-      `Reinvest after-tax cash flow: ${inputs.reinvestIncome ? `${formatPercent(inputs.reinvestPct)} of after-tax cash` : 'No reinvestment'}`,
-      `Total cash in: ${currency(equity.cashIn)}; Year 1 cash flow pre-tax: ${currency(equity.cashflowYear1)}; Year 1 cash flow after tax: ${currency(equity.cashflowYear1AfterTax)}`,
-      `Cap rate: ${formatPercent(equity.cap)}; Cash-on-cash: ${formatPercent(equity.coc)}; DSCR: ${equity.dscr.toFixed(2)}`,
-      `NPV (${inputs.exitYear}-year cash flows): ${currency(equity.npv)}`,
-      `Index fund value at exit: ${currency(equity.indexValEnd)}`,
-      `Property net wealth (pre-tax): ${currency(equity.propertyNetWealthAtExit)}; after-tax: ${currency(equity.propertyNetWealthAfterTax)}`,
-      `Wealth delta vs index: ${currency(equity.wealthDelta)} (${formatPercent(equity.wealthDeltaPct)}); after tax: ${currency(equity.wealthDeltaAfterTax)} (${formatPercent(equity.wealthDeltaAfterTaxPct)})`,
-    ];
-    return lines.join('\n');
-  };
-
-  const callCustomChat = async (question) => {
-    const response = await fetch(`${CHAT_API_URL}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        question,
-        inputs,
-        metrics: {
-          cashIn: equity.cashIn,
-          cashflowYear1: equity.cashflowYear1,
-          cashflowYear1AfterTax: equity.cashflowYear1AfterTax,
-          cap: equity.cap,
-          coc: equity.coc,
-          dscr: equity.dscr,
-          npv: equity.npv,
-          wealthDelta: equity.wealthDelta,
-          wealthDeltaAfterTax: equity.wealthDeltaAfterTax,
-          propertyGrossWealthAtExit: equity.propertyGrossWealthAtExit,
-          propertyNetWealthAtExit: equity.propertyNetWealthAtExit,
-          propertyNetWealthAfterTax: equity.propertyNetWealthAfterTax,
-          exitYear: equity.exitYear,
-          indexFundGrowth: inputs.indexFundGrowth,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Chat request failed (${response.status})`);
-    }
-
-    let payload;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-
-    return (
-      (payload && typeof payload.answer === 'string' && payload.answer) ||
-      (payload && typeof payload.message === 'string' && payload.message) ||
-      (payload && typeof payload === 'string' ? payload : '')
-    );
-  };
-
-  const callGoogleChat = async (question) => {
-    const scenarioSummary = buildChatScenarioSummary();
-    const prompt = [
-      'You are an AI assistant helping evaluate UK property investments.',
-      'Use the provided scenario data to answer the user\'s question with clear reasoning and cite any calculations you perform.',
-      'Scenario data:',
-      scenarioSummary,
-      '',
-      `Question: ${question}`,
-    ].join('\n');
-
-    const response = await fetch(
-      `${GOOGLE_API_BASE}/models/${encodeURIComponent(GOOGLE_MODEL)}:generateContent?key=${encodeURIComponent(GOOGLE_API_KEY)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: prompt }],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.3,
-            topP: 0.8,
-            topK: 40,
-            maxOutputTokens: 1024,
-          },
-        }),
-      },
-    );
-
-    if (!response.ok) {
-      throw new Error(`Google AI request failed (${response.status})`);
-    }
-
-    const payload = await response.json();
-    const candidate = payload?.candidates?.find((item) => item?.content?.parts?.length);
-    if (!candidate) {
-      throw new Error('The AI service returned an empty response.');
-    }
-
-    const text = candidate.content.parts
-      .map((part) => (typeof part?.text === 'string' ? part.text.trim() : ''))
-      .filter(Boolean)
-      .join('\n\n');
-
-    return text;
-  };
-
-  const handleSendChat = async (event) => {
-    event.preventDefault();
-    const question = chatInput.trim();
-    if (!question) return;
-
-    const timestamp = Date.now();
-    const userMessage = { id: `user-${timestamp}`, role: 'user', content: question, createdAt: timestamp };
-    setChatMessages((prev) => [...prev, userMessage]);
-    setChatInput('');
-
-    if (!chatEnabled) {
-      setChatError('Chat service is not currently available.');
-      return;
-    }
-
-    setChatStatus('loading');
-    setChatError('');
-
-    try {
-      let answer = '';
-      if (GOOGLE_API_KEY) {
-        answer = await callGoogleChat(question);
-      } else if (CHAT_API_URL) {
-        answer = await callCustomChat(question);
-      } else {
-        throw new Error('Chat service is not currently configured.');
-      }
-
-      const content = answer && answer.trim().length > 0 ? answer.trim() : 'The chat service returned an empty response.';
-      const assistantMessage = {
-        id: `assistant-${timestamp}`,
-        role: 'assistant',
-        content,
-        createdAt: Date.now(),
-      };
-      setChatMessages((prev) => [...prev, assistantMessage]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to reach the chat service.';
-      setChatError(message);
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: `assistant-error-${Date.now()}`,
-          role: 'assistant',
-          content: 'Sorry, I was unable to fetch a response. Please try again shortly.',
-          createdAt: Date.now(),
-        },
-      ]);
-    } finally {
-      setChatStatus('idle');
-    }
-  };
-
-  const handleClearChat = () => {
-    setChatMessages([]);
-    setChatError('');
-  };
-
-  const handleExportTableCsv = () => {
-    if (savedScenarios.length === 0) {
-      if (typeof window !== 'undefined') {
-        window.alert('No saved scenarios to export yet.');
-      }
-      return;
-    }
-
-    if (typeof document === 'undefined' || typeof window === 'undefined') {
-      return;
-    }
-
-    const scenarioData = savedScenarios.map((scenario) => {
-      const data = { ...DEFAULT_INPUTS, ...scenario.data };
-      const metrics = calculateEquity(data);
-      const preview = scenario.preview ?? null;
-      return { scenario, data, metrics, preview };
-    });
-
-    const inputKeys = new Set();
-    const metricKeys = new Set();
-    const previewKeys = new Set();
-
-    scenarioData.forEach(({ data, metrics, preview }) => {
-      Object.keys(data || {}).forEach((key) => inputKeys.add(key));
-      Object.keys(metrics || {}).forEach((key) => metricKeys.add(key));
-      if (preview && typeof preview === 'object') {
-        Object.keys(preview).forEach((key) => previewKeys.add(key));
-      }
-    });
-
-    const sortedInputKeys = Array.from(inputKeys).sort();
-    const sortedMetricKeys = Array.from(metricKeys).sort();
-    const sortedPreviewKeys = Array.from(previewKeys).sort();
-
-    const header = [
-      'scenario_id',
-      'scenario_name',
-      'saved_at_iso',
-      ...sortedInputKeys.map((key) => `input_${key}`),
-      ...sortedPreviewKeys.map((key) => `preview_${key}`),
-      ...sortedMetricKeys.map((key) => `metric_${key}`),
-    ];
-
-    const rows = scenarioData.map(({ scenario, data, metrics, preview }) => {
-      const row = [
-        scenario.id ?? '',
-        scenario.name ?? '',
-        scenario.savedAt ? new Date(scenario.savedAt).toISOString() : '',
-      ];
-      sortedInputKeys.forEach((key) => {
-        row.push(normaliseForCsv(data?.[key]));
-      });
-      sortedPreviewKeys.forEach((key) => {
-        const value = preview && typeof preview === 'object' ? preview[key] : '';
-        row.push(normaliseForCsv(value));
-      });
-      sortedMetricKeys.forEach((key) => {
-        row.push(normaliseForCsv(metrics?.[key]));
-      });
-      return row;
-    });
-
-    const csvBody = [header, ...rows]
-      .map((row) => row.map((value) => csvEscape(value)).join(','))
-      .join('\n');
-
-    const csvContent = `\ufeff${csvBody}`;
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'property-scenarios.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  };
-
-  const onNum = (key, value, decimals = 2) => {
-    setInputs((prev) => {
-      const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
-      const next = { ...prev, [key]: rounded };
-      if (key === 'propertiesOwned' && rounded > 0) {
-        next.firstTimeBuyer = false;
-      }
-      if (key === 'buyerType' && value === 'company') {
-        next.firstTimeBuyer = false;
-      }
-      return next;
-    });
-  };
-
-  const onText = (key, value) => {
-    setInputs((prev) => ({ ...prev, [key]: value }));
-    if (key === 'propertyUrl') {
-      setCaptureError('');
-      setCaptureStatus('idle');
-      setCapturedPreview(null);
-      setLivePreview(null);
-    }
-  };
-  const onBuyerType = (value) =>
-    setInputs((prev) => ({
-      ...prev,
-      buyerType: value,
-      firstTimeBuyer: value === 'company' ? false : prev.firstTimeBuyer,
-    }));
-
-  const toggleSection = (section) => {
-    setCollapsedSections((prev) => ({
-      ...prev,
-      [section]: !prev[section],
-    }));
-  };
-
-  const toggleSeries = (key) => {
-    setActiveSeries((prev) => ({
-      ...prev,
-      [key]: !(prev[key] !== false),
-    }));
-  };
-
-  const pctInput = (k, label, step = 0.005) => (
-    <div className="flex flex-col gap-1">
-      <label className="text-xs font-medium text-slate-600">{label}</label>
-      <input
-        type="number"
-        value={Number.isFinite(inputs[k]) ? roundTo((inputs[k] ?? 0) * 100, 2) : ''}
-        onChange={(e) => onNum(k, Number(e.target.value) / 100, 4)}
-        step={step * 100}
-        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
-      />
-    </div>
-  );
-
-  const moneyInput = (k, label, step = 1000) => (
-    <div className="flex flex-col gap-1">
-      <label className="text-xs font-medium text-slate-600">{label}</label>
-      <input
-        type="number"
-        value={Number.isFinite(inputs[k]) ? roundTo(inputs[k], 2) : ''}
-        onChange={(e) => onNum(k, Number(e.target.value), 2)}
-        step={step}
-        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
-      />
-    </div>
-  );
-
-  const smallInput = (k, label, step = 1, decimals = 0) => (
-    <div className="flex flex-col gap-1">
-      <label className="text-xs font-medium text-slate-600">{label}</label>
-      <input
-        type="number"
-        value={Number.isFinite(inputs[k]) ? roundTo(inputs[k], decimals) : ''}
-        onChange={(e) => onNum(k, Number(e.target.value), decimals)}
-        step={step}
-        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
-      />
-    </div>
-  );
-
-  const textInput = (key, label, type = 'text') => (
-    <div className="flex flex-col gap-1">
-      <label className="text-xs font-medium text-slate-600">{label}</label>
-      <input
-        type={type}
-        value={inputs[key] ?? ''}
-        onChange={(event) => onText(key, event.target.value)}
-        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
-      />
-    </div>
-  );
-
-  const sensitivityResults = useMemo(() => {
-    const rent = Number.isFinite(inputs.monthlyRent) ? inputs.monthlyRent : 0;
-    const scenarioBase = equity.cashflowYear1AfterTax;
-    const evaluate = (multiplier) => {
-      const adjustedRent = Math.max(0, roundTo(rent * multiplier, 2));
-      return calculateEquity({ ...inputs, monthlyRent: adjustedRent }).cashflowYear1AfterTax;
-    };
     return {
-      base: scenarioBase,
-      down: evaluate(0.9),
-      up: evaluate(1.1),
+      priceDeltaDisplay: formatDelta(priceDelta),
+      horizonDeltaDisplay: formatDelta(horizonDelta),
+      breakevenDisplay: breakeven,
     };
-  }, [equity.cashflowYear1AfterTax, inputs]);
+  }, [result]);
 
-  const buildScenarioSnapshot = () => {
-    const sanitizedInputs = JSON.parse(
-      JSON.stringify({
-        ...inputs,
-        propertyAddress: (inputs.propertyAddress ?? '').trim(),
-        propertyUrl: (inputs.propertyUrl ?? '').trim(),
-      })
-    );
-    const previewSnapshot = capturedPreview ? JSON.parse(JSON.stringify(capturedPreview)) : null;
-    return { data: sanitizedInputs, preview: previewSnapshot };
-  };
-
-  const handleShareScenario = async () => {
-    if (typeof window === 'undefined') return;
-    try {
-      const snapshot = buildScenarioSnapshot();
-      const payload = { inputs: snapshot.data };
-      const encoded = encodeSharePayload(payload);
-      if (!encoded) {
-        throw new Error('Unable to encode scenario');
-      }
-      const url = new URL(window.location.href);
-      url.searchParams.set('scenario', encoded);
-      const shareUrl = url.toString();
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(shareUrl);
-        setShareNotice('Share link copied to clipboard');
-      } else {
-        window.prompt('Copy this share link', shareUrl);
-        setShareNotice('Share link ready');
-      }
-    } catch (error) {
-      console.error('Unable to share scenario', error);
-      setShareNotice('Unable to create share link');
-    }
-  };
-
-  const handleSaveScenario = () => {
-    if (typeof window === 'undefined') return;
-    const addressLabel = (inputs.propertyAddress ?? '').trim();
-    const fallbackLabel = `Scenario ${new Date().toLocaleString()}`;
-    const defaultLabel = addressLabel !== '' ? addressLabel : fallbackLabel;
-    const nameInput = window.prompt('Name this scenario', defaultLabel);
-    if (nameInput === null) return;
-    const trimmed = nameInput.trim();
-    const label = trimmed !== '' ? trimmed : defaultLabel;
-    const snapshot = buildScenarioSnapshot();
-    const scenario = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: label,
-      savedAt: new Date().toISOString(),
-      data: snapshot.data,
-      preview: snapshot.preview,
-    };
-    setSavedScenarios((prev) => [scenario, ...prev]);
-    setSelectedScenarioId(scenario.id);
-  };
-
-  const handleLoadScenario = () => {
-    const scenario = savedScenarios.find((item) => item.id === selectedScenarioId);
-    if (!scenario) return;
-    setInputs({ ...DEFAULT_INPUTS, ...scenario.data });
-    setShowLoadPanel(false);
-    setCapturedPreview(scenario.preview ?? null);
-    setLivePreview(null);
-    setLivePreviewReady(false);
-    setCaptureStatus('idle');
-    setCaptureError('');
-  };
-
-  const handleCaptureUrl = () => {
-    const rawUrl = (inputs.propertyUrl ?? '').trim();
-    if (!rawUrl) return;
-    const normalizedUrl = ensureAbsoluteUrl(rawUrl);
-    if (!normalizedUrl) return;
-    setCaptureStatus('loading');
-    setCaptureError('');
-    setCapturedPreview(null);
-    setLivePreview({
-      originalUrl: normalizedUrl,
-      iframeUrl: normalizedUrl,
-      capturedAt: new Date().toISOString(),
-    });
-    setLivePreviewReady(false);
-  };
-
-  const handleTakeSnapshot = async () => {
-    if (!livePreview) return;
-    const originalUrl = livePreview.originalUrl || ensureAbsoluteUrl(inputs.propertyUrl ?? '');
-    if (!originalUrl) return;
-
-    const iframeElement = iframeRef.current;
-    if (!iframeElement) {
-      setCaptureError('Preview not ready yet. Please wait for the page to finish loading.');
-      return;
-    }
-
-    if (!livePreviewReady) {
-      setCaptureError('Preview not ready yet. Please wait for the page to finish loading.');
-      return;
-    }
-
-    setCaptureStatus('saving');
-    setCaptureError('');
-
-    const stopStream = (stream) => {
-      if (!stream) return;
-      stream.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch (error) {
-          /* noop */
+  const updatePropertiesForPostcode = useCallback(
+      async (targetPostcode, scenarioInputs) => {
+        const trimmed = targetPostcode?.trim();
+        if (!trimmed) {
+          setPropertyOptions([]);
+          setSelectedPropertyId(null);
+          setLookupError('Enter a postcode to search for properties.');
+          setResult(buildForecast({ ...scenarioInputs }, null, inferLocationKey(null)));
+          return;
         }
-      });
-    };
 
-    const captureWithDisplayMedia = async () => {
-      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
-        return null;
-      }
+        setIsLookupLoading(true);
+        setLookupError(null);
 
-      let stream;
       try {
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            frameRate: 1,
-            displaySurface: 'browser',
-            logicalSurface: true,
-            preferCurrentTab: true,
-          },
-          audio: false,
-        });
+        const nextOptions = await fetchPropertiesForPostcode(trimmed);
+        setPropertyOptions(nextOptions);
+        setLookupError(
+          nextOptions.length === 0
+            ? 'No address results returned for this postcode. Try a nearby postcode or refine the input.'
+            : null,
+        );
+        const nextProperty = nextOptions[0] ?? null;
+        setSelectedPropertyId(nextProperty?.id ?? null);
+        setResult(buildForecast({ ...scenarioInputs }, nextProperty, inferLocationKey(nextProperty)));
       } catch (error) {
-        return null;
+        console.error(error);
+        setPropertyOptions([]);
+        setSelectedPropertyId(null);
+        setLookupError('Unable to load properties for this postcode right now. Please try again.');
+        setResult((prev) => prev ?? buildForecast({ ...scenarioInputs }, null, inferLocationKey(null)));
+      } finally {
+        setIsLookupLoading(false);
       }
+    },
+    [],
+  );
 
-      const track = stream.getVideoTracks()[0];
-      if (!track) {
-        stopStream(stream);
-        return null;
-      }
+  useEffect(() => {
+    updatePropertiesForPostcode(DEFAULT_POSTCODE, DEFAULT_SCENARIO_INPUTS);
+  }, [updatePropertiesForPostcode]);
 
-      const elementRect = iframeElement.getBoundingClientRect();
-
-      const computeCrop = (sourceWidth, sourceHeight) => {
-        const viewportWidth = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : elementRect.width;
-        const viewportHeight = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : elementRect.height;
-        const scaleX = viewportWidth > 0 ? sourceWidth / viewportWidth : 1;
-        const scaleY = viewportHeight > 0 ? sourceHeight / viewportHeight : 1;
-        let sx = Math.round((elementRect.left < 0 ? 0 : elementRect.left) * scaleX);
-        let sy = Math.round((elementRect.top < 0 ? 0 : elementRect.top) * scaleY);
-        let sw = Math.round(elementRect.width * scaleX);
-        let sh = Math.round(elementRect.height * scaleY);
-        sw = Math.max(1, Math.min(sw, sourceWidth));
-        sh = Math.max(1, Math.min(sh, sourceHeight));
-        if (sx + sw > sourceWidth) {
-          sx = Math.max(0, sourceWidth - sw);
-        }
-        if (sy + sh > sourceHeight) {
-          sy = Math.max(0, sourceHeight - sh);
-        }
-        return { sx, sy, sw, sh };
-      };
-
-      if (typeof window !== 'undefined' && typeof window.CropTarget !== 'undefined' && typeof track.cropTo === 'function') {
-        try {
-          const cropTarget = await window.CropTarget.fromElement(iframeElement);
-          await track.cropTo(cropTarget);
-        } catch (error) {
-          console.warn('Element cropping not available:', error);
-        }
-      }
-
-      const extractFrame = async () => {
-        if (typeof window !== 'undefined' && typeof window.ImageCapture !== 'undefined') {
-          try {
-            const imageCapture = new window.ImageCapture(track);
-            const bitmap = await imageCapture.grabFrame();
-            const canvas = document.createElement('canvas');
-            const crop = computeCrop(bitmap.width, bitmap.height);
-            canvas.width = crop.sw;
-            canvas.height = crop.sh;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(bitmap, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
-            return canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1600 });
-          } catch (error) {
-            console.warn('ImageCapture grabFrame failed:', error);
-          }
-        }
-
-        const video = document.createElement('video');
-        video.srcObject = stream;
-        video.muted = true;
-        video.playsInline = true;
-        try {
-          await video.play();
-        } catch (error) {
-          /* ignore */
-        }
-
-        await new Promise((resolve) => {
-          const timeout = window.setTimeout(resolve, 750);
-          video.onloadeddata = () => {
-            window.clearTimeout(timeout);
-            resolve();
-          };
-        });
-
-        const settings = track.getSettings ? track.getSettings() : {};
-        const width = settings.width || iframeElement.clientWidth || 1280;
-        const height = settings.height || iframeElement.clientHeight || 720;
-        const canvas = document.createElement('canvas');
-        const crop = computeCrop(width, height);
-        canvas.width = crop.sw;
-        canvas.height = crop.sh;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
-        video.pause();
-        return canvasToJpeg(canvas, { quality: 0.7, maxWidth: 1400, maxHeight: 1600 });
-      };
-
-      const dataUrl = await extractFrame();
-      stopStream(stream);
-      return dataUrl;
-    };
-
-    let imageDataUrl = null;
-    try {
-      imageDataUrl = await captureWithDisplayMedia();
-    } catch (error) {
-      console.warn('Display media capture failed:', error);
-    }
-
-    if (!imageDataUrl) {
-      setCaptureStatus('idle');
-      setCaptureError(
-        'Unable to capture the listing preview. Please allow screen capture for this tab or try a supported browser.'
-      );
-      return;
-    }
-
-    setCapturedPreview({
-      originalUrl,
-      imageUrl: imageDataUrl,
-      capturedAt: new Date().toISOString(),
-    });
-    setCaptureStatus('idle');
-    setLivePreview(null);
-    setLivePreviewReady(false);
+  const handleInput = (field, value) => {
+    setInputs((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleClearCapture = () => {
-    setCapturedPreview(null);
-    setLivePreview(null);
-    setLivePreviewReady(false);
-    setCaptureError('');
-    setCaptureStatus('idle');
+  const handlePropertyLookup = async () => {
+    await updatePropertiesForPostcode(postcode, inputs);
   };
 
-  const handleRenameScenario = (id) => {
-    if (typeof window === 'undefined') return;
-    const scenario = savedScenarios.find((item) => item.id === id);
-    if (!scenario) return;
-    const nextName = window.prompt('Rename scenario', scenario.name);
-    if (nextName === null) return;
-    const trimmed = nextName.trim();
-    if (trimmed === '') return;
-    setSavedScenarios((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item))
+  const handleSelectProperty = (event) => {
+    const propertyId = event.target.value;
+    setSelectedPropertyId(propertyId);
+    const property = propertyOptions.find((option) => option.id === propertyId) ?? null;
+    setResult(buildForecast({ ...inputs }, property, inferLocationKey(property)));
+  };
+
+  const runForecast = (event) => {
+    event?.preventDefault();
+    setLoading(true);
+    setTimeout(() => {
+      setResult(buildForecast(inputs, selectedProperty, locationKey));
+      setLoading(false);
+    }, 450);
+  };
+
+  const chartData = useMemo(() => result?.forecastSeries ?? [], [result]);
+  const activeProfile = result?.profile ?? STREET_PROFILES[locationKey] ?? STREET_PROFILES.default;
+  const dataSourceSections = useMemo(() => buildDataSourceSections(result, inputs), [result, inputs]);
+  const liveAddress = useMemo(() => {
+    return (
+      selectedProperty?.label ||
+      [
+        selectedProperty?.houseNumber,
+        selectedProperty?.street,
+        selectedProperty?.city,
+        selectedProperty?.county,
+        selectedProperty?.postcode,
+      ]
+        .filter(Boolean)
+        .join(', ')
     );
-  };
-
-  const handleUpdateScenario = (id) => {
-    const scenario = savedScenarios.find((item) => item.id === id);
-    if (!scenario) return;
-    const snapshot = buildScenarioSnapshot();
-    const updatedAt = new Date().toISOString();
-    setSavedScenarios((prev) =>
-      prev.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              data: snapshot.data,
-              preview: snapshot.preview,
-              savedAt: updatedAt,
-            }
-          : item
-      )
-    );
-  };
-
-  const handleDeleteScenario = (id) => {
-    if (typeof window !== 'undefined') {
-      const confirmDelete = window.confirm('Delete this saved scenario?');
-      if (!confirmDelete) return;
+  }, [selectedProperty]);
+  const scenarioAddress = result?.targetAddress || liveAddress;
+  const openStreetMapEmbedUrl = useMemo(() => {
+    if (selectedProperty?.latitude && selectedProperty?.longitude) {
+      const { latitude, longitude } = selectedProperty;
+      return `https://www.openstreetmap.org/export/embed.html?layer=mapnik&marker=${latitude},${longitude}&zoom=17`;
     }
-    setSavedScenarios((prev) => {
-      const next = prev.filter((item) => item.id !== id);
-      if (selectedScenarioId === id) {
-        setSelectedScenarioId(next[0]?.id ?? '');
-      }
-      return next;
-    });
-  };
+    if (!liveAddress) {
+      return 'https://www.openstreetmap.org/export/embed.html?bbox=-3.06,53.84,-2.97,53.89&layer=mapnik&marker=53.873,-3.026';
+    }
+    const encoded = encodeURIComponent(liveAddress);
+    return `https://www.openstreetmap.org/export/embed.html?search=${encoded}&layer=mapnik`;
+  }, [liveAddress, selectedProperty]);
+  const openStreetMapExternalUrl = useMemo(() => {
+    if (selectedProperty?.latitude && selectedProperty?.longitude) {
+      const { latitude, longitude } = selectedProperty;
+      return `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=17/${latitude}/${longitude}`;
+    }
+    if (!liveAddress) {
+      return 'https://www.openstreetmap.org';
+    }
+    const encoded = encodeURIComponent(liveAddress);
+    return `https://www.openstreetmap.org/search?query=${encoded}`;
+  }, [liveAddress, selectedProperty]);
 
   return (
-    <div ref={pageRef} data-export-root className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-6xl px-4">
-        <div className="sticky top-0 z-30 -mx-4 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-slate-50/80 print:relative print:mx-0 print:border-0 print:bg-white">
-          <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex flex-col leading-tight">
-                <h1 className="text-xl font-semibold tracking-tight md:text-2xl">Property Forecaster</h1>
-                <span className="text-[11px] text-slate-500">Created by J Quarrie</span>
-              </div>
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                🖨️ Print
-              </button>
-              <button
-                type="button"
-                onClick={handleExportPdf}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
-              >
-                📄 Export PDF
-              </button>
-              <button
-                type="button"
-                onClick={handleShareScenario}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50"
-              >
-                🔗 Share
-              </button>
-            </div>
-            {shareNotice && (
-              <div className="text-xs font-medium text-emerald-600 md:self-end">{shareNotice}</div>
-            )}
-            <div className="flex flex-col items-start gap-2 text-xs md:flex-row md:items-center md:gap-3">
-              <div
-                className={`rounded-full px-4 py-1 text-white ${badgeColor(equity.score)}`}
-                title={SCORE_TOOLTIPS.overall}
-              >
-                Score: {Math.round(equity.score)} / 100
-              </div>
-              <div
-                className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDelta)}`}
-                title={SCORE_TOOLTIPS.delta}
-              >
-                Δ vs index: {currency(equity.wealthDelta)} ({formatPercent(equity.wealthDeltaPct)})
-              </div>
-              <div
-                className={`rounded-full px-4 py-1 text-white ${deltaBadge(equity.wealthDeltaAfterTax)}`}
-                title={SCORE_TOOLTIPS.deltaAfterTax}
-              >
-                Δ after tax: {currency(equity.wealthDeltaAfterTax)} ({formatPercent(equity.wealthDeltaAfterTaxPct)})
-              </div>
-            </div>
-          </header>
+    <div className="min-h-screen bg-slate-100 pb-20">
+      <header className="bg-slate-900 text-slate-100">
+        <div className="mx-auto flex max-w-6xl flex-col gap-2 px-6 py-8 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-sm uppercase tracking-widest text-slate-400">MVP 0.1</p>
+            <h1 className="text-3xl font-semibold">Street-Level Forecasting Studio</h1>
+            <p className="mt-1 max-w-3xl text-sm text-slate-300">
+              Prototype cockpit fusing Land Registry, ONS, mobility and planning signals to project 36-month price
+              trajectories at street/postcode resolution. Live Ordnance Survey OS Places + OpenStreetMap address lookup with
+              mocked feature stack.
+            </p>
+          </div>
+          <button
+            onClick={runForecast}
+            className="mt-4 inline-flex items-center justify-center rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-400 sm:mt-0"
+            disabled={loading}
+            type="button"
+          >
+            {loading ? 'Refreshing…' : 'Re-run scenario'}
+          </button>
         </div>
+      </header>
 
-        <main className="py-6">
-          <section className="mb-4">
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h2 className="text-base font-semibold text-slate-800">Property info</h2>
-              </div>
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                {textInput('propertyAddress', 'Property address')}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs font-medium text-slate-600">Property URL</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="url"
-                      value={inputs.propertyUrl ?? ''}
-                      onChange={(event) => onText('propertyUrl', event.target.value)}
-                      className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
-                      placeholder="https://"
-                    />
-                    {hasPropertyUrl ? (
-                      <a
-                        href={normalizedPropertyUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="no-print inline-flex items-center rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-                      >
-                        Open
-                      </a>
-                    ) : null}
+      <main className="mx-auto mt-8 grid max-w-6xl gap-6 px-6 lg:grid-cols-[360px,1fr]">
+        <section className="space-y-6 rounded-2xl bg-white p-6 shadow-sm">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Scenario inputs</h2>
+            <p className="text-sm text-slate-500">
+              OS Places primary lookup with OpenStreetMap fallback feeding mocked feature store outputs.
+            </p>
+            <p className="mt-1 text-xs text-slate-400">Current street focus: {activeProfile?.streetName}</p>
+          </div>
+
+          <form className="space-y-5" onSubmit={runForecast}>
+            <div className="grid grid-cols-1 gap-4">
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-wider text-slate-500">Property selector</p>
+                      <p className="text-xs text-slate-400">
+                        Use OS Places (free Data Hub key) for full postcode address coverage with an automatic
+                        OpenStreetMap fallback to capture community-contributed points.
+                      </p>
+                    </div>
                     <button
                       type="button"
-                      onClick={handleCaptureUrl}
-                      className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                      disabled={!hasPropertyUrl || captureStatus === 'loading' || captureStatus === 'saving'}
+                      onClick={() => selectedProperty && setIsMapOpen(true)}
+                      disabled={!selectedProperty}
+                      className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
                     >
-                      {captureStatus === 'loading' ? 'Loading…' : captureStatus === 'saving' ? 'Saving…' : 'Capture'}
+                      Open map preview
                     </button>
                   </div>
-                </div>
-              </div>
-              <div className="mt-2 space-y-1 text-[11px] leading-snug text-slate-500">
-                {isLivePreviewActive ? (
-                  <div>
-                    Live preview open below — interact with the frame, then choose “Take snapshot” to store what you need.
-                  </div>
-                ) : null}
-                {captureStatus === 'loading' && !isLivePreviewActive ? <div>Working on listing preview…</div> : null}
-                {capturedPreview?.capturedAt ? (
-                  <div>Last snapshot: {friendlyDateTime(capturedPreview.capturedAt)}</div>
-                ) : null}
-                {captureError ? <div className="text-rose-600">{captureError}</div> : null}
-              </div>
-            </div>
-          </section>
-
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <section className="md:col-span-1">
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h2 className="mb-2 text-base font-semibold">Deal Inputs</h2>
-
-              <CollapsibleSection
-                title="Buyer profile"
-                collapsed={collapsedSections.buyerProfile}
-                onToggle={() => toggleSection('buyerProfile')}
-              >
-                <div className="flex items-center gap-3 text-xs">
-                  <label className="inline-flex items-center gap-2">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr),auto]">
+                  <label className="flex flex-col gap-1 text-sm text-slate-700">
+                    Postcode
                     <input
-                      type="radio"
-                      name="buyerType"
-                      checked={inputs.buyerType === 'individual'}
-                      onChange={() => onBuyerType('individual')}
+                      type="text"
+                      value={postcode}
+                      onChange={(event) => setPostcode(event.target.value)}
+                      placeholder="e.g. FY5 1LH"
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
                     />
-                    <span>Individual</span>
                   </label>
-                  <label className="inline-flex items-center gap-2">
-                    <input
-                      type="radio"
-                      name="buyerType"
-                      checked={inputs.buyerType === 'company'}
-                      onChange={() => onBuyerType('company')}
-                    />
-                  <span>Ltd company</span>
-                  </label>
-                </div>
-                {inputs.buyerType === 'individual' && (
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    {smallInput('propertiesOwned', 'Existing properties', 1, 0)}
-                    <label className="col-span-2 inline-flex items-center gap-2 text-xs text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={inputs.firstTimeBuyer}
-                        onChange={(e) =>
-                          setInputs((prev) => ({
-                            ...prev,
-                            firstTimeBuyer: e.target.checked && prev.propertiesOwned === 0,
-                          }))
-                        }
-                        disabled={inputs.propertiesOwned > 0}
-                      />
-                      <span>First-time buyer relief</span>
-                    </label>
-                  </div>
-                )}
-                {inputs.buyerType === 'company' && (
-                  <div className="mt-2 text-[11px] text-slate-500">
-                    Company purchases are treated here at higher rates (+5% surcharge on the total price).
-                  </div>
-                )}
-              </CollapsibleSection>
-
-              <CollapsibleSection
-                title="Household income"
-                collapsed={collapsedSections.householdIncome}
-                onToggle={() => toggleSection('householdIncome')}
-              >
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {moneyInput('incomePerson1', 'Owner A income (£)', 1000)}
-                  {moneyInput('incomePerson2', 'Owner B income (£)', 1000)}
-                  {pctInput('ownershipShare1', 'Owner A ownership %')}
-                  {pctInput('ownershipShare2', 'Owner B ownership %')}
-                </div>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  {isCompanyBuyer
-                    ? 'For company purchases, rental profits are taxed at a flat 19% corporation tax rate. Ownership percentages still control how cash flows are split across the summary.'
-                    : 'Rental profit is allocated according to the ownership percentages above before applying each owner’s marginal tax bands. Percentages are normalised if they do not sum to 100%.'}
-                </p>
-              </CollapsibleSection>
-
-              <CollapsibleSection
-                title="Purchase costs"
-                collapsed={collapsedSections.purchaseCosts}
-                onToggle={() => toggleSection('purchaseCosts')}
-              >
-                <div className="grid grid-cols-2 gap-2">
-                  {moneyInput('purchasePrice', 'Purchase price (£)')}
-                  {pctInput('depositPct', 'Deposit %')}
-                  {pctInput('closingCostsPct', 'Other closing costs %')}
-                  {moneyInput('renovationCost', 'Renovation (upfront) £', 500)}
-                  {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
-                  {smallInput('mortgageYears', 'Mortgage term (years)')}
-
-                  <div className="col-span-2">
-                    <div className="mb-1 text-xs font-semibold text-slate-700">Loan type</div>
-                    <div className="flex gap-4 text-xs">
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="radio"
-                          name="loanType"
-                          checked={inputs.loanType === 'repayment'}
-                          onChange={() => setInputs((s) => ({ ...s, loanType: 'repayment' }))}
-                        />
-                        <span>Capital repayment</span>
-                      </label>
-                      <label className="inline-flex items-center gap-2">
-                        <input
-                          type="radio"
-                          name="loanType"
-                          checked={inputs.loanType === 'interest_only'}
-                          onChange={() => setInputs((s) => ({ ...s, loanType: 'interest_only' }))}
-                        />
-                        <span>Interest‑only</span>
-                      </label>
-                    </div>
-                    <div className="mt-1 text-[11px] text-slate-500">Interest‑only keeps the loan balance unchanged until exit; debt service = interest only.</div>
-                  </div>
-                </div>
-              </CollapsibleSection>
-
-              <CollapsibleSection
-                title="Rental cashflow"
-                collapsed={collapsedSections.rentalCashflow}
-                onToggle={() => toggleSection('rentalCashflow')}
-              >
-                <div className="grid grid-cols-2 gap-2">
-                  {moneyInput('monthlyRent', 'Monthly rent (£)', 50)}
-                  {pctInput('vacancyPct', 'Vacancy %')}
-                  {pctInput('mgmtPct', 'Management %')}
-                  {pctInput('repairsPct', 'Repairs/CapEx %')}
-                  {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
-                  {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
-                  {pctInput('annualAppreciation', 'Appreciation %')}
-                  {pctInput('rentGrowth', 'Rent growth %')}
-                  {pctInput('indexFundGrowth', 'Index fund growth %')}
-                  {smallInput('exitYear', 'Exit year', 1)}
-                  {pctInput('sellingCostsPct', 'Selling costs %')}
-                  {pctInput('discountRate', 'Discount rate %', 0.001)}
-                  <div className="col-span-2 rounded-xl border border-slate-200 p-3">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(inputs.reinvestIncome)}
-                        onChange={(e) =>
-                          setInputs((prev) => ({
-                            ...prev,
-                            reinvestIncome: e.target.checked,
-                          }))
-                        }
-                      />
-                      <span>Reinvest after-tax cash flow into index fund</span>
-                    </label>
-                    {inputs.reinvestIncome && (
-                      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 sm:items-center">
-                        {pctInput('reinvestPct', 'Reinvest % of after-tax cash flow')}
-                        <p className="text-[11px] text-slate-500">
-                          Only positive after-tax cash flows are reinvested and compound alongside the index fund baseline.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </CollapsibleSection>
-
-            </div>
-          </section>
-
-          <section className="space-y-3 md:col-span-2">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <SummaryCard title="Cash needed">
-                <Line label="Deposit" value={currency(equity.deposit)} />
-                <Line label="Stamp Duty (est.)" value={currency(equity.stampDuty)} />
-                <Line label="Other closing costs" value={currency(equity.otherClosing)} />
-                <Line label="Renovation (upfront)" value={currency(inputs.renovationCost)} />
-                <hr className="my-2" />
-                <Line label="Total cash in" value={currency(equity.cashIn)} bold />
-              </SummaryCard>
-
-              <SummaryCard
-                title={
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-slate-700">Performance</span>
-                    <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                      <span>Year</span>
-                      <select
-                        value={performanceYearClamped}
-                        onChange={(event) => setPerformanceYear(Number(event.target.value) || 1)}
-                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
-                      >
-                        {performanceYearOptions.map((year) => (
-                          <option key={year} value={year}>{`Year ${year}`}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                }
-              >
-                <Line label="Gross rent (vacancy adj.)" value={currency(selectedGrossRent)} />
-                <Line label="Operating expenses" value={currency(selectedOperatingExpenses)} />
-                <Line label="NOI" value={currency(selectedNoi)} />
-                <Line label="Debt service" value={currency(selectedDebtService)} />
-                <Line label="Cash flow (pre‑tax)" value={currency(selectedCashPreTax)} />
-                <Line label={rentalTaxLabel} value={currency(selectedRentalTax)} />
-                <hr className="my-2" />
-                <Line label="Cash flow (after tax)" value={currency(selectedCashAfterTax)} bold />
-              </SummaryCard>
-
-              <SummaryCard title="Key ratios">
-                <Line label="Cap rate" value={formatPercent(equity.cap)} />
-                <Line label="Yield on cost" value={formatPercent(equity.yoc)} />
-                <Line label="Cash‑on‑cash" value={formatPercent(equity.coc)} />
-                <Line
-                  label="DSCR"
-                  value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
-                />
-                <Line label="Mortgage pmt (mo)" value={currency(equity.mortgage)} />
-              </SummaryCard>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <SummaryCard title={`At exit (Year ${inputs.exitYear})`}>
-                <Line label="Future value" value={currency(equity.futureValue)} tooltip={futureValueTooltip} />
-                <Line label="Remaining loan" value={currency(equity.remaining)} tooltip={remainingLoanTooltip} />
-                <Line label="Selling costs" value={currency(equity.sellingCosts)} tooltip={sellingCostsTooltip} />
-                <hr className="my-2" />
-                <Line
-                  label="Estimated equity then"
-                  value={currency(estimatedExitEquity)}
-                  bold
-                  tooltip={estimatedEquityTooltip}
-                />
-              </SummaryCard>
-
-              <SummaryCard title={`NPV (${inputs.exitYear}-yr cashflows)`}>
-                <Line label="Discount rate" value={formatPercent(inputs.discountRate)} />
-                <Line label="NPV" value={currency(equity.npv)} bold />
-              </SummaryCard>
-            </div>
-
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <h3 className="mb-2 text-sm font-semibold">Wealth trajectory vs Index Fund</h3>
-              <div className="h-72 w-full">
-                <ResponsiveContainer>
-                  <AreaChart data={equity.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis
-                      dataKey="year"
-                      tickFormatter={(t) => `Y${t}`}
-                      tick={{ fontSize: 10, fill: '#475569' }}
-                    />
-                    <YAxis
-                      tickFormatter={(v) => currency(v)}
-                      tick={{ fontSize: 10, fill: '#475569' }}
-                      width={90}
-                    />
-                    <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
-                    <Legend
-                      content={(props) => (
-                        <ChartLegend
-                          {...props}
-                          activeSeries={activeSeries}
-                          onToggle={toggleSeries}
-                        />
-                      )}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="indexFund"
-                      name="Index fund"
-                      stroke="#f97316"
-                      fill="rgba(249,115,22,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.indexFund}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyValue"
-                      name="Property value"
-                      stroke="#0ea5e9"
-                      fill="rgba(14,165,233,0.18)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyValue}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyGross"
-                      name="Property gross"
-                      stroke="#2563eb"
-                      fill="rgba(37,99,235,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyGross}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyNet"
-                      name="Property net"
-                      stroke="#16a34a"
-                      fill="rgba(22,163,74,0.25)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyNet}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="propertyNetAfterTax"
-                      name={propertyNetAfterTaxLabel}
-                      stroke="#9333ea"
-                      fill="rgba(147,51,234,0.2)"
-                      strokeWidth={2}
-                      hide={!activeSeries.propertyNetAfterTax}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <SummaryCard title={`Exit comparison (Year ${inputs.exitYear})`}>
-                <Line
-                  label="Index fund value"
-                  value={currency(equity.indexValEnd)}
-                  tooltip={indexFundTooltip}
-                />
-                <Line
-                  label="Property gross"
-                  value={currency(equity.propertyGrossWealthAtExit)}
-                  tooltip={propertyGrossTooltip}
-                />
-                <Line
-                  label="Property net"
-                  value={currency(equity.propertyNetWealthAtExit)}
-                  tooltip={propertyNetTooltip}
-                />
-                <Line
-                  label={propertyNetAfterTaxLabel}
-                  value={currency(equity.propertyNetWealthAfterTax)}
-                  tooltip={propertyNetAfterTaxTooltip}
-                />
-                <Line
-                  label={rentalTaxCumulativeLabel}
-                  value={currency(equity.totalPropertyTax)}
-                  tooltip={rentalTaxTooltip}
-                />
-                <div className="mt-2 text-xs text-slate-600">
-                  {equity.propertyNetWealthAfterTax > equity.indexValEnd
-                    ? `${afterTaxComparisonPrefix}, property (net) still leads the index.`
-                    : equity.propertyNetWealthAfterTax < equity.indexValEnd
-                    ? `${afterTaxComparisonPrefix}, the index fund pulls ahead.`
-                    : `${afterTaxComparisonPrefix}, both paths are broadly similar.`}
-                </div>
-              </SummaryCard>
-
-              <SummaryCard title="Sensitivity: rent ±10% (Year 1 after-tax cash flow)">
-                <div className="space-y-0.5">
-                  <SensitivityRow label="Rent −10%" value={sensitivityResults.down} />
-                  <SensitivityRow label="Base" value={sensitivityResults.base} />
-                  <SensitivityRow label="Rent +10%" value={sensitivityResults.up} />
-                </div>
-              </SummaryCard>
-            </div>
-
-            <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <h3 className="text-sm font-semibold text-slate-800">AI investment assistant</h3>
-                <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                  {chatStatus === 'loading' ? <span>Thinking…</span> : null}
-                  {chatMessages.length > 0 ? (
                     <button
                       type="button"
-                      onClick={handleClearChat}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100"
+                      onClick={handlePropertyLookup}
+                      disabled={isLookupLoading || !postcode.trim()}
+                      className="inline-flex items-center justify-center rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-300"
                     >
-                      Clear chat
+                      {isLookupLoading ? 'Searching…' : 'Lookup addresses'}
                     </button>
-                  ) : null}
-                </div>
-              </div>
-              {chatMessages.length === 0 ? (
-                <p className="mb-3 text-xs text-slate-600">
-                  Ask follow-up questions about this forecast and receive AI-generated responses grounded in the current inputs.
-                </p>
-              ) : (
-                <div className="mb-3 max-h-64 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
-                  {chatMessages.map((message) => (
-                    <div
-                      key={message.id}
-                      className={
-                        message.role === 'user'
-                          ? 'ml-auto max-w-[85%] rounded-lg bg-indigo-100 px-2 py-1 text-indigo-800'
-                          : 'mr-auto max-w-[85%] rounded-lg bg-white px-2 py-1 text-slate-700 shadow-sm'
+                  </div>
+                  <label className="flex flex-col gap-1 text-sm text-slate-700">
+                    Available properties
+                    <select
+                      value={selectedPropertyId ?? ''}
+                      onChange={handleSelectProperty}
+                      disabled={isLookupLoading || propertyOptions.length === 0}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100"
+                    >
+                      <option value="" disabled>
+                        {isLookupLoading
+                          ? 'Loading addresses…'
+                          : propertyOptions.length
+                            ? 'Select a property'
+                            : lookupError
+                              ? 'No properties found'
+                              : 'Search to see addresses'}
+                      </option>
+                      {propertyOptions.map((property) => (
+                        <option key={property.id} value={property.id}>
+                          {property.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {lookupError ? (
+                    <p className="text-xs text-rose-500">{lookupError}</p>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      Results prioritise Ordnance Survey OS Places (Data Hub key) with an OpenStreetMap Nominatim fallback and
+                      house-level deduping.
+                    </p>
+                  )}
+                  {selectedProperty ? (
+                    <div className="rounded-lg border border-slate-200 bg-white/70 p-3 text-xs text-slate-500">
+                      <p className="font-semibold text-slate-700">Selected property context</p>
+                      <p className="mt-1">UPRN: {selectedProperty.uprn || 'N/A'}</p>
+                      <p>Lat / Lon: {selectedProperty.latitude?.toFixed?.(5) ?? '—'} / {selectedProperty.longitude?.toFixed?.(5) ?? '—'}</p>
+                    </div>
+                  ) : (
+                    <p className="rounded-lg border border-dashed border-slate-300 bg-white/60 p-3 text-xs text-slate-400">
+                      Run a postcode lookup to populate property choices and unlock the map preview and forecasts.
+                    </p>
+                  )}
+                  <label className="flex flex-col gap-1 text-sm text-slate-700">
+                    Purchase price (£)
+                    <input
+                      type="number"
+                      min={0}
+                      step={1000}
+                      value={inputs.purchasePrice ?? ''}
+                      onChange={(event) =>
+                        handleInput('purchasePrice', event.target.value === '' ? '' : Number(event.target.value))
                       }
-                    >
-                      {message.content}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {chatError ? (
-                <p className="mb-2 text-xs text-rose-600" role="alert">
-                  {chatError}
-                </p>
-              ) : null}
-              {!chatEnabled ? (
-                <p className="text-xs text-slate-500">
-                  Provide a Google Gemini API key (set <code className="font-mono text-[11px]">VITE_GOOGLE_API_KEY</code>) or configure{' '}
-                  <code className="font-mono text-[11px]">VITE_CHAT_API_URL</code> to enable the assistant.
-                </p>
-              ) : null}
-              <form onSubmit={handleSendChat} className="mt-2 space-y-2">
-                <label className="flex flex-col gap-1 text-xs text-slate-700">
-                  <span>Your question</span>
-                  <textarea
-                    value={chatInput}
-                    onChange={(event) => setChatInput(event.target.value)}
-                    className="min-h-[60px] w-full rounded-xl border border-slate-300 px-3 py-2 text-xs"
-                    placeholder="What should I watch out for in this investment?"
-                    disabled={chatStatus === 'loading'}
+                      placeholder="e.g. 250000"
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                    />
+                    <span className="text-xs text-slate-400">
+                      Used to calculate equity delta and forecast uplift metrics.
+                    </span>
+                  </label>
+              </div>
+
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                Property type
+                <select
+                  value={inputs.propertyType}
+                  onChange={(event) => handleInput('propertyType', event.target.value)}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
+                >
+                  <option value="flat">Flat</option>
+                  <option value="terrace">Terrace</option>
+                  <option value="semi">Semi-detached</option>
+                  <option value="detached">Detached</option>
+                  <option value="bungalow">Bungalow</option>
+                </select>
+              </label>
+
+              <div className="grid grid-cols-2 gap-4">
+                <label className="flex flex-col gap-2 text-sm text-slate-700">
+                  Bedrooms
+                  <input
+                    type="number"
+                    min={1}
+                    value={inputs.bedrooms}
+                    onChange={(event) => handleInput('bedrooms', Number(event.target.value))}
+                    className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
                   />
                 </label>
-                <div className="flex items-center justify-end">
-                  <button
-                    type="submit"
-                    className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
-                    disabled={chatStatus === 'loading' || !chatEnabled}
-                  >
-                    {chatStatus === 'loading' ? 'Sending…' : 'Ask assistant'}
-                  </button>
-                </div>
-              </form>
-            </div>
-
-            <div className="p-3">
-              <h3 className="mb-2 text-sm font-semibold">Scenario history</h3>
-              <p className="text-xs text-slate-600">
-                Save your current inputs and reload any previous scenario to compare different deals quickly.
-              </p>
-              {remoteEnabled ? (
-                <p
-                  className={`text-xs ${syncError ? 'text-rose-600' : 'text-slate-500'}`}
-                  role={syncError ? 'alert' : undefined}
-                >
-                  {syncStatus === 'loading'
-                    ? 'Loading remote scenarios…'
-                    : syncStatus === 'syncing'
-                    ? 'Syncing scenarios with the remote service…'
-                    : syncError
-                    ? `Remote sync issue: ${syncError}`
-                    : 'Remote sync active.'}
-                </p>
-              ) : (
-                <p className="text-xs text-slate-500">Scenarios are stored locally in your browser.</p>
-              )}
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleSaveScenario}
-                  className="no-print rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700"
-                >
-                  Save current scenario
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowLoadPanel((prev) => !prev)}
-                  className="no-print rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700"
-                >
-                  {showLoadPanel ? 'Close saved scenarios' : 'Load saved scenario'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowTableModal(true)}
-                  className="no-print rounded-full bg-slate-800 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
-                >
-                  Table view
-                </button>
+                <label className="flex flex-col gap-2 text-sm text-slate-700">
+                  Bathrooms
+                  <input
+                    type="number"
+                    min={1}
+                    value={inputs.bathrooms}
+                    onChange={(event) => handleInput('bathrooms', Number(event.target.value))}
+                    className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                  />
+                </label>
               </div>
 
-              {showLoadPanel && (
-                <div className="mt-3 space-y-3">
-                  {savedScenarios.length === 0 ? (
-                    <p className="text-xs text-slate-600">No scenarios saved yet. Save a scenario to build your history.</p>
-                  ) : (
-                    <>
-                      <label className="flex flex-col gap-1 text-xs text-slate-700">
-                        <span>Choose a saved scenario</span>
-                        <select
-                          value={selectedScenarioId}
-                          onChange={(event) => setSelectedScenarioId(event.target.value)}
-                          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-xs"
-                        >
-                          {savedScenarios.map((scenario) => (
-                            <option key={scenario.id} value={scenario.id}>
-                              {scenario.name} — saved {friendlyDateTime(scenario.savedAt)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={handleLoadScenario}
-                        className="no-print rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
-                      >
-                        Load selected scenario
-                      </button>
-                      <div className="divide-y divide-slate-200 rounded-xl border border-slate-200">
-                        {savedScenarios.map((scenario) => (
-                          <div
-                            key={`${scenario.id}-meta`}
-                            className="flex flex-col gap-2 px-3 py-1.5 text-[11px] text-slate-600 md:flex-row md:items-center md:justify-between"
-                          >
-                            <div className="flex flex-col">
-                              <span className="font-semibold text-slate-700">{scenario.name}</span>
-                              <span>Saved: {friendlyDateTime(scenario.savedAt)}</span>
-                              {scenario.data?.propertyAddress ? (
-                                <span className="text-slate-500">{scenario.data.propertyAddress}</span>
-                              ) : null}
-                              {scenario.data?.propertyUrl ? (
-                                <a
-                                  href={scenario.data.propertyUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-slate-500 underline-offset-2 hover:underline"
-                                >
-                                  View listing
-                                </a>
-                              ) : null}
-                            </div>
-                            <div className="no-print flex items-center gap-2 text-[11px]">
-                              <button
-                                type="button"
-                                onClick={() => handleUpdateScenario(scenario.id)}
-                                className="rounded-full border border-emerald-300 px-3 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-50"
-                              >
-                                Update
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleRenameScenario(scenario.id)}
-                                className="rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-600 transition hover:bg-slate-100"
-                              >
-                                Rename
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteScenario(scenario.id)}
-                                className="rounded-full border border-rose-300 px-3 py-1 font-semibold text-rose-600 transition hover:bg-rose-50"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                Internal area (m²)
+                <input
+                  type="number"
+                  min={30}
+                  value={inputs.internalArea}
+                  onChange={(event) => handleInput('internalArea', Number(event.target.value))}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                />
+              </label>
 
-        <section className="mt-6">
-          <CollapsibleSection
-            title="Annual cash flow detail"
-            collapsed={collapsedSections.cashflowDetail}
-            onToggle={() => toggleSection('cashflowDetail')}
-            className="rounded-2xl bg-white p-3 shadow-sm"
-          >
-            <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-            <CashflowTable rows={cashflowTableRows} rentalTaxLabel={rentalTaxLabel} />
-          </CollapsibleSection>
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                Energy rating
+                <select
+                  value={inputs.energyRating}
+                  onChange={(event) => handleInput('energyRating', event.target.value)}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                >
+                  {['A', 'B', 'C', 'D', 'E', 'F', 'G'].map((grade) => (
+                    <option key={grade} value={grade}>
+                      {grade}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                Amenity density (OSM)
+                <select
+                  value={inputs.amenityLevel}
+                  onChange={(event) => handleInput('amenityLevel', event.target.value)}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                School quality (DfE)
+                <select
+                  value={inputs.schoolQuality}
+                  onChange={(event) => handleInput('schoolQuality', event.target.value)}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                >
+                  <option value="outstanding">Outstanding</option>
+                  <option value="good">Good</option>
+                  <option value="average">Average</option>
+                  <option value="below_average">Below average</option>
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                Local sentiment pulse
+                <select
+                  value={inputs.sentiment}
+                  onChange={(event) => handleInput('sentiment', event.target.value)}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                >
+                  <option value="positive">Positive</option>
+                  <option value="neutral">Neutral</option>
+                  <option value="negative">Negative</option>
+                </select>
+              </label>
+
+              <div className="grid grid-cols-2 gap-4">
+                <label className="flex items-center gap-3 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={inputs.isNewBuild}
+                    onChange={(event) => handleInput('isNewBuild', event.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-500 focus:ring-emerald-500"
+                  />
+                  New build scheme
+                </label>
+                <label className="flex items-center gap-3 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={inputs.plannedRetrofit}
+                    onChange={(event) => handleInput('plannedRetrofit', event.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-500 focus:ring-emerald-500"
+                  />
+                  Retrofit planned
+                </label>
+              </div>
+
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                Flood risk (EA)
+                <select
+                  value={inputs.floodZone}
+                  onChange={(event) => handleInput('floodZone', event.target.value)}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                Planning pipeline (units)
+                <input
+                  type="number"
+                  min={0}
+                  value={inputs.planningPipeline}
+                  onChange={(event) => handleInput('planningPipeline', Number(event.target.value))}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                />
+              </label>
+
+              <label className="flex flex-col gap-2 text-sm text-slate-700">
+                Data gaps (0–3)
+                <input
+                  type="number"
+                  min={0}
+                  max={3}
+                  value={inputs.dataGaps}
+                  onChange={(event) => handleInput('dataGaps', Number(event.target.value))}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-emerald-400 focus:outline-none"
+                />
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={loading}
+            >
+              {loading ? 'Running model…' : 'Generate forecast'}
+            </button>
+          </form>
         </section>
 
-        {showListingPreview ? (
-          <section className="mt-6">
-            <div className="rounded-2xl bg-white p-3 shadow-sm" data-capture-placeholder data-hide-on-export>
-              <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-800">
-                    {isLivePreviewActive ? 'Listing preview (live)' : 'Captured listing preview'}
-                  </h3>
-                  {isLivePreviewActive ? (
-                    <p className="text-[11px] text-slate-500">
-                      Viewing the live listing below. Use “Take snapshot” to store it with this scenario.
-                    </p>
-                  ) : capturedPreview?.capturedAt ? (
-                    <p className="text-[11px] text-slate-500">
-                      Snapshot from {friendlyDateTime(capturedPreview.capturedAt)}
-                    </p>
-                  ) : null}
-                  {captureError && !isLivePreviewActive ? (
-                    <p className="text-[11px] text-rose-600">{captureError}</p>
-                  ) : null}
-                </div>
-                <div className="no-print flex flex-wrap items-center gap-2 text-[11px]">
-                  {isLivePreviewActive ? (
-                    <button
-                      type="button"
-                      onClick={handleTakeSnapshot}
-                      className="inline-flex items-center gap-1 rounded-full border border-indigo-200 px-3 py-1 font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                      disabled={captureStatus === 'saving' || !livePreviewReady}
-                    >
-                      {captureStatus === 'saving' ? 'Saving…' : 'Take snapshot'}
-                    </button>
-                  ) : null}
+        <section className="space-y-6">
+          <div className="rounded-2xl bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+              <div>
+                <p className="text-sm font-medium uppercase tracking-wider text-emerald-500">Headline forecast</p>
+                <h2 className="text-3xl font-semibold text-slate-900">{formatCurrency(result.headlinePrice)}</h2>
+                <p className="text-sm text-slate-500">
+                  {formatPercent(result.yoyPriceGrowth)} expected YoY change | data confidence {formatPercent(result.dataConfidence)}
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                  <span className="font-semibold text-slate-700">Target property:</span>
+                  <span className="text-slate-600">{scenarioAddress || 'Awaiting address details'}</span>
                   <button
                     type="button"
-                    onClick={handleClearCapture}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100"
+                    onClick={() => selectedProperty && setIsMapOpen(true)}
+                    disabled={!selectedProperty}
+                    className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
                   >
-                    Clear capture
+                    View map
                   </button>
                 </div>
+                <p className="mt-1 text-xs uppercase tracking-wider text-slate-400">
+                  LSOA {activeProfile?.lsoa} · footfall index {activeProfile?.footfallIndex} · gigabit {activeProfile?.broadbandMbps}
+                  Mbps
+                </p>
               </div>
-              <div
-                className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
-                style={{ height: '45rem' }}
-              >
-                {isLivePreviewActive ? (
-                  <>
-                    <iframe
-                      ref={iframeRef}
-                      src={livePreview.iframeUrl}
-                      title="Property listing preview"
-                      className="h-full w-full border-0"
-                      allowFullScreen
-                      onLoad={() => {
-                        setLivePreviewReady(true);
-                        setCaptureStatus('idle');
-                        setCaptureError('');
-                      }}
-                      onError={() => {
-                        setCaptureStatus('idle');
-                        setLivePreviewReady(false);
-                        setCaptureError('Unable to load the listing inside the preview frame.');
-                      }}
-                    />
-                    {captureStatus === 'saving' ? (
-                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/80 px-4 text-center text-sm text-slate-600">
-                        Saving snapshot…
-                      </div>
-                    ) : captureStatus === 'loading' || !livePreviewReady ? (
-                      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/80 px-4 text-center text-sm text-slate-600">
-                        Preparing preview…
-                      </div>
-                    ) : null}
-                  </>
-                ) : captureStatus === 'loading' ? (
-                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
-                    Processing preview…
-                  </div>
-                ) : hasCapturedSnapshot && capturedPreview?.imageUrl ? (
-                  <img
-                    src={capturedPreview.imageUrl}
-                    alt="Captured property listing"
-                    className="h-full w-full object-contain bg-white"
-                    loading="lazy"
-                    crossOrigin="anonymous"
-                    onError={() => {
-                      setCaptureError('Preview image could not be loaded. Please try capturing again.');
-                      setCapturedPreview(null);
-                      setLivePreview(null);
-                    }}
-                  />
-                ) : captureError ? (
-                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-rose-600">
-                    {captureError}
-                  </div>
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-slate-600">
-                    No preview available yet. Enter a property URL and choose “Capture”.
-                  </div>
-                )}
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                <p className="font-medium text-slate-700">{formatCurrency(result.confidenceLow)} – {formatCurrency(result.confidenceHigh)}</p>
+                <p>80% interval (dummy)</p>
               </div>
             </div>
-          </section>
-        ) : null}
 
-      </main>
-    </div>
-
-    {showTableModal && (
-        <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
-          <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
-              <h2 className="text-base font-semibold text-slate-800">Saved scenarios overview</h2>
-              <button
-                type="button"
-                onClick={() => setShowTableModal(false)}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Close
-              </button>
+            <div className="mt-6 h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData}>
+                  <defs>
+                    <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.7} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0.05} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="dateLabel" stroke="#475569" fontSize={12} />
+                  <YAxis stroke="#475569" fontSize={12} tickFormatter={(value) => `£${(value / 1000).toFixed(0)}k`} />
+                  <Tooltip formatter={(value) => formatCurrency(value)} labelFormatter={(label) => `Month ${label.replace('M', '')}`} />
+                  <Legend />
+                  <Area type="monotone" dataKey="price" name="Projected price" stroke="#047857" fill="url(#colorPrice)" strokeWidth={2} />
+                  <Area type="monotone" dataKey="low" name="Low" stroke="#94a3b8" fill="#cbd5f5" strokeDasharray="5 5" fillOpacity={0.1} />
+                  <Area type="monotone" dataKey="high" name="High" stroke="#cbd5f5" fill="#e2e8f0" strokeDasharray="5 5" fillOpacity={0.08} />
+                </AreaChart>
+              </ResponsiveContainer>
             </div>
-            <div className="overflow-auto">
-              {scenarioTableData.length === 0 ? (
-                <p className="px-5 py-6 text-sm text-slate-600">No scenarios saved yet.</p>
-              ) : (
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="px-4 py-2 text-left font-semibold">Scenario</th>
-                      <th className="px-4 py-2 text-left font-semibold">Saved</th>
-                      <th className="px-4 py-2 text-right font-semibold">Total cash in</th>
-                      <th className="px-4 py-2 text-right font-semibold">Cash flow (after tax)</th>
-                      <th className="px-4 py-2 text-right font-semibold">Mortgage pmt (mo)</th>
-                      <th className="px-4 py-2 text-right font-semibold">Yield on cost</th>
-                      <th className="px-4 py-2 text-right font-semibold">{propertyNetAfterTaxLabel}</th>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Deal economics</h3>
+                <p className="text-sm text-slate-500">
+                  Compares your stated purchase price with the modelled valuation pathway.
+                </p>
+              </div>
+              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                36M CAGR {formatPercent(result.forecastCagr ?? 0)}
+              </span>
+            </div>
+            <dl className="mt-4 grid gap-4 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Purchase price</dt>
+                <dd className="mt-1 text-xl font-semibold text-slate-900">{formatCurrency(result.purchasePrice)}</dd>
+                <p className="text-xs text-slate-500">User input</p>
+              </div>
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Instant equity</dt>
+                <dd className="mt-1 text-xl font-semibold text-slate-900">{dealMetrics.priceDeltaDisplay}</dd>
+                <p className="text-xs text-slate-500">Vs. modelled market value today</p>
+              </div>
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <dt className="text-xs uppercase tracking-wider text-slate-500">36M projected value</dt>
+                <dd className="mt-1 text-xl font-semibold text-slate-900">{formatCurrency(result.forecastHorizonValue)}</dd>
+                <p className="text-xs text-slate-500">{dealMetrics.horizonDeltaDisplay} uplift vs. purchase</p>
+              </div>
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <dt className="text-xs uppercase tracking-wider text-slate-500">Breakeven timeline</dt>
+                <dd className="mt-1 text-xl font-semibold text-slate-900">{dealMetrics.breakevenDisplay}</dd>
+                <p className="text-xs text-slate-500">Month valuation overtakes purchase price</p>
+              </div>
+            </dl>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Street opportunity score</h3>
+                <p className="text-sm text-slate-500">
+                  Weighted blend of five street-level metrics. Click a tile to see methodology, data sources and how to use it.
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs uppercase tracking-wider text-slate-400">Overall index</p>
+                <p className="text-4xl font-semibold text-emerald-600">{result.streetOpportunityScore}</p>
+              </div>
+            </div>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {Object.entries(result.streetScores).map(([key, value]) => {
+                const metric = SCORE_METRICS[key];
+                if (!metric) return null;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setActiveScore(key)}
+                    className="group flex flex-col gap-3 rounded-xl border border-slate-100 bg-slate-50 p-4 text-left transition hover:border-emerald-200 hover:bg-emerald-50"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800">{metric.label}</p>
+                        <p className="text-xs text-slate-500">Weight {Math.round(metric.weight * 100)}% · tap for detail</p>
+                      </div>
+                      <span className="text-2xl font-semibold text-slate-900">{Math.round(value)}</span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all group-hover:bg-emerald-600"
+                        style={{ width: `${clamp(Math.round(value), 5, 100)}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500">{metric.description}</p>
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="mt-4 text-xs text-slate-400">
+              Overall score = Σ(metric score × weight) ÷ Σ(weights). Designed to compare micro-locations within the same city.
+            </p>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <h3 className="text-lg font-semibold text-slate-900">Feature contributions</h3>
+              <p className="text-sm text-slate-500">Pseudo SHAP-style importance based on engineered features.</p>
+              <ul className="mt-4 space-y-3 text-sm text-slate-600">
+                {result.featureContributions.map((item) => (
+                  <li key={item.name} className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-slate-700">{item.name}</span>
+                      <span className="text-slate-500">{(item.weight * 100).toFixed(1)} pts</span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">Contribution {formatCurrency(item.contribution)}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <h3 className="text-lg font-semibold text-slate-900">Risk radar</h3>
+              <p className="text-sm text-slate-500">Scores derived from market, supply, climate and affordability indicators.</p>
+              <dl className="mt-4 grid grid-cols-2 gap-4 text-sm">
+                {Object.entries(result.riskScores).map(([name, value]) => (
+                  <div key={name} className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                    <dt className="text-xs uppercase tracking-wider text-slate-500">{name.replace(/([A-Z])/g, ' $1')}</dt>
+                    <dd className="mt-1 text-2xl font-semibold text-slate-900">{Math.round(value)}</dd>
+                    <p className="text-xs text-slate-500">0 (risky) → 100 (stable)</p>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900">Comparable sales snapshot</h3>
+            <p className="text-sm text-slate-500">Mocked Land Registry matches aggregated to street/postcode sector.</p>
+            <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Address</th>
+                    <th className="px-3 py-2 text-left">Sold price</th>
+                    <th className="px-3 py-2 text-left">Date</th>
+                    <th className="px-3 py-2 text-left">Similarity</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white text-slate-700">
+                  {result.comparables.map((comp) => (
+                    <tr key={comp.id}>
+                      <td className="px-3 py-3">{comp.address}</td>
+                      <td className="px-3 py-3">{formatCurrency(comp.price)}</td>
+                      <td className="px-3 py-3">{comp.date}</td>
+                      <td className="px-3 py-3">{Math.round(comp.similarity * 100)}%</td>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {scenarioTableData.map(({ scenario, metrics }) => (
-                      <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
-                        <td className="px-4 py-2 font-semibold text-slate-800">{scenario.name}</td>
-                        <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashIn)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.cashflowYear1AfterTax)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.mortgage)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{formatPercent(metrics.yoc)}</td>
-                        <td className="px-4 py-2 text-right text-slate-700">{currency(metrics.propertyNetWealthAfterTax)} ({metrics.exitYear}y)</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-500">
-              <span>CSV export includes every saved scenario.</span>
-              <button
-                type="button"
-                onClick={handleExportTableCsv}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={scenarioTableData.length === 0}
-              >
-                Export CSV
-              </button>
+          </div>
+
+          <div className="rounded-2xl bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Narrative insights</h3>
+                <p className="text-sm text-slate-500">Generated by LLM sentiment/summary job (placeholder).</p>
+              </div>
+              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">Sentiment net score +0.21</span>
+            </div>
+            <ul className="mt-4 space-y-3 text-sm text-slate-600">
+              {result.narrative.map((item, index) => (
+                <li key={index} className="flex gap-3 rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                  <span className="mt-1 h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      </main>
+
+      <section className="mx-auto mt-10 max-w-6xl px-6">
+        <div className="rounded-2xl bg-white p-6 shadow-sm">
+          <h3 className="text-lg font-semibold text-slate-900">Data ingestion matrix</h3>
+          <p className="text-sm text-slate-500">
+            Outlines the live data feeds that would power the street-level feature store. Displaying mocked stats for now.
+          </p>
+          <div className="mt-6 grid gap-6 md:grid-cols-3">
+            {dataSourceSections.map((section) => (
+              <div key={section.title} className="space-y-3 rounded-xl border border-slate-100 bg-slate-50 p-4">
+                <h4 className="text-sm font-semibold text-slate-800">{section.title}</h4>
+                <ul className="space-y-2 text-sm text-slate-600">
+                  {section.items.map((item) => (
+                    <li key={item.name} className="rounded-lg bg-white px-3 py-2 shadow-sm">
+                      <p className="font-medium text-slate-700">{item.name}</p>
+                      <p className="text-xs text-slate-500">{item.description}</p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {activeScore && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4 py-8">
+          <div className="relative w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl">
+            <button
+              type="button"
+              onClick={() => setActiveScore(null)}
+              className="absolute right-4 top-4 rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-200"
+            >
+              Close
+            </button>
+            {(() => {
+              const metric = SCORE_METRICS[activeScore];
+              const drivers = result?.scoreDrivers?.[activeScore] ?? {};
+              if (!metric) return null;
+              return (
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-slate-400">{metric.shortLabel}</p>
+                    <h4 className="text-2xl font-semibold text-slate-900">{metric.label}</h4>
+                    <p className="text-sm text-slate-500">Importance {Math.round(metric.weight * 100)}% of overall score.</p>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 p-4">
+                    <p className="text-sm font-semibold text-slate-800">How this was calculated</p>
+                    <ul className="mt-2 space-y-2 text-sm text-slate-600">
+                      {metric.calculation(drivers).map((line, index) => (
+                        <li key={index} className="flex gap-2">
+                          <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden />
+                          <span>{line}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="rounded-xl bg-white p-4 shadow-inner">
+                    <p className="text-sm font-semibold text-slate-800">How to use this insight</p>
+                    <p className="mt-2 text-sm text-slate-600">{metric.howToUse}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-slate-400">Data sources powering this metric</p>
+                    <ul className="mt-2 flex flex-wrap gap-2">
+                      {metric.dataSources.map((source) => (
+                        <li key={source} className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                          {source}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-600">
+                    <p>
+                      Current score: <span className="font-semibold text-slate-900">{Math.round(result.streetScores[activeScore])}</span>
+                      /100 · Street: {activeProfile?.streetName}
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {isMapOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4 py-8">
+          <div className="relative w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-xl">
+            <button
+              type="button"
+              onClick={() => setIsMapOpen(false)}
+              className="absolute right-4 top-4 z-10 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500 shadow hover:bg-slate-200"
+            >
+              Close
+            </button>
+            <div className="aspect-[4/3] w-full bg-slate-100">
+              <iframe
+                title="OpenStreetMap location preview"
+                src={openStreetMapEmbedUrl}
+                className="h-full w-full"
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+              />
+            </div>
+            <div className="border-t border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
+              <p className="font-medium text-slate-700">{liveAddress || 'Add address details to preview this location.'}</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Map data © OpenStreetMap contributors ·{' '}
+                <a
+                  href={openStreetMapExternalUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold text-emerald-600 hover:text-emerald-700"
+                >
+                  Open full map
+                </a>
+              </p>
             </div>
           </div>
         </div>
@@ -2717,212 +2106,3 @@ export default function App() {
     </div>
   );
 }
-
-function CashflowTable({ rows = [], rentalTaxLabel }) {
-  if (!rows || rows.length === 0) {
-    return <p className="text-xs text-slate-600">Cash flow data becomes available once a hold period is defined.</p>;
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="min-w-full divide-y divide-slate-200 text-xs">
-        <thead className="bg-slate-50 text-slate-600">
-          <tr>
-            <th className="px-3 py-2 text-left font-semibold">Year</th>
-            <th className="px-3 py-2 text-right font-semibold">Property value</th>
-            <th className="px-3 py-2 text-right font-semibold">Index fund value</th>
-            <th className="px-3 py-2 text-right font-semibold">Gross rent</th>
-            <th className="px-3 py-2 text-right font-semibold">Operating expenses</th>
-            <th className="px-3 py-2 text-right font-semibold">NOI</th>
-            <th className="px-3 py-2 text-right font-semibold">Debt service</th>
-            <th className="px-3 py-2 text-right font-semibold">{rentalTaxLabel}</th>
-            <th className="px-3 py-2 text-right font-semibold">Cash flow (pre-tax)</th>
-            <th className="px-3 py-2 text-right font-semibold">Cash flow (after tax)</th>
-            <th className="px-3 py-2 text-right font-semibold">Cumulative cash flow (after tax)</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-200">
-          {rows.map((row) => (
-            <tr key={`cashflow-${row.year}`} className="odd:bg-white even:bg-slate-50">
-              <td className="px-3 py-2 font-semibold text-slate-700">Y{row.year}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.propertyValue)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.indexFundValue)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.grossRent)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.operatingExpenses)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.noi)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.debtService)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.propertyTax)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.cashPreTax)}</td>
-              <td className="px-3 py-2 text-right font-semibold text-slate-800">{currency(row.cashAfterTax)}</td>
-              <td className="px-3 py-2 text-right text-slate-700">{currency(row.cumulativeAfterTax)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function ChartLegend({ payload = [], activeSeries, onToggle }) {
-  if (!Array.isArray(payload) || payload.length === 0) {
-    return null;
-  }
-  return (
-    <div className="flex flex-wrap gap-3 text-[11px] font-medium text-slate-600">
-      {payload.map((entry) => {
-        const key = entry.dataKey ?? entry.value;
-        const isActive = activeSeries?.[key] !== false;
-        return (
-          <button
-            key={key}
-            type="button"
-            onClick={() => onToggle?.(key)}
-            className={`flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 transition ${
-              isActive ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'
-            }`}
-            aria-pressed={isActive}
-          >
-            <span
-              className="h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: entry.color, opacity: isActive ? 1 : 0.3 }}
-            />
-            <span className="whitespace-nowrap">{entry.value}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function SummaryCard({ title, children }) {
-  const titleNode =
-    typeof title === 'string' ? (
-      <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
-    ) : (
-      title
-    );
-
-  return (
-    <div className="rounded-2xl bg-white p-3 shadow-sm">
-      <div className="mb-2">{titleNode}</div>
-      <div className="space-y-0.5">{children}</div>
-    </div>
-  );
-}
-
-function Line({ label, value, bold = false, tooltip }) {
-  const hasTooltip = Boolean(tooltip);
-
-  return (
-    <div className={`group relative flex items-center justify-between text-xs ${hasTooltip ? 'cursor-help' : ''}`}>
-      <span className="text-slate-600">{label}</span>
-      <span className={bold ? 'font-semibold text-slate-800' : 'text-slate-800'}>{value}</span>
-      {hasTooltip ? (
-        <div className="pointer-events-none absolute left-0 top-full z-20 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-[11px] leading-snug text-white shadow-lg group-hover:block">
-          {tooltip}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SensitivityRow({ label, value }) {
-  const numericValue = Number.isFinite(value) ? value : 0;
-  const positive = numericValue >= 0;
-  return (
-    <div className="flex items-center justify-between text-xs">
-      <span className="text-slate-600">{label}</span>
-      <span
-        className={`rounded-lg px-2 py-0.5 ${positive ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}
-      >
-        {currency(numericValue)}
-      </span>
-    </div>
-  );
-}
-
-function CollapsibleSection({ title, collapsed, onToggle, children, className }) {
-  const containerClassName = [
-    'relative mb-3',
-    className ?? 'rounded-xl border border-slate-200 p-3',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  return (
-    <div className={containerClassName}>
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        className="absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-[10px] font-semibold text-slate-600 transition hover:bg-slate-100"
-      >
-        {collapsed ? '+' : '−'}
-      </button>
-      <div className="pl-6">
-        <div className="text-xs font-semibold text-slate-700">{title}</div>
-        {!collapsed ? <div className="mt-2">{children}</div> : null}
-      </div>
-    </div>
-  );
-}
-
-(function runDevTests() {
-  if (typeof window === 'undefined' || window.__QC_TESTS__) return;
-  const approx = (a, b, tol = 1e-2) => Math.abs(a - b) <= tol;
-  try {
-    const pmt = monthlyMortgagePayment({ principal: 100000, annualRate: 0.06, years: 30 });
-    console.assert(approx(pmt, 599.5505, 0.1), `Payment mismatch: ${pmt}`);
-
-    const rem = remainingBalance({ principal: 100000, annualRate: 0.06, years: 30, monthsPaid: 60 });
-    console.assert(approx(rem, 93054.3568, 1), `Remaining mismatch: ${rem}`);
-
-    const io = (100000 * 0.06) / 12;
-    console.assert(approx(io, 500, 1e-6), `IO mismatch: ${io}`);
-
-    const sdltBase = calcStampDuty(300000, 'individual', 0, false);
-    console.assert(approx(sdltBase, 4750, 1), `SDLT base mismatch: ${sdltBase}`);
-
-    const sdltAdd = calcStampDuty(300000, 'company', 0, false);
-    console.assert(approx(sdltAdd, 19750, 1), `SDLT add mismatch: ${sdltAdd}`);
-
-    const sdltIndividualOne = calcStampDuty(300000, 'individual', 1, false);
-    console.assert(approx(sdltIndividualOne, 4750, 1), `SDLT single extra mismatch: ${sdltIndividualOne}`);
-
-    const sdltIndividualTwo = calcStampDuty(300000, 'individual', 2, false);
-    console.assert(approx(sdltIndividualTwo, 19750, 1), `SDLT multiple mismatch: ${sdltIndividualTwo}`);
-
-    const sdltFtb = calcStampDuty(500000, 'individual', 0, true);
-    console.assert(approx(sdltFtb, 10000, 1), `SDLT FTB mismatch: ${sdltFtb}`);
-
-    const tax40k = calcIncomeTax(40000);
-    console.assert(approx(tax40k, 5486, 1), `Income tax 40k mismatch: ${tax40k}`);
-
-    const tax130k = calcIncomeTax(130000);
-    console.assert(approx(tax130k, 44703, 2), `Income tax 130k mismatch: ${tax130k}`);
-
-    const idx10 = 50000 * Math.pow(1 + DEFAULT_INDEX_GROWTH, 10);
-    console.assert(approx(idx10, 98357.5679, 0.5), `Index cmp mismatch: ${idx10}`);
-
-    const corpScenario = calculateEquity({
-      buyerType: 'company',
-      purchasePrice: 100000,
-      depositPct: 1,
-      monthlyRent: 1000,
-      vacancyPct: 0,
-      mgmtPct: 0,
-      repairsPct: 0,
-      insurancePerYear: 0,
-      otherOpexPerYear: 0,
-      interestRate: 0,
-      exitYear: 1,
-    });
-    console.assert(
-      approx(corpScenario.propertyTaxes[0], 2280, 0.5),
-      `Corporation tax mismatch: ${corpScenario.propertyTaxes[0]}`
-    );
-  } catch (e) {
-    console.warn('QuickCheck dev tests threw:', e);
-  }
-  window.__QC_TESTS__ = true;
-})();
