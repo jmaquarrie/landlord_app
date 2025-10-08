@@ -216,6 +216,8 @@ const DEFAULT_POSTCODE = 'FY5 1LH';
 
 const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
 const POSTCODES_IO_ENDPOINT = 'https://api.postcodes.io/postcodes';
+const NOMINATIM_MIN_DELAY_MS = 1100;
+const NOMINATIM_MAX_RETRIES = 2;
 
 function normalisePostcode(postcode) {
   return postcode?.toUpperCase?.().replace(/\s+/g, '') ?? '';
@@ -235,6 +237,48 @@ function formatPostcode(postcode) {
   const inward = normalised.slice(-3);
   return `${outward} ${inward}`;
 }
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+let lastNominatimRequestAt = 0;
+
+async function fetchNominatim(params, { retries = NOMINATIM_MAX_RETRIES } = {}) {
+  const elapsed = Date.now() - lastNominatimRequestAt;
+  if (elapsed < NOMINATIM_MIN_DELAY_MS) {
+    await wait(NOMINATIM_MIN_DELAY_MS - elapsed);
+  }
+
+  const url = `${NOMINATIM_ENDPOINT}?${params.toString()}`;
+  lastNominatimRequestAt = Date.now();
+
+  const referer = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : undefined;
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+      'Accept-Language': 'en-GB,en;q=0.9',
+      ...(referer ? { Referer: referer } : {}),
+    },
+  });
+
+  if (response.status === 429 && retries > 0) {
+    await wait(NOMINATIM_MIN_DELAY_MS * 1.5);
+    return fetchNominatim(params, { retries: retries - 1 });
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Nominatim data: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  return Array.isArray(payload) ? payload : [];
+}
+
+const propertyLookupCache = new Map();
 
 function pickAddressPart(address, keys, fallback = '') {
   for (const key of keys) {
@@ -374,6 +418,12 @@ async function fetchPropertiesForPostcode(postcode) {
   }
 
   const formattedPostcode = formatPostcode(trimmed);
+
+  const cacheKey = formattedPostcode || trimmed;
+  if (propertyLookupCache.has(cacheKey)) {
+    return propertyLookupCache.get(cacheKey);
+  }
+
   let postcodeMetadata = null;
 
   try {
@@ -409,21 +459,7 @@ async function fetchPropertiesForPostcode(postcode) {
     }
   }
 
-  const response = await fetch(`${NOMINATIM_ENDPOINT}?${params.toString()}`, {
-    headers: {
-      Accept: 'application/json',
-      'Accept-Language': 'en-GB,en;q=0.9',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch properties for postcode ${trimmed}`);
-  }
-
-  let payload = await response.json();
-  if (!Array.isArray(payload)) {
-    payload = [];
-  }
+  let payload = await fetchNominatim(params);
 
   const normalisedTarget = normalisePostcode(formattedPostcode || trimmed);
   const fallbackCoordinates = postcodeMetadata
@@ -473,18 +509,9 @@ async function fetchPropertiesForPostcode(postcode) {
     }
 
     try {
-      const streetResponse = await fetch(`${NOMINATIM_ENDPOINT}?${streetParams.toString()}`, {
-        headers: {
-          Accept: 'application/json',
-          'Accept-Language': 'en-GB,en;q=0.9',
-        },
-      });
-
-      if (streetResponse.ok) {
-        const streetPayload = await streetResponse.json();
-        if (Array.isArray(streetPayload) && streetPayload.length > 0) {
-          payload = payload.concat(streetPayload);
-        }
+      const streetPayload = await fetchNominatim(streetParams);
+      if (Array.isArray(streetPayload) && streetPayload.length > 0) {
+        payload = payload.concat(streetPayload);
       }
     } catch (streetError) {
       console.warn('Failed to enrich street results', streetError);
@@ -515,7 +542,7 @@ async function fetchPropertiesForPostcode(postcode) {
     }
   }
 
-  return unique.sort((a, b) => {
+  const sorted = unique.sort((a, b) => {
     const aNumber = parseHouseNumber(a.houseNumber);
     const bNumber = parseHouseNumber(b.houseNumber);
     if (aNumber !== bNumber) {
@@ -529,6 +556,9 @@ async function fetchPropertiesForPostcode(postcode) {
 
     return (a.label || '').localeCompare(b.label || '');
   });
+
+  propertyLookupCache.set(cacheKey, sorted);
+  return sorted;
 }
 
 function inferLocationKey(property) {
