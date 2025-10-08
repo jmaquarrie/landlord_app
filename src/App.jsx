@@ -1153,6 +1153,11 @@ const KNOWLEDGE_GROUPS = {
     description: 'Shows how return ratios evolve through the hold period.',
     metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrHurdle', 'npvToDate'],
   },
+  npv: {
+    label: 'Net present value',
+    description: 'Explains how discounting transforms future cash flow and sale proceeds into today’s money.',
+    metrics: ['npvToDate', 'discountRateSetting', 'npvInitialOutlay', 'npvSaleProceeds', 'npvCumulativeCash'],
+  },
   cashflowBars: {
     label: 'Annual cash flow',
     description: 'Highlights how rent covers expenses, debt service, and tax each year.',
@@ -1479,10 +1484,42 @@ const KNOWLEDGE_METRICS = {
   },
   npvToDate: {
     label: 'Net present value',
-    groups: ['rateTrends'],
+    groups: ['rateTrends', 'npv'],
     description: 'Discounted value of cash flows and sale proceeds up to each year.',
     calculation: 'NPV of annual after-tax cash flows and exit value using the discount rate.',
     importance: 'Shows whether returns exceed the chosen discount rate over time.',
+    unit: 'currency',
+  },
+  discountRateSetting: {
+    label: 'Discount rate',
+    groups: ['npv'],
+    description: 'Required rate of return used to convert future cash flows into today’s value.',
+    calculation: 'User-selected discount rate applied to annual after-tax cash flows and sale proceeds.',
+    importance: 'Higher discount rates reduce present value, signalling a higher hurdle for the deal to clear.',
+    unit: 'percent',
+  },
+  npvInitialOutlay: {
+    label: 'Initial cash outlay',
+    groups: ['npv'],
+    description: 'Net cash invested at completion after accounting for any bridging finance.',
+    calculation: 'Total cash required − bridging loan amount.',
+    importance: 'Represents the equity capital at risk from day one.',
+    unit: 'currency',
+  },
+  npvSaleProceeds: {
+    label: 'Net sale proceeds',
+    groups: ['npv'],
+    description: 'Expected cash returned on sale after deducting selling costs and the remaining loan balance.',
+    calculation: 'Future value − selling costs − outstanding mortgage at exit.',
+    importance: 'Drives the terminal value that feeds the final NPV contribution.',
+    unit: 'currency',
+  },
+  npvCumulativeCash: {
+    label: 'Cumulative cash (undiscounted)',
+    groups: ['npv'],
+    description: 'Running total of actual cash in and out before applying any discounting.',
+    calculation: 'Initial outlay + annual after-tax cash flows + net sale proceeds.',
+    importance: 'Helps compare raw cash build-up against the discounted NPV line.',
     unit: 'currency',
   },
   interestPaidYear1: {
@@ -2491,6 +2528,7 @@ export default function App() {
     crime: true,
     wealthTrajectory: false,
     rateTrends: true,
+    npvTimeline: true,
     cashflowBars: true,
     roiHeatmap: true,
     equityGrowth: true,
@@ -3810,6 +3848,74 @@ export default function App() {
       .filter(Boolean);
   }, [equity.chart]);
 
+  const npvTimelineData = useMemo(() => {
+    const exitYearCount = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
+    const discountRateValue = Number(inputs.discountRate);
+    const discountRate = Number.isFinite(discountRateValue) ? discountRateValue : 0;
+    const base = 1 + discountRate;
+    const discountFactorForYear = (year) => {
+      if (year === 0) {
+        return 1;
+      }
+      if (!Number.isFinite(base) || base === 0) {
+        return 1;
+      }
+      const denom = Math.pow(base, year);
+      if (!Number.isFinite(denom) || denom === 0) {
+        return 1;
+      }
+      return 1 / denom;
+    };
+
+    const afterTaxCashflows = Array.isArray(equity.annualCashflowsAfterTax)
+      ? equity.annualCashflowsAfterTax
+      : [];
+    const saleProceeds = Number(equity.exitNetSaleProceeds) || 0;
+    const initialOutlay = -Math.max(Number(equity.initialCashOutlay) || 0, 0);
+
+    const data = [];
+    let cumulativeDiscounted = 0;
+    let cumulativeUndiscounted = 0;
+    let saleCounted = exitYearCount === 0;
+
+    const pushPoint = (year, operatingCash, saleComponent = 0) => {
+      const totalCash = operatingCash + saleComponent;
+      const discountFactor = discountFactorForYear(year);
+      const discountedContribution = totalCash * discountFactor;
+      cumulativeUndiscounted += totalCash;
+      cumulativeDiscounted += discountedContribution;
+      data.push({
+        year,
+        operatingCash,
+        saleProceeds: saleComponent,
+        cashflow: totalCash,
+        discountFactor,
+        discountedContribution,
+        cumulativeDiscounted,
+        cumulativeUndiscounted,
+      });
+    };
+
+    pushPoint(0, initialOutlay, saleCounted ? saleProceeds : 0);
+
+    for (let year = 1; year <= exitYearCount; year++) {
+      const operatingCash = Number(afterTaxCashflows[year - 1]) || 0;
+      const saleComponent = year === exitYearCount && !saleCounted ? saleProceeds : 0;
+      pushPoint(year, operatingCash, saleComponent);
+      if (saleComponent !== 0) {
+        saleCounted = true;
+      }
+    }
+
+    return data;
+  }, [
+    equity.annualCashflowsAfterTax,
+    equity.exitNetSaleProceeds,
+    equity.initialCashOutlay,
+    inputs.discountRate,
+    inputs.exitYear,
+  ]);
+
   const interestSplitChartData = useMemo(() => {
     const payments = Array.isArray(equity.annualDebtService) ? equity.annualDebtService : [];
     const interest = Array.isArray(equity.annualInterest) ? equity.annualInterest : [];
@@ -4564,6 +4670,12 @@ export default function App() {
     const sellingCostsValue = Number(equity.sellingCosts) || 0;
     const estimatedEquityValue = Number(estimatedExitEquity) || 0;
     const reinvestFundSnapshot = Number(reinvestFundValue) || 0;
+    const discountRateSettingValue = Number(inputs.discountRate) || 0;
+    const initialOutlayValue = Math.max(Number(equity.initialCashOutlay) || 0, 0);
+    const exitSaleProceedsValue = Number(equity.exitNetSaleProceeds) || 0;
+    const cumulativeUndiscountedValue = npvTimelineData.length
+      ? Number(npvTimelineData[npvTimelineData.length - 1]?.cumulativeUndiscounted) || 0
+      : initialOutlayValue * -1;
     const annualInterest = Array.isArray(equity.annualInterest) ? equity.annualInterest : [];
     const annualPrincipal = Array.isArray(equity.annualPrincipal) ? equity.annualPrincipal : [];
     const annualDebtService = Array.isArray(equity.annualDebtService) ? equity.annualDebtService : [];
@@ -4602,6 +4714,10 @@ export default function App() {
       dscr: { value: dscrValue, formatted: dscrValue > 0 ? dscrValue.toFixed(2) : '—' },
       mortgagePayment: { value: mortgagePaymentValue, formatted: currency(mortgagePaymentValue) },
       npvToDate: { value: npvValue, formatted: currency(npvValue) },
+      discountRateSetting: { value: discountRateSettingValue, formatted: formatPercent(discountRateSettingValue) },
+      npvInitialOutlay: { value: initialOutlayValue, formatted: currency(initialOutlayValue) },
+      npvSaleProceeds: { value: exitSaleProceedsValue, formatted: currency(exitSaleProceedsValue) },
+      npvCumulativeCash: { value: cumulativeUndiscountedValue, formatted: currency(cumulativeUndiscountedValue) },
       indexFundValue: { value: indexFundValue, formatted: currency(indexFundValue) },
       propertyGross: { value: propertyGrossValue, formatted: currency(propertyGrossValue) },
       propertyNet: { value: propertyNetValue, formatted: currency(propertyNetValue) },
@@ -4653,9 +4769,11 @@ export default function App() {
     equity.coc,
     equity.irr,
     inputs.irrHurdle,
+    inputs.discountRate,
     equity.dscr,
     equity.mortgage,
     equity.npv,
+    equity.exitNetSaleProceeds,
     equity.indexValEnd,
     equity.propertyGrossWealthAtExit,
     equity.propertyNetWealthAtExit,
@@ -4666,6 +4784,7 @@ export default function App() {
     equity.sellingCosts,
     estimatedExitEquity,
     reinvestFundValue,
+    npvTimelineData,
     equity.annualInterest,
     equity.annualPrincipal,
     equity.annualDebtService,
@@ -6932,6 +7051,156 @@ export default function App() {
                       ) : (
                         <div className="flex h-full items-center justify-center text-center text-[11px] text-slate-500">
                           Not enough data to plot return ratios yet.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.npvTimeline ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('npvTimeline')}
+                      aria-expanded={!collapsedSections.npvTimeline}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.npvTimeline ? 'Show NPV chart' : 'Hide NPV chart'}
+                    >
+                      {collapsedSections.npvTimeline ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Net present value timeline"
+                      tooltip={SECTION_DESCRIPTIONS.npv}
+                      className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="npv"
+                    />
+                  </div>
+                </div>
+                {!collapsedSections.npvTimeline ? (
+                  <>
+                    <p className="mb-2 text-[11px] text-slate-500">
+                      Compare undiscounted cash with its discounted contribution to see how each year builds the overall NPV.
+                    </p>
+                    <div className="h-72 w-full">
+                      {npvTimelineData.length > 0 ? (
+                        <ResponsiveContainer>
+                          <ComposedChart data={npvTimelineData} margin={{ top: 10, right: 90, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis
+                              dataKey="year"
+                              tickFormatter={(value) => (value === 0 ? 'Y0' : `Y${value}`)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                            />
+                            <YAxis
+                              yAxisId="cash"
+                              tickFormatter={(value) => currency(value)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              width={100}
+                            />
+                            <YAxis
+                              yAxisId="discount"
+                              orientation="right"
+                              tickFormatter={(value) => formatPercent(value)}
+                              tick={{ fontSize: 10, fill: '#475569' }}
+                              width={70}
+                              domain={[0, 'auto']}
+                            />
+                            <Tooltip
+                              content={({ active, payload, label }) => {
+                                if (!active || !payload || payload.length === 0) {
+                                  return null;
+                                }
+                                const point = payload[0]?.payload;
+                                if (!point) {
+                                  return null;
+                                }
+                                const yearLabel = label === 0 ? 'Today' : `Year ${label}`;
+                                return (
+                                  <div className="space-y-1 rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-700 shadow-lg">
+                                    <div className="font-semibold text-slate-800">{yearLabel}</div>
+                                    <div>After-tax cash flow: {currency(point.operatingCash)}</div>
+                                    {point.saleProceeds !== 0 ? (
+                                      <div>Net sale proceeds: {currency(point.saleProceeds)}</div>
+                                    ) : null}
+                                    <div>Total cash this year: {currency(point.cashflow)}</div>
+                                    <div>Discount factor: {formatPercent(point.discountFactor)}</div>
+                                    <div>Discounted contribution: {currency(point.discountedContribution)}</div>
+                                    <div>NPV to date: {currency(point.cumulativeDiscounted)}</div>
+                                    <div>Cumulative cash (undiscounted): {currency(point.cumulativeUndiscounted)}</div>
+                                  </div>
+                                );
+                              }}
+                            />
+                            <Legend />
+                            <ReferenceLine y={0} yAxisId="cash" stroke="#cbd5f5" strokeDasharray="4 4" />
+                            <Bar
+                              yAxisId="cash"
+                              dataKey="operatingCash"
+                              name="After-tax cash flow"
+                              stackId="cashflow"
+                              fill="#38bdf8"
+                              isAnimationActive={false}
+                            />
+                            <Bar
+                              yAxisId="cash"
+                              dataKey="saleProceeds"
+                              name="Net sale proceeds"
+                              stackId="cashflow"
+                              fill="#a855f7"
+                              isAnimationActive={false}
+                            />
+                            <RechartsLine
+                              type="monotone"
+                              dataKey="discountedContribution"
+                              name="Discounted contribution"
+                              stroke="#f97316"
+                              strokeWidth={2}
+                              dot={{ r: 2 }}
+                              yAxisId="cash"
+                              isAnimationActive={false}
+                            />
+                            <RechartsLine
+                              type="monotone"
+                              dataKey="cumulativeDiscounted"
+                              name="NPV to date"
+                              stroke="#0f172a"
+                              strokeWidth={2}
+                              dot={{ r: 2 }}
+                              yAxisId="cash"
+                              isAnimationActive={false}
+                            />
+                            <RechartsLine
+                              type="monotone"
+                              dataKey="cumulativeUndiscounted"
+                              name="Cumulative cash (undiscounted)"
+                              stroke="#94a3b8"
+                              strokeWidth={1.5}
+                              strokeDasharray="4 2"
+                              dot={{ r: 2 }}
+                              yAxisId="cash"
+                              isAnimationActive={false}
+                            />
+                            <RechartsLine
+                              type="monotone"
+                              dataKey="discountFactor"
+                              name="Discount factor"
+                              stroke="#64748b"
+                              strokeWidth={1.5}
+                              strokeDasharray="3 3"
+                              dot={false}
+                              yAxisId="discount"
+                              isAnimationActive={false}
+                            />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-[11px] text-slate-500">
+                          Provide an exit year and discount rate to calculate net present value.
                         </div>
                       )}
                     </div>
