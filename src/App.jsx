@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Area,
   AreaChart,
@@ -214,210 +214,96 @@ const SENTIMENT_LEVELS = {
 
 const DEFAULT_POSTCODE = 'FY5 1LH';
 
-const MOCK_PROPERTY_DIRECTORY = {
-  'FY5 1LH': [
-    {
-      id: 'uprn-fy5-0001',
-      uprn: '100010000001',
-      label: '27 Green Drive, Cleveleys, Lancashire FY5 1LH',
-      houseNumber: '27',
-      street: 'Green Drive',
-      city: 'Cleveleys',
-      county: 'Lancashire',
-      postcode: 'FY5 1LH',
-      latitude: 53.8732,
-      longitude: -3.0265,
-    },
-    {
-      id: 'uprn-fy5-0002',
-      uprn: '100010000002',
-      label: '25 Green Drive, Cleveleys, Lancashire FY5 1LH',
-      houseNumber: '25',
-      street: 'Green Drive',
-      city: 'Cleveleys',
-      county: 'Lancashire',
-      postcode: 'FY5 1LH',
-      latitude: 53.873,
-      longitude: -3.0262,
-    },
-    {
-      id: 'uprn-fy5-0003',
-      uprn: '100010000003',
-      label: '29 Green Drive, Cleveleys, Lancashire FY5 1LH',
-      houseNumber: '29',
-      street: 'Green Drive',
-      city: 'Cleveleys',
-      county: 'Lancashire',
-      postcode: 'FY5 1LH',
-      latitude: 53.8734,
-      longitude: -3.0268,
-    },
-    {
-      id: 'uprn-fy5-0004',
-      uprn: '100010000004',
-      label: '31 Green Drive, Cleveleys, Lancashire FY5 1LH',
-      houseNumber: '31',
-      street: 'Green Drive',
-      city: 'Cleveleys',
-      county: 'Lancashire',
-      postcode: 'FY5 1LH',
-      latitude: 53.8736,
-      longitude: -3.0271,
-    },
-  ],
-  'E2 7DP': [
-    {
-      id: 'uprn-e27dp-0001',
-      uprn: '100020000001',
-      label: '1 Redchurch Street, Shoreditch, London E2 7DP',
-      houseNumber: '1',
-      street: 'Redchurch Street',
-      city: 'London',
-      county: 'Greater London',
-      postcode: 'E2 7DP',
-      latitude: 51.5249,
-      longitude: -0.0742,
-    },
-    {
-      id: 'uprn-e27dp-0002',
-      uprn: '100020000002',
-      label: '5 Redchurch Street, Shoreditch, London E2 7DP',
-      houseNumber: '5',
-      street: 'Redchurch Street',
-      city: 'London',
-      county: 'Greater London',
-      postcode: 'E2 7DP',
-      latitude: 51.5247,
-      longitude: -0.0745,
-    },
-    {
-      id: 'uprn-e27dp-0003',
-      uprn: '100020000003',
-      label: '7 Redchurch Street, Shoreditch, London E2 7DP',
-      houseNumber: '7',
-      street: 'Redchurch Street',
-      city: 'London',
-      county: 'Greater London',
-      postcode: 'E2 7DP',
-      latitude: 51.5246,
-      longitude: -0.0748,
-    },
-    {
-      id: 'uprn-e27dp-0004',
-      uprn: '100020000004',
-      label: '11 Redchurch Street, Shoreditch, London E2 7DP',
-      houseNumber: '11',
-      street: 'Redchurch Street',
-      city: 'London',
-      county: 'Greater London',
-      postcode: 'E2 7DP',
-      latitude: 51.5244,
-      longitude: -0.0751,
-    },
-  ],
-  'M4 6BF': [
-    {
-      id: 'uprn-m46bf-0001',
-      uprn: '100030000001',
-      label: '1 Cotton Field Wharf, Ancoats, Manchester M4 6BF',
-      houseNumber: '1',
-      street: 'Cotton Field Wharf',
-      city: 'Manchester',
-      county: 'Greater Manchester',
-      postcode: 'M4 6BF',
-      latitude: 53.4842,
-      longitude: -2.2204,
-    },
-    {
-      id: 'uprn-m46bf-0002',
-      uprn: '100030000002',
-      label: '3 Cotton Field Wharf, Ancoats, Manchester M4 6BF',
-      houseNumber: '3',
-      street: 'Cotton Field Wharf',
-      city: 'Manchester',
-      county: 'Greater Manchester',
-      postcode: 'M4 6BF',
-      latitude: 53.4844,
-      longitude: -2.2207,
-    },
-    {
-      id: 'uprn-m46bf-0003',
-      uprn: '100030000003',
-      label: '5 Cotton Field Wharf, Ancoats, Manchester M4 6BF',
-      houseNumber: '5',
-      street: 'Cotton Field Wharf',
-      city: 'Manchester',
-      county: 'Greater Manchester',
-      postcode: 'M4 6BF',
-      latitude: 53.4846,
-      longitude: -2.221,
-    },
-    {
-      id: 'uprn-m46bf-0004',
-      uprn: '100030000004',
-      label: '7 Cotton Field Wharf, Ancoats, Manchester M4 6BF',
-      houseNumber: '7',
-      street: 'Cotton Field Wharf',
-      city: 'Manchester',
-      county: 'Greater Manchester',
-      postcode: 'M4 6BF',
-      latitude: 53.4848,
-      longitude: -2.2213,
-    },
-  ],
-};
+const NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
 
 function normalisePostcode(postcode) {
   return postcode?.toUpperCase?.().replace(/\s+/g, '') ?? '';
 }
 
-function stringHash(value) {
-  const input = value ?? '';
-  let hash = 0;
-  for (let idx = 0; idx < input.length; idx += 1) {
-    hash = (hash << 5) - hash + input.charCodeAt(idx);
-    hash |= 0; // eslint-disable-line no-bitwise
+function pickAddressPart(address, keys, fallback = '') {
+  for (const key of keys) {
+    if (address?.[key]) {
+      return address[key];
+    }
   }
-  return Math.abs(hash);
+  return fallback;
 }
 
-function generateFallbackProperties(postcode) {
-  const normalised = normalisePostcode(postcode);
-  const hash = stringHash(normalised);
-  const baseLat = 51.2 + ((hash % 1500) / 1000);
-  const baseLon = -1 - ((hash % 2500) / 1000);
-  const formattedPostcode = postcode?.toUpperCase?.() ?? 'UNKNOWN';
-  const outward = formattedPostcode.split(' ')[0] || formattedPostcode;
-  const streetName = `${outward || 'Sample'} Street`;
+function createPropertyOption(item, postcode) {
+  const address = item.address ?? {};
+  const latitude = parseFloat(item.lat);
+  const longitude = parseFloat(item.lon);
+  const houseNumber = pickAddressPart(address, ['house_number', 'house_name']);
+  const street = pickAddressPart(address, ['road', 'residential', 'pedestrian', 'footway', 'neighbourhood']);
+  const city = pickAddressPart(address, ['city', 'town', 'village', 'hamlet', 'suburb']);
+  const county = pickAddressPart(address, ['county', 'state_district', 'state']);
+  const formattedPostcode = address.postcode ?? postcode?.toUpperCase?.();
+  const labelParts = [houseNumber, street, city, county, formattedPostcode].filter(Boolean);
+  const label = labelParts.length > 0 ? labelParts.join(', ') : item.display_name;
 
-  return Array.from({ length: 5 }, (_, index) => {
-    const houseNumber = 10 + ((hash + index * 7) % 60);
-    const latitude = parseFloat((baseLat + index * 0.0012).toFixed(6));
-    const longitude = parseFloat((baseLon - index * 0.001).toFixed(6));
-    return {
-      id: `${normalised || 'generic'}-${index}`,
-      uprn: `${hash}${index}`,
-      label: `${houseNumber} ${streetName}, Prototype City ${formattedPostcode}`,
-      houseNumber: String(houseNumber),
-      street: streetName,
-      city: 'Prototype City',
-      county: 'Prototype County',
-      postcode: formattedPostcode,
-      latitude,
-      longitude,
-    };
+  return {
+    id: String(item.place_id),
+    uprn: String(item.osm_id ?? item.place_id),
+    label,
+    houseNumber: houseNumber ? String(houseNumber) : undefined,
+    street: street || undefined,
+    city: city || undefined,
+    county: county || undefined,
+    postcode: formattedPostcode,
+    latitude: Number.isFinite(latitude) ? latitude : undefined,
+    longitude: Number.isFinite(longitude) ? longitude : undefined,
+  };
+}
+
+async function fetchPropertiesForPostcode(postcode) {
+  const trimmed = postcode?.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const params = new URLSearchParams({
+    format: 'jsonv2',
+    addressdetails: '1',
+    countrycodes: 'gb',
+    limit: '25',
+    postalcode: trimmed,
+    q: trimmed,
   });
-}
 
-function mockPropertyLookup(postcode) {
-  const normalised = normalisePostcode(postcode);
-  const matchedKey = Object.keys(MOCK_PROPERTY_DIRECTORY).find(
-    (key) => normalisePostcode(key) === normalised,
-  );
-  if (matchedKey) {
-    return MOCK_PROPERTY_DIRECTORY[matchedKey];
+  const response = await fetch(`${NOMINATIM_ENDPOINT}?${params.toString()}`, {
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch properties for postcode ${trimmed}`);
   }
-  return generateFallbackProperties(postcode);
+
+  const payload = await response.json();
+  const normalisedTarget = normalisePostcode(trimmed);
+
+  const options = (payload ?? [])
+    .filter((item) => item && item.address)
+    .map((item) => createPropertyOption(item, trimmed))
+    .filter((option) => {
+      if (!option.postcode) {
+        return true;
+      }
+      return normalisePostcode(option.postcode) === normalisedTarget;
+    });
+
+  const unique = [];
+  const seen = new Set();
+  for (const option of options) {
+    const key = option.label?.toLowerCase?.() ?? option.id;
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      unique.push(option);
+    }
+  }
+
+  return unique.sort((a, b) => (a.label || '').localeCompare(b.label || ''));
 }
 
 function inferLocationKey(property) {
@@ -448,9 +334,9 @@ function inferLocationKey(property) {
   return 'default';
 }
 
-const DEFAULT_PROPERTY_OPTIONS = mockPropertyLookup(DEFAULT_POSTCODE);
-const DEFAULT_SELECTED_PROPERTY = DEFAULT_PROPERTY_OPTIONS[0] ?? null;
-const DEFAULT_LOCATION_KEY = inferLocationKey(DEFAULT_SELECTED_PROPERTY);
+const DEFAULT_PROPERTY_OPTIONS = [];
+const DEFAULT_SELECTED_PROPERTY = null;
+const DEFAULT_LOCATION_KEY = 'default';
 
 const DEFAULT_SCENARIO_INPUTS = {
   propertyType: 'flat',
@@ -915,32 +801,70 @@ function buildDataSourceSections(result, inputs) {
 export default function App() {
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_SCENARIO_INPUTS }));
   const [postcode, setPostcode] = useState(DEFAULT_POSTCODE);
-  const [propertyOptions, setPropertyOptions] = useState(() => [...DEFAULT_PROPERTY_OPTIONS]);
-  const [selectedPropertyId, setSelectedPropertyId] = useState(
-    () => DEFAULT_SELECTED_PROPERTY?.id ?? null,
-  );
+  const [propertyOptions, setPropertyOptions] = useState([...DEFAULT_PROPERTY_OPTIONS]);
+  const [selectedPropertyId, setSelectedPropertyId] = useState(null);
   const selectedProperty = useMemo(
     () => propertyOptions.find((property) => property.id === selectedPropertyId) ?? null,
     [propertyOptions, selectedPropertyId],
   );
   const locationKey = useMemo(() => inferLocationKey(selectedProperty), [selectedProperty]);
   const [loading, setLoading] = useState(false);
+  const [isLookupLoading, setIsLookupLoading] = useState(false);
+  const [lookupError, setLookupError] = useState(null);
   const [result, setResult] = useState(() =>
     buildForecast(DEFAULT_SCENARIO_INPUTS, DEFAULT_SELECTED_PROPERTY, DEFAULT_LOCATION_KEY),
   );
   const [activeScore, setActiveScore] = useState(null);
   const [isMapOpen, setIsMapOpen] = useState(false);
 
+  const updatePropertiesForPostcode = useCallback(
+      async (targetPostcode, scenarioInputs) => {
+        const trimmed = targetPostcode?.trim();
+        if (!trimmed) {
+          setPropertyOptions([]);
+          setSelectedPropertyId(null);
+          setLookupError('Enter a postcode to search for properties.');
+          setResult(buildForecast({ ...scenarioInputs }, null, inferLocationKey(null)));
+          return;
+        }
+
+        setIsLookupLoading(true);
+        setLookupError(null);
+
+      try {
+        const nextOptions = await fetchPropertiesForPostcode(trimmed);
+        setPropertyOptions(nextOptions);
+        setLookupError(
+          nextOptions.length === 0
+            ? 'No address results returned for this postcode. Try a nearby postcode or refine the input.'
+            : null,
+        );
+        const nextProperty = nextOptions[0] ?? null;
+        setSelectedPropertyId(nextProperty?.id ?? null);
+        setResult(buildForecast({ ...scenarioInputs }, nextProperty, inferLocationKey(nextProperty)));
+      } catch (error) {
+        console.error(error);
+        setPropertyOptions([]);
+        setSelectedPropertyId(null);
+        setLookupError('Unable to load properties for this postcode right now. Please try again.');
+        setResult((prev) => prev ?? buildForecast({ ...scenarioInputs }, null, inferLocationKey(null)));
+      } finally {
+        setIsLookupLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    updatePropertiesForPostcode(DEFAULT_POSTCODE, DEFAULT_SCENARIO_INPUTS);
+  }, [updatePropertiesForPostcode]);
+
   const handleInput = (field, value) => {
     setInputs((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handlePropertyLookup = () => {
-    const nextOptions = mockPropertyLookup(postcode);
-    setPropertyOptions(nextOptions);
-    const nextProperty = nextOptions[0] ?? null;
-    setSelectedPropertyId(nextProperty?.id ?? null);
-    setResult(buildForecast({ ...inputs }, nextProperty, inferLocationKey(nextProperty)));
+  const handlePropertyLookup = async () => {
+    await updatePropertiesForPostcode(postcode, inputs);
   };
 
   const handleSelectProperty = (event) => {
@@ -1009,7 +933,7 @@ export default function App() {
             <h1 className="text-3xl font-semibold">Street-Level Forecasting Studio</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-300">
               Prototype cockpit fusing Land Registry, ONS, mobility and planning signals to project 36-month price
-              trajectories at street/postcode resolution. Dummy data only for now.
+              trajectories at street/postcode resolution. Live OpenStreetMap address lookup with mocked feature stack.
             </p>
           </div>
           <button
@@ -1027,7 +951,7 @@ export default function App() {
         <section className="space-y-6 rounded-2xl bg-white p-6 shadow-sm">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">Scenario inputs</h2>
-            <p className="text-sm text-slate-500">Pretend API-backed metadata normalised to UPRN/postcode.</p>
+            <p className="text-sm text-slate-500">OpenStreetMap-powered address lookup with mocked feature store outputs.</p>
             <p className="mt-1 text-xs text-slate-400">Current street focus: {activeProfile?.streetName}</p>
           </div>
 
@@ -1035,22 +959,23 @@ export default function App() {
             <div className="grid grid-cols-1 gap-4">
               <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs uppercase tracking-wider text-slate-500">Property selector</p>
-                    <p className="text-xs text-slate-400">
-                      Lookup mocked OpenStreetMap / AddressBase results by postcode, then drill into a specific UPRN.
-                    </p>
+                    <div>
+                      <p className="text-xs uppercase tracking-wider text-slate-500">Property selector</p>
+                      <p className="text-xs text-slate-400">
+                        Use OpenStreetMap&apos;s live search to pull residential addresses for a UK postcode, then drill into a
+                        specific entry.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => selectedProperty && setIsMapOpen(true)}
+                      disabled={!selectedProperty}
+                      className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                    >
+                      Open map preview
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => selectedProperty && setIsMapOpen(true)}
-                    disabled={!selectedProperty}
-                    className="inline-flex items-center justify-center rounded-md border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
-                  >
-                    Open map preview
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr),auto]">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr),auto]">
                   <label className="flex flex-col gap-1 text-sm text-slate-700">
                     Postcode
                     <input
@@ -1061,42 +986,57 @@ export default function App() {
                       className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
                     />
                   </label>
-                  <button
-                    type="button"
-                    onClick={handlePropertyLookup}
-                    className="inline-flex items-center justify-center rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-400"
-                  >
-                    Lookup addresses
-                  </button>
-                </div>
-                <label className="flex flex-col gap-1 text-sm text-slate-700">
-                  Available properties
-                  <select
-                    value={selectedPropertyId ?? ''}
-                    onChange={handleSelectProperty}
-                    className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none"
-                  >
-                    <option value="" disabled={propertyOptions.length > 0}>
-                      {propertyOptions.length ? 'Select a property' : 'No properties found'}
-                    </option>
-                    {propertyOptions.map((property) => (
-                      <option key={property.id} value={property.id}>
-                        {property.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {selectedProperty ? (
-                  <div className="rounded-lg border border-slate-200 bg-white/70 p-3 text-xs text-slate-500">
-                    <p className="font-semibold text-slate-700">Selected property context</p>
-                    <p className="mt-1">UPRN: {selectedProperty.uprn || 'N/A'}</p>
-                    <p>Lat / Lon: {selectedProperty.latitude?.toFixed?.(5) ?? '—'} / {selectedProperty.longitude?.toFixed?.(5) ?? '—'}</p>
+                    <button
+                      type="button"
+                      onClick={handlePropertyLookup}
+                      disabled={isLookupLoading || !postcode.trim()}
+                      className="inline-flex items-center justify-center rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                    >
+                      {isLookupLoading ? 'Searching…' : 'Lookup addresses'}
+                    </button>
                   </div>
-                ) : (
-                  <p className="rounded-lg border border-dashed border-slate-300 bg-white/60 p-3 text-xs text-slate-400">
-                    Run a postcode lookup to populate property choices and unlock the map preview.
-                  </p>
-                )}
+                  <label className="flex flex-col gap-1 text-sm text-slate-700">
+                    Available properties
+                    <select
+                      value={selectedPropertyId ?? ''}
+                      onChange={handleSelectProperty}
+                      disabled={isLookupLoading || propertyOptions.length === 0}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-emerald-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100"
+                    >
+                      <option value="" disabled>
+                        {isLookupLoading
+                          ? 'Loading addresses…'
+                          : propertyOptions.length
+                            ? 'Select a property'
+                            : lookupError
+                              ? 'No properties found'
+                              : 'Search to see addresses'}
+                      </option>
+                      {propertyOptions.map((property) => (
+                        <option key={property.id} value={property.id}>
+                          {property.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {lookupError ? (
+                    <p className="text-xs text-rose-500">{lookupError}</p>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      Results are sourced directly from the OpenStreetMap Nominatim API and deduped to house-level granularity.
+                    </p>
+                  )}
+                  {selectedProperty ? (
+                    <div className="rounded-lg border border-slate-200 bg-white/70 p-3 text-xs text-slate-500">
+                      <p className="font-semibold text-slate-700">Selected property context</p>
+                      <p className="mt-1">UPRN: {selectedProperty.uprn || 'N/A'}</p>
+                      <p>Lat / Lon: {selectedProperty.latitude?.toFixed?.(5) ?? '—'} / {selectedProperty.longitude?.toFixed?.(5) ?? '—'}</p>
+                    </div>
+                  ) : (
+                    <p className="rounded-lg border border-dashed border-slate-300 bg-white/60 p-3 text-xs text-slate-400">
+                      Run a postcode lookup to populate property choices and unlock the map preview and forecasts.
+                    </p>
+                  )}
               </div>
 
               <label className="flex flex-col gap-2 text-sm text-slate-700">
