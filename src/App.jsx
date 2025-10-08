@@ -470,6 +470,42 @@ function deriveHouseNumber(address, displayName, street) {
   return inferred ? String(inferred) : '';
 }
 
+function formatPropertyLabel({ houseNumber, street, locality, city, county, postcode }) {
+  const segments = [];
+
+  if (houseNumber || street) {
+    const firstLine = [houseNumber, street].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    if (firstLine) {
+      segments.push(firstLine);
+    }
+  }
+
+  const locationParts = [];
+  if (locality && locality !== city) {
+    locationParts.push(locality);
+  }
+  if (city) {
+    locationParts.push(city);
+  }
+  if (county) {
+    locationParts.push(county);
+  }
+
+  for (const part of locationParts) {
+    const trimmed = part?.toString?.().trim();
+    if (trimmed && !segments.includes(trimmed)) {
+      segments.push(trimmed);
+    }
+  }
+
+  const formattedPostcode = postcode?.toString?.().trim();
+  if (formattedPostcode && !segments.includes(formattedPostcode)) {
+    segments.push(formattedPostcode);
+  }
+
+  return segments.join(', ');
+}
+
 function createPropertyOption(item, postcode, fallbackCoordinates = null) {
   const address = item.address ?? {};
   const latitude = parseFloat(item.lat);
@@ -477,10 +513,24 @@ function createPropertyOption(item, postcode, fallbackCoordinates = null) {
   const street = deriveStreet(address, item.display_name);
   const houseNumber = deriveHouseNumber(address, item.display_name, street);
   const city = pickAddressPart(address, ['city', 'town', 'village', 'hamlet', 'suburb']);
+  const locality = pickAddressPart(address, [
+    'residential',
+    'suburb',
+    'neighbourhood',
+    'village',
+    'hamlet',
+    'city_district',
+  ]);
   const county = pickAddressPart(address, ['county', 'state_district', 'state']);
   const formattedPostcode = address.postcode ?? formatPostcode(postcode);
-  const labelParts = [houseNumber, street, city, county, formattedPostcode].filter(Boolean);
-  const label = labelParts.length > 0 ? labelParts.join(', ') : item.display_name;
+  const label = formatPropertyLabel({
+    houseNumber,
+    street,
+    locality,
+    city,
+    county,
+    postcode: formattedPostcode,
+  }) || item.display_name;
   const fallbackLatitude = Number.isFinite(latitude) ? latitude : fallbackCoordinates?.latitude;
   const fallbackLongitude = Number.isFinite(longitude) ? longitude : fallbackCoordinates?.longitude;
 
@@ -490,6 +540,7 @@ function createPropertyOption(item, postcode, fallbackCoordinates = null) {
     label,
     houseNumber: houseNumber ? String(houseNumber) : undefined,
     street: street || undefined,
+    locality: locality || undefined,
     city: city || undefined,
     county: county || undefined,
     postcode: formattedPostcode,
