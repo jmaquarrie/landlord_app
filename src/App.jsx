@@ -166,6 +166,10 @@ const COUNTRY_REGION_SYNONYMS = {
   'great britain': 'united kingdom',
   britain: 'united kingdom',
   'united kingdom of great britain and northern ireland': 'united kingdom',
+  'gb-eng': 'england',
+  'gb-wls': 'wales',
+  'gb-sct': 'scotland',
+  'gb-nir': 'northern ireland',
 };
 
 const PROPERTY_APPRECIATION_WINDOWS = [1, 5, 10, 20];
@@ -3515,6 +3519,8 @@ export default function App() {
   const geocodeAddressQuery = geocodeAddressDetails.query;
   const geocodeBounds = geocodeAddressDetails.bounds;
   const geocodePostcode = geocodeAddressDetails.postcode;
+  const geocodeCountyName = geocodeAddressDetails.county;
+  const geocodeCityName = geocodeAddressDetails.city;
   const geocodeStateName = geocodeAddressDetails.state;
   const geocodeCountry = geocodeAddressDetails.country;
   const geocodeCountryCode = geocodeAddressDetails.countryCode;
@@ -3539,8 +3545,11 @@ export default function App() {
       seen.add(canonical);
       candidateKeys.push(canonical);
     };
-    if (geocodeCountry) {
-      pushCandidate(geocodeCountry);
+    if (geocodeCountyName) {
+      pushCandidate(geocodeCountyName);
+    }
+    if (geocodeCityName) {
+      pushCandidate(geocodeCityName);
     }
     if (geocodeStateName) {
       pushCandidate(geocodeStateName);
@@ -3551,6 +3560,9 @@ export default function App() {
       if (mapped) {
         pushCandidate(mapped);
       }
+    }
+    if (geocodeCountry) {
+      pushCandidate(geocodeCountry);
     }
     for (const canonicalKey of candidateKeys) {
       const regionEntry = regions[canonicalKey];
@@ -3567,7 +3579,14 @@ export default function App() {
       label: globalEntry?.label ?? '',
       fallback: true,
     };
-  }, [propertyPriceState, geocodeCountry, geocodeCountryCode, geocodeStateName]);
+  }, [
+    propertyPriceState,
+    geocodeCityName,
+    geocodeCountyName,
+    geocodeCountry,
+    geocodeCountryCode,
+    geocodeStateName,
+  ]);
 
   const propertyPriceStats = propertyPriceStatsSelection.stats;
   const propertyGrowthRegionLabel = propertyPriceStatsSelection.label;
