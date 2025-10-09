@@ -1025,7 +1025,7 @@ const DEFAULT_INPUTS = {
   reinvestPct: 0.5,
 };
 
-const EXTRA_SETTING_KEYS = ['discountRate', 'irrHurdle'];
+const EXTRA_SETTING_KEYS = ['discountRate', 'irrHurdle', 'indexFundGrowth'];
 const EXTRA_SETTINGS_STORAGE_KEY = 'landlord-extra-settings-v1';
 
 const getDefaultExtraSettings = () => {
@@ -3407,6 +3407,9 @@ function calculateEquity(rawInputs) {
 
 export default function App() {
   const [extraSettings, setExtraSettings] = useState(() => loadStoredExtraSettings());
+  const [pendingExtraSettings, setPendingExtraSettings] = useState(() => ({
+    ...loadStoredExtraSettings(),
+  }));
   const [propertyPriceState, setPropertyPriceState] = useState({ status: 'idle', data: null, error: '' });
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
@@ -3819,20 +3822,6 @@ export default function App() {
   const useHistoricalAppreciation = Boolean(inputs.useHistoricalAppreciation);
   const historicalToggleDisabled = propertyGrowthLoading || propertyGrowthWindowRateValue === null;
   const historicalToggleChecked = useHistoricalAppreciation && propertyGrowthWindowRateValue !== null;
-  const propertyGrowthLatestSummary = (() => {
-    const parts = [];
-    if (propertyGrowthRegionSummary) {
-      parts.push(propertyGrowthRegionSummary);
-    }
-    if (propertyGrowthLatestLabel) {
-      parts.push(`latest data ${propertyGrowthLatestLabel}`);
-    }
-    if (propertyGrowthLatestPriceLabel) {
-      parts.push(`avg price ${propertyGrowthLatestPriceLabel}`);
-    }
-    return parts.length > 0 ? ` (${parts.join(', ')})` : '';
-  })();
-
   const crimeSummaryData = crimeState.data;
   const localCrimeAnnualRatePerThousand = useMemo(() => {
     if (!crimeSummaryData) {
@@ -4105,6 +4094,23 @@ export default function App() {
     } catch (error) {
       console.warn('Unable to persist extra settings:', error);
     }
+  }, [extraSettings]);
+
+  useEffect(() => {
+    setPendingExtraSettings((prev) => {
+      const defaults = getDefaultExtraSettings();
+      const next = {};
+      EXTRA_SETTING_KEYS.forEach((key) => {
+        const value = Number(extraSettings[key]);
+        next[key] = Number.isFinite(value) ? value : defaults[key];
+      });
+      const previous = prev ?? {};
+      const changed = EXTRA_SETTING_KEYS.some((key) => next[key] !== previous[key]);
+      if (!changed) {
+        return prev ?? next;
+      }
+      return next;
+    });
   }, [extraSettings]);
 
   useEffect(() => {
@@ -7252,6 +7258,43 @@ export default function App() {
     window.URL.revokeObjectURL(url);
   };
 
+  const handlePendingExtraSettingChange = (key, value, decimals = 4) => {
+    if (!EXTRA_SETTING_KEYS.includes(key)) {
+      return;
+    }
+    const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
+    setPendingExtraSettings((prev) => {
+      if (prev[key] === rounded) {
+        return prev;
+      }
+      return { ...prev, [key]: rounded };
+    });
+    setInputs((prev) => ({ ...prev, [key]: rounded }));
+  };
+
+  const handleSaveExtraSettings = () => {
+    if (!extraSettingsDirty) {
+      return;
+    }
+    const defaults = getDefaultExtraSettings();
+    const payload = {};
+    EXTRA_SETTING_KEYS.forEach((key) => {
+      const value = Number(pendingExtraSettings?.[key]);
+      payload[key] = Number.isFinite(value) ? value : defaults[key];
+    });
+    setExtraSettings(payload);
+  };
+
+  const extraSettingsDirty = useMemo(() => {
+    return EXTRA_SETTING_KEYS.some((key) => {
+      const pendingValue = Number(pendingExtraSettings?.[key]);
+      const savedValue = Number(extraSettings?.[key]);
+      const pending = Number.isFinite(pendingValue) ? pendingValue : 0;
+      const saved = Number.isFinite(savedValue) ? savedValue : 0;
+      return Math.abs(pending - saved) > 1e-6;
+    });
+  }, [extraSettings, pendingExtraSettings]);
+
   const onNum = (key, value, decimals = 2) => {
     const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
     if (EXTRA_SETTING_KEYS.includes(key)) {
@@ -7348,6 +7391,25 @@ export default function App() {
           {icon}
         </span>
       </button>
+    );
+  };
+
+  const extraSettingPctInput = (key, label, step = 0.005) => {
+    const rawValue = pendingExtraSettings?.[key];
+    const value = Number.isFinite(rawValue) ? rawValue : 0;
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-medium text-slate-600">{label}</label>
+        <input
+          type="number"
+          value={Number.isFinite(value) ? roundTo(value * 100, 2) : ''}
+          onChange={(event) =>
+            handlePendingExtraSettingChange(key, Number(event.target.value) / 100, 4)
+          }
+          step={step * 100}
+          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+        />
+      </div>
     );
   };
 
@@ -8394,29 +8456,19 @@ export default function App() {
                         }
                         disabled={historicalToggleDisabled}
                       />
-                      <span>
-                        Use UK {sanitizedHistoricalWindow}-year average for {propertyTypeLabel}
-                      </span>
+                      <span>Use UK {sanitizedHistoricalWindow}-year average</span>
                     </label>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      {propertyGrowthLoading
-                        ? 'Loading appreciation averages…'
-                        : propertyGrowthError
-                        ? `Cannot apply historical average: ${propertyGrowthError}`
-                        : propertyGrowthWindowRateValue !== null
-                        ? `Historical CAGR: ${formatPercent(propertyGrowthWindowRateValue)} · Projection uses ${formatPercent(
-                            effectiveAnnualAppreciation
-                          )}${propertyGrowthLatestSummary}.`
-                        : 'Historical data unavailable for the selected window.'}
-                    </p>
-                    {!historicalToggleDisabled && !historicalToggleChecked && propertyGrowthWindowRateValue !== null ? (
+                    {propertyGrowthLoading || propertyGrowthError || propertyGrowthWindowRateValue === null ? (
                       <p className="mt-1 text-[11px] text-slate-500">
-                        Toggle to replace the manual assumption above with {formatPercent(propertyGrowthWindowRateValue)}.
+                        {propertyGrowthLoading
+                          ? 'Loading appreciation averages…'
+                          : propertyGrowthError
+                          ? `Cannot apply historical average: ${propertyGrowthError}`
+                          : 'Historical data unavailable for the selected window.'}
                       </p>
                     ) : null}
                   </div>
                   {pctInput('rentGrowth', 'Rent growth %')}
-                  {pctInput('indexFundGrowth', 'Index fund growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
@@ -8450,9 +8502,28 @@ export default function App() {
                   collapsed={collapsedSections.extraSettings}
                   onToggle={() => toggleSection('extraSettings')}
                 >
-                  <div className="grid grid-cols-2 gap-2">
-                    {pctInput('discountRate', 'Discount rate %', 0.001)}
-                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
+                    {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                    {extraSettingPctInput('indexFundGrowth', 'Index fund growth %')}
+                  </div>
+                  <div className="mt-3 flex flex-col gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-[11px] text-slate-600">
+                      Save to apply these assumptions across every scenario.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleSaveExtraSettings}
+                      disabled={!extraSettingsDirty}
+                      aria-disabled={!extraSettingsDirty}
+                      className={`inline-flex items-center justify-center rounded-full px-3 py-1 text-xs font-semibold transition ${
+                        extraSettingsDirty
+                          ? 'bg-indigo-600 text-white hover:bg-indigo-500'
+                          : 'cursor-not-allowed bg-slate-200 text-slate-500'
+                      }`}
+                    >
+                      Save global settings
+                    </button>
                   </div>
                 </CollapsibleSection>
 
@@ -8483,35 +8554,37 @@ export default function App() {
                   value={currency(inputs.renovationCost)}
                   knowledgeKey="renovationCost"
                 />
-                {equity.bridgingLoanAmount > 0 ? (
-                  <Line
-                    label="Bridging loan (deposit financed)"
-                    value={currency(-equity.bridgingLoanAmount)}
-                    knowledgeKey="bridgingLoanAmount"
-                  />
-                ) : null}
                 <hr className="my-2" />
-                <Line
-                  label={
-                    equity.bridgingLoanAmount > 0
-                      ? 'Net cash in (after bridging)'
-                      : 'Total cash in'
-                  }
-                  value={currency(
-                    Number.isFinite(equity.initialCashOutlay)
-                      ? equity.initialCashOutlay
-                      : equity.cashIn
-                  )}
-                  bold
-                  knowledgeKey="netCashIn"
-                />
                 {equity.bridgingLoanAmount > 0 ? (
+                  <>
+                    <Line
+                      label="Total cash required"
+                      value={currency(equity.cashIn)}
+                      knowledgeKey="totalCashRequired"
+                    />
+                    <Line
+                      label="Cash required from investor"
+                      value={currency(
+                        Number.isFinite(equity.initialCashOutlay)
+                          ? equity.initialCashOutlay
+                          : equity.cashIn
+                      )}
+                      bold
+                      knowledgeKey="netCashIn"
+                    />
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      Deposit funded via bridging facility of {currency(equity.bridgingLoanAmount)};
+                      mortgage payments resume after the bridge period.
+                    </p>
+                  </>
+                ) : (
                   <Line
-                    label="Total cash required"
+                    label="Total cash in"
                     value={currency(equity.cashIn)}
-                    knowledgeKey="totalCashRequired"
+                    bold
+                    knowledgeKey="netCashIn"
                   />
-                ) : null}
+                )}
               </SummaryCard>
 
               <SummaryCard
@@ -10463,10 +10536,9 @@ export default function App() {
                     {smallInput('exitYear', 'Exit year', 1)}
                     {pctInput('annualAppreciation', 'Capital growth %')}
                     {pctInput('rentGrowth', 'Rent growth %')}
-                    {pctInput('indexFundGrowth', 'Index fund growth %')}
                     {pctInput('sellingCostsPct', 'Selling costs %')}
-                    {pctInput('discountRate', 'Discount rate %', 0.001)}
-                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                    {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
+                    {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
                   </div>
                 </div>
                 <div>
