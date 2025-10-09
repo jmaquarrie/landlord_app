@@ -993,6 +993,7 @@ const DEFAULT_INPUTS = {
   depositPct: 0.25,
   closingCostsPct: 0.01,
   renovationCost: 0,
+  mortgagePackageFee: 0,
   interestRate: 0.055,
   mortgageYears: 30,
   loanType: 'repayment',
@@ -1200,7 +1201,7 @@ const INVESTMENT_PROFILE_BAR_TONES = {
 
 const SECTION_DESCRIPTIONS = {
   cashNeeded:
-    'Breaks down the upfront funds required to close the purchase, including deposit, stamp duty, closing costs, and renovation spend.',
+    'Breaks down the upfront funds required to close the purchase, including deposit, stamp duty, closing costs, lender package fees, and renovation spend.',
   performance:
     'Shows rent, operating expenses, debt service, taxes, and cash flow for the selected hold year so you can compare annual performance.',
   keyRatios:
@@ -1251,6 +1252,7 @@ const KNOWLEDGE_GROUPS = {
       'ltv',
       'stampDuty',
       'closingCosts',
+      'mortgagePackageFee',
       'renovationCost',
       'bridgingLoanAmount',
       'netCashIn',
@@ -1366,6 +1368,14 @@ const KNOWLEDGE_METRICS = {
     importance: 'Accounts for frictional costs that need to be funded alongside the deposit.',
     unit: 'currency',
   },
+  mortgagePackageFee: {
+    label: 'Mortgage package fee',
+    groups: ['cashNeeded'],
+    description: 'Upfront lender or broker fee charged to arrange the mortgage.',
+    calculation: 'User-entered flat fee paid at completion.',
+    importance: 'Needs to be budgeted alongside closing costs because it increases cash required to draw the loan.',
+    unit: 'currency',
+  },
   renovationCost: {
     label: 'Renovation budget',
     groups: ['cashNeeded'],
@@ -1393,8 +1403,8 @@ const KNOWLEDGE_METRICS = {
   totalCashRequired: {
     label: 'Total cash required',
     groups: ['cashNeeded'],
-    description: 'Sum of deposit, stamp duty, closing costs, and renovation spend before financing.',
-    calculation: 'Deposit + stamp duty + other closing costs + renovation budget.',
+    description: 'Sum of deposit, stamp duty, closing costs, lender package fees, and renovation spend before financing.',
+    calculation: 'Deposit + stamp duty + other closing costs + mortgage package fee + renovation budget.',
     importance: 'Sets the total capital needed to complete the purchase and works.',
     unit: 'currency',
   },
@@ -2871,7 +2881,8 @@ function calculateEquity(rawInputs) {
   const isCompanyBuyer = inputs.buyerType === 'company';
   const deposit = inputs.purchasePrice * inputs.depositPct;
   const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
-  const closing = otherClosing + stampDuty;
+  const packageFees = Number(inputs.mortgagePackageFee ?? 0) || 0;
+  const closing = otherClosing + packageFees + stampDuty;
 
   const loan = inputs.purchasePrice - deposit;
   const irrHurdleValue = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
@@ -3327,6 +3338,7 @@ function calculateEquity(rawInputs) {
     deposit,
     stampDuty,
     otherClosing,
+    packageFees,
     closing,
     loan,
     mortgage: mortgageMonthly,
@@ -6186,6 +6198,7 @@ export default function App() {
     const depositValue = Number(equity.deposit) || 0;
     const stampDutyValue = Number(equity.stampDuty) || 0;
     const closingCostsValue = Number(equity.otherClosing) || 0;
+    const packageFeeValue = Number(equity.packageFees) || 0;
     const renovationValue = Number(inputs.renovationCost) || 0;
     const bridgingAmountValue = Number(equity.bridgingLoanAmount) || 0;
     const totalCashRequiredValue = Number(equity.cashIn) || 0;
@@ -6246,6 +6259,7 @@ export default function App() {
       ltv: { value: currentLtv, formatted: formatPercent(currentLtv) },
       stampDuty: { value: stampDutyValue, formatted: currency(stampDutyValue) },
       closingCosts: { value: closingCostsValue, formatted: currency(closingCostsValue) },
+      mortgagePackageFee: { value: packageFeeValue, formatted: currency(packageFeeValue) },
       renovationCost: { value: renovationValue, formatted: currency(renovationValue) },
       bridgingLoanAmount: { value: bridgingAmountValue, formatted: currency(bridgingAmountValue) },
       netCashIn: { value: netCashInValue, formatted: currency(netCashInValue) },
@@ -6305,6 +6319,7 @@ export default function App() {
     equity.deposit,
     equity.stampDuty,
     equity.otherClosing,
+    equity.packageFees,
     inputs.renovationCost,
     equity.bridgingLoanAmount,
     equity.cashIn,
@@ -8349,8 +8364,9 @@ export default function App() {
                   {moneyInput('purchasePrice', 'Purchase price (£)')}
                   {pctInput('depositPct', 'Deposit %')}
                   {pctInput('closingCostsPct', 'Other closing costs %')}
-                  {moneyInput('renovationCost', 'Renovation (upfront) £', 500)}
                   {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
+                  {moneyInput('renovationCost', 'Renovation (upfront) £', 500)}
+                  {moneyInput('mortgagePackageFee', 'Mortgage package fee (£)', 100)}
                   {smallInput('mortgageYears', 'Mortgage term (years)')}
 
                   <div className="col-span-2">
@@ -8556,6 +8572,11 @@ export default function App() {
                   label="Other closing costs"
                   value={currency(equity.otherClosing)}
                   knowledgeKey="closingCosts"
+                />
+                <Line
+                  label="Mortgage package fee"
+                  value={currency(equity.packageFees)}
+                  knowledgeKey="mortgagePackageFee"
                 />
                 <Line
                   label="Renovation (upfront)"
