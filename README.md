@@ -2,12 +2,6 @@
 
 A Vite + React single-page application for reviewing the financial performance of a UK buy-to-let property investment. The app models cash needs, year-one operations, leverage metrics, and a comparison to investing in an index fund.
 
-## Market data insights
-
-- **Property type intelligence** – Choose between detached, semi-detached, terraced, and flat/maisonette stock to tailor cash-flow and appreciation assumptions. Historical price data from `Average-prices-Property-Type-2025-07.csv` is parsed at runtime so the projection reflects the selected asset class.
-- **Historical appreciation overlays** – Swap the manual growth assumption for 1, 5, 10, or 20 year UK averages derived from the CSV data. When enabled, the projection automatically applies the relevant long-run appreciation rate for the property type in question.
-- **Comprehensive scoring** – The investment score now blends market growth resilience, local crime safety (benchmarked against UK averages), DSCR, LTV, total ROI, and traditional return metrics to produce a richer composite rating.
-
 ## Getting started
 
 ```bash
@@ -24,6 +18,12 @@ npm run build
 ```
 
 > **Note:** The default styling relies on Tailwind CSS, which is compiled during the build step.
+
+## UK market data & scoring
+
+- Choose a property type in the **Property info** panel to align the analysis with Land Registry averages for detached, semi-detached, terraced, or flats/maisonettes. The selector surfaces the latest national pricing snapshot and long-run CAGR pulled from `Average-prices-Property-Type-2025-07.csv`.
+- Under **Rental cashflow** you can keep a manual capital growth assumption or toggle to apply the historical CAGR for the selected property type across 1, 5, 10, or 20-year windows. When enabled, projections ignore the manual field and compound using the chosen data window.
+- The composite investment score now blends cap rate strength, DSCR resilience, 20-year market growth, and crime safety (benchmarked against UK averages) alongside the existing return metrics so the grade reflects both performance and location risk.
 
 ## Scenario persistence
 
