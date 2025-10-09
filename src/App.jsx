@@ -172,6 +172,34 @@ const COUNTRY_REGION_SYNONYMS = {
   'gb-nir': 'northern ireland',
 };
 
+const isUkCountryCode = (code) => {
+  if (typeof code !== 'string') {
+    return false;
+  }
+  const normalized = code.trim().toLowerCase();
+  if (normalized === '') {
+    return false;
+  }
+  return (
+    normalized === 'uk' ||
+    normalized === 'gb' ||
+    normalized === 'gbr' ||
+    normalized === 'great britain' ||
+    normalized === 'united kingdom'
+  );
+};
+
+const normalizePostcode = (postcode) => {
+  if (typeof postcode !== 'string') {
+    return '';
+  }
+  const trimmed = postcode.trim();
+  if (trimmed === '') {
+    return '';
+  }
+  return trimmed.replace(/\s+/g, '').toUpperCase();
+};
+
 const PROPERTY_APPRECIATION_WINDOWS = [1, 5, 10, 20];
 const DEFAULT_APPRECIATION_WINDOW = 5;
 const UK_ANNUAL_CRIME_PER_1000 = 79.2;
@@ -3565,7 +3593,9 @@ export default function App() {
   const geocodeDebounceRef = useRef(null);
   const geocodeAbortRef = useRef(null);
   const crimeAbortRef = useRef(null);
+  const crimePostcodeAbortRef = useRef(null);
   const lastGeocodeQueryRef = useRef('');
+  const lastCrimePostcodeRef = useRef('');
   const [rateChartSettings, setRateChartSettings] = useState({
     showMovingAverage: false,
     movingAverageWindow: 3,
@@ -3585,6 +3615,7 @@ export default function App() {
   const [syncError, setSyncError] = useState('');
   const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
   const [crimeState, setCrimeState] = useState(INITIAL_CRIME_STATE);
+  const [crimePostcodeState, setCrimePostcodeState] = useState({ status: 'idle', data: null, error: '' });
   const [urlSyncReady, setUrlSyncReady] = useState(false);
   const urlSyncLastValueRef = useRef('');
 
@@ -3656,15 +3687,27 @@ export default function App() {
   const geocodeStateName = geocodeAddressDetails.state;
   const geocodeCountry = geocodeAddressDetails.country;
   const geocodeCountryCode = geocodeAddressDetails.countryCode;
+  const normalizedCrimePostcode = useMemo(
+    () => normalizePostcode(geocodePostcode),
+    [geocodePostcode]
+  );
+  const shouldLookupCrimePostcode =
+    normalizedCrimePostcode !== '' && isUkCountryCode(geocodeCountryCode);
+  const postcodeCrimeLat = Number(crimePostcodeState.data?.lat);
+  const postcodeCrimeLon = Number(crimePostcodeState.data?.lon);
   const storedPropertyLat = Number(inputs.propertyLatitude);
   const storedPropertyLon = Number(inputs.propertyLongitude);
   const crimeLat = Number.isFinite(storedPropertyLat)
     ? storedPropertyLat
+    : Number.isFinite(postcodeCrimeLat)
+    ? postcodeCrimeLat
     : Number.isFinite(geocodeLat)
     ? geocodeLat
     : null;
   const crimeLon = Number.isFinite(storedPropertyLon)
     ? storedPropertyLon
+    : Number.isFinite(postcodeCrimeLon)
+    ? postcodeCrimeLon
     : Number.isFinite(geocodeLon)
     ? geocodeLon
     : null;
@@ -4414,6 +4457,106 @@ export default function App() {
       });
     }
   }, [geocodeState.status, geocodeState.data]);
+
+  useEffect(() => {
+    if (!shouldLookupCrimePostcode) {
+      if (crimePostcodeAbortRef.current) {
+        crimePostcodeAbortRef.current.abort();
+        crimePostcodeAbortRef.current = null;
+      }
+      if (
+        crimePostcodeState.status !== 'idle' ||
+        crimePostcodeState.data !== null ||
+        crimePostcodeState.error !== ''
+      ) {
+        setCrimePostcodeState({ status: 'idle', data: null, error: '' });
+      }
+      lastCrimePostcodeRef.current = '';
+      return;
+    }
+
+    if (
+      lastCrimePostcodeRef.current === normalizedCrimePostcode &&
+      crimePostcodeState.status === 'success'
+    ) {
+      return;
+    }
+
+    if (crimePostcodeAbortRef.current) {
+      crimePostcodeAbortRef.current.abort();
+      crimePostcodeAbortRef.current = null;
+    }
+
+    const controller = new AbortController();
+    crimePostcodeAbortRef.current = controller;
+
+    setCrimePostcodeState((prev) => {
+      if (prev.status === 'success' && prev.data?.postcode === normalizedCrimePostcode) {
+        return prev;
+      }
+      const cachedData =
+        prev.data && prev.data.postcode === normalizedCrimePostcode ? prev.data : null;
+      return { status: 'loading', data: cachedData, error: '' };
+    });
+
+    (async () => {
+      try {
+        const response = await fetch(
+          `https://api.postcodes.io/postcodes/${encodeURIComponent(normalizedCrimePostcode)}`,
+          {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' },
+          }
+        );
+        if (!response.ok) {
+          throw new Error('Postcode lookup failed.');
+        }
+        const payload = await response.json();
+        const result = payload?.result;
+        const lat = Number.parseFloat(result?.latitude);
+        const lon = Number.parseFloat(result?.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          throw new Error('Postcode lookup returned invalid coordinates.');
+        }
+        lastCrimePostcodeRef.current = normalizedCrimePostcode;
+        setCrimePostcodeState({
+          status: 'success',
+          data: { lat, lon, postcode: normalizedCrimePostcode },
+          error: '',
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          return;
+        }
+        console.warn('Unable to resolve postcode centroid for crime lookup:', error);
+        lastCrimePostcodeRef.current = '';
+        setCrimePostcodeState({
+          status: 'error',
+          data: null,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : 'Unable to resolve postcode centroid.',
+        });
+      } finally {
+        if (crimePostcodeAbortRef.current === controller) {
+          crimePostcodeAbortRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      if (crimePostcodeAbortRef.current === controller) {
+        crimePostcodeAbortRef.current = null;
+      }
+    };
+  }, [
+    shouldLookupCrimePostcode,
+    normalizedCrimePostcode,
+    crimePostcodeState.status,
+    crimePostcodeState.data,
+  ]);
 
   useEffect(() => {
     if (crimeAbortRef.current) {
