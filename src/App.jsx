@@ -3693,6 +3693,7 @@ export default function App() {
   );
   const shouldLookupCrimePostcode =
     normalizedCrimePostcode !== '' && isUkCountryCode(geocodeCountryCode);
+  const crimePostcodeQuery = shouldLookupCrimePostcode ? normalizedCrimePostcode : '';
   const postcodeCrimeLat = Number(crimePostcodeState.data?.lat);
   const postcodeCrimeLon = Number(crimePostcodeState.data?.lon);
   const storedPropertyLat = Number(inputs.propertyLatitude);
@@ -4646,10 +4647,13 @@ export default function App() {
         const latParam = formatCoordinate(crimeLat);
         const lonParam = formatCoordinate(crimeLon);
 
-        const baseParams = createCrimeParams({
-          lat: latParam,
-          lng: lonParam,
-        });
+        const baseParams =
+          crimePostcodeQuery !== ''
+            ? createCrimeParams({ postcode: crimePostcodeQuery })
+            : createCrimeParams({
+                lat: latParam,
+                lng: lonParam,
+              });
 
         const fetchCrimesWithParams = async (searchParams) => {
           const url = `https://data.police.uk/api/crimes-street/all-crime?${searchParams.toString()}`;
@@ -4723,6 +4727,16 @@ export default function App() {
         };
 
         finalCrimeData = await attemptFetch(baseParams, { boundsHint: geocodeBounds || null });
+
+        if (
+          !finalCrimeData &&
+          crimePostcodeQuery !== '' &&
+          Number.isFinite(crimeLat) &&
+          Number.isFinite(crimeLon)
+        ) {
+          const latLngParams = createCrimeParams({ lat: latParam, lng: lonParam });
+          finalCrimeData = await attemptFetch(latLngParams, { boundsHint: geocodeBounds || null });
+        }
 
         if (!finalCrimeData && geocodeBounds) {
           const boundingPolygon = boundsToPolygon(geocodeBounds);
@@ -4835,6 +4849,8 @@ export default function App() {
     geocodeBounds,
     geocodeState.status,
     geocodeState.error,
+    crimePostcodeQuery,
+    shouldLookupCrimePostcode,
   ]);
 
   useEffect(() => {
