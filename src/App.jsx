@@ -2144,6 +2144,7 @@ function calculateEquity(rawInputs) {
   const initialOutlay = -initialCashOutlay;
   cf.push(initialOutlay);
   const irrCashflows = [initialOutlay];
+  const npvCashflows = [initialOutlay];
 
   let rent = inputs.monthlyRent * 12;
   let cumulativeCashPreTax = 0;
@@ -2318,6 +2319,7 @@ function calculateEquity(rawInputs) {
     const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
 
     let yearCashflowForCf = cash;
+    let yearCashflowForNpv = afterTaxCash;
     if (y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
@@ -2327,12 +2329,14 @@ function calculateEquity(rawInputs) {
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
       yearCashflowForCf = cash + netSaleProceeds;
+      yearCashflowForNpv = afterTaxCash + netSaleProceeds;
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
       exitNetSaleProceeds = netSaleProceeds;
     }
     cf.push(yearCashflowForCf);
-    const npvToDate = npv(inputs.discountRate, cf);
+    npvCashflows.push(yearCashflowForNpv);
+    const npvToDate = npv(inputs.discountRate, npvCashflows);
 
     indexVal = indexVal * (1 + indexGrowth);
     const cumulativeCashAfterTaxKept = shouldReinvest
@@ -2416,7 +2420,7 @@ function calculateEquity(rawInputs) {
     rent *= 1 + inputs.rentGrowth;
   }
 
-  const npvValue = npv(inputs.discountRate, cf);
+  const npvValue = npv(inputs.discountRate, npvCashflows);
   const score = scoreDeal({ cap, coc, dscr, npv: npvValue, cashflowYear1 });
 
   const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
