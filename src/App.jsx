@@ -200,6 +200,23 @@ const normalizePostcode = (postcode) => {
   return trimmed.replace(/\s+/g, '').toUpperCase();
 };
 
+const formatCrimePostcodeParam = (postcode) => {
+  if (typeof postcode !== 'string') {
+    return '';
+  }
+  const trimmed = postcode.trim();
+  if (trimmed === '') {
+    return '';
+  }
+  const compact = trimmed.replace(/\s+/g, '').toUpperCase();
+  if (compact.length <= 3) {
+    return compact;
+  }
+  const outward = compact.slice(0, compact.length - 3);
+  const inward = compact.slice(-3);
+  return `${outward} ${inward}`;
+};
+
 const PROPERTY_APPRECIATION_WINDOWS = [1, 5, 10, 20];
 const DEFAULT_APPRECIATION_WINDOW = 5;
 const UK_ANNUAL_CRIME_PER_1000 = 79.2;
@@ -4668,6 +4685,9 @@ export default function App() {
               let normalized = '';
               if (typeof value === 'string') {
                 normalized = value.trim();
+                if (key === 'postcode') {
+                  normalized = formatCrimePostcodeParam(normalized);
+                }
               } else if (typeof value === 'number') {
                 if (Number.isFinite(value)) {
                   normalized = value.toString();
