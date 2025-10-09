@@ -1081,6 +1081,41 @@ const SCORE_TOOLTIPS = {
     'After-tax wealth delta compares property net proceeds plus after-tax cash flow (and reinvested fund) to the index alternative at exit, using income or corporation tax depending on buyer type.',
 };
 
+const INVESTMENT_PROFILE_RATINGS = {
+  excellent: {
+    label: 'excellent',
+    panelClass: 'border border-emerald-200 bg-emerald-50 text-emerald-800',
+    badgeClass: 'bg-emerald-600 text-white',
+  },
+  good: {
+    label: 'good',
+    panelClass: 'border border-sky-200 bg-sky-50 text-sky-800',
+    badgeClass: 'bg-sky-500 text-white',
+  },
+  ok: {
+    label: 'ok',
+    panelClass: 'border border-amber-200 bg-amber-50 text-amber-800',
+    badgeClass: 'bg-amber-500 text-white',
+  },
+  poor: {
+    label: 'poor',
+    panelClass: 'border border-rose-200 bg-rose-50 text-rose-800',
+    badgeClass: 'bg-rose-500 text-white',
+  },
+  unknown: {
+    label: 'unassessed',
+    panelClass: 'border border-slate-200 bg-slate-50 text-slate-700',
+    badgeClass: 'bg-slate-500 text-white',
+  },
+};
+
+const INVESTMENT_PROFILE_CHIP_TONES = {
+  positive: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  warning: 'border-amber-200 bg-amber-50 text-amber-700',
+  negative: 'border-rose-200 bg-rose-50 text-rose-700',
+  neutral: 'border-slate-200 bg-slate-50 text-slate-600',
+};
+
 const SECTION_DESCRIPTIONS = {
   cashNeeded:
     'Breaks down the upfront funds required to close the purchase, including deposit, stamp duty, closing costs, and renovation spend.',
@@ -1110,6 +1145,8 @@ const SECTION_DESCRIPTIONS = {
     'Stress-tests IRR and total ROI outcomes across different loan-to-value ratios to gauge the impact of leverage.',
   crime:
     'Summarises recent police-reported crime around the property and plots the incidents on an interactive map.',
+  investmentProfile:
+    'Synthesises IRR, cash-on-cash return, and discounted net present value into a narrative on overall deal quality.',
 };
 
 const KEY_RATIO_TOOLTIPS = {
@@ -1205,6 +1242,11 @@ const KNOWLEDGE_GROUPS = {
     label: 'ROI vs rental yield heatmap',
     description: 'Shows how rent yield and capital growth assumptions impact IRR and ROI.',
     metrics: ['rentalYield', 'yieldOnCost', 'irr', 'roi', 'annualAppreciation', 'rentGrowth'],
+  },
+  investmentProfile: {
+    label: 'Investment profile',
+    description: 'Brings together return ratios and discounted cash flow to summarise overall deal quality.',
+    metrics: ['irr', 'irrHurdle', 'coc', 'npvToDate', 'cashflowAfterTax', 'discountRateSetting', 'score'],
   },
 };
 
@@ -1384,6 +1426,15 @@ const KNOWLEDGE_METRICS = {
     calculation: 'User-defined hurdle rate.',
     importance: 'Helps decide whether projected returns compensate for the risk taken.',
     unit: 'percent',
+  },
+  score: {
+    label: 'Investment score',
+    groups: ['investmentProfile'],
+    description: 'Composite 0-100 score blending cash-on-cash, cap rate, DSCR, NPV, and year-one after-tax cash flow.',
+    calculation:
+      'Weighted blend of cash-on-cash (40%), cap rate (25%), DSCR (15%), discounted NPV (15%), and year-one cash flow (5%).',
+    importance: 'Summarises the deal’s efficiency against key underwriting levers in a single indicator.',
+    unit: 'score',
   },
   dscr: {
     label: 'Debt service coverage ratio (DSCR)',
@@ -2561,6 +2612,7 @@ export default function App() {
     equityGrowth: true,
     interestSplit: true,
     leverage: true,
+    investmentProfile: true,
   });
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -4998,6 +5050,7 @@ export default function App() {
       Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue) ? irrValue * propertyNetAfterTaxValue : 0;
     const appreciationRateValue = Number(inputs.annualAppreciation) || 0;
     const rentGrowthRateValue = Number(inputs.rentGrowth) || 0;
+    const scoreValue = Number(equity.score) || 0;
 
     return {
       deposit: { value: depositValue, formatted: currency(depositValue) },
@@ -5026,6 +5079,7 @@ export default function App() {
       mortgagePayment: { value: mortgagePaymentValue, formatted: currency(mortgagePaymentValue) },
       npvToDate: { value: npvValue, formatted: currency(npvValue) },
       discountRateSetting: { value: discountRateSettingValue, formatted: formatPercent(discountRateSettingValue) },
+      score: { value: scoreValue, formatted: `${Math.round(scoreValue)} / 100` },
       npvInitialOutlay: { value: initialOutlayValue, formatted: currency(initialOutlayValue) },
       npvSaleProceeds: { value: exitSaleProceedsValue, formatted: currency(exitSaleProceedsValue) },
       npvCumulativeCash: { value: cumulativeUndiscountedValue, formatted: currency(cumulativeUndiscountedValue) },
@@ -5106,6 +5160,200 @@ export default function App() {
     rentalTaxLabel,
     rentalTaxCumulativeLabel,
   ]);
+  const investmentProfile = useMemo(() => {
+    if (!equity) {
+      return null;
+    }
+    const irrValue = Number(equity.irr);
+    const irrHurdleValue = Number.isFinite(inputs.irrHurdle) ? Number(inputs.irrHurdle) : 0;
+    const cocValue = Number(equity.coc);
+    const npvValue = Number(equity.npv);
+    const cashInValue = Number(equity.cashIn);
+    const afterTaxCashValue = Number(equity.cashflowYear1AfterTax);
+    const discountRateValue = Number(inputs.discountRate);
+    const baseScoreValue = Number(equity.score);
+    const hasSignals =
+      Number.isFinite(irrValue) || Number.isFinite(cocValue) || Number.isFinite(npvValue);
+    if (!hasSignals) {
+      return null;
+    }
+
+    const irrBenchmark = Number.isFinite(irrHurdleValue) && irrHurdleValue > 0 ? irrHurdleValue : 0.08;
+    let compositeScore = Number.isFinite(baseScoreValue) ? baseScoreValue : 0;
+
+    if (Number.isFinite(irrValue)) {
+      if (irrValue >= irrBenchmark + 0.04) {
+        compositeScore += 10;
+      } else if (irrValue >= irrBenchmark) {
+        compositeScore += 5;
+      } else if (irrValue >= irrBenchmark - 0.02) {
+        compositeScore -= 5;
+      } else {
+        compositeScore -= 15;
+      }
+    } else {
+      compositeScore -= 5;
+    }
+
+    if (Number.isFinite(npvValue)) {
+      if (npvValue > 50000) {
+        compositeScore += 5;
+      } else if (npvValue > 0) {
+        compositeScore += 3;
+      } else if (npvValue < 0) {
+        compositeScore -= 8;
+      }
+    }
+
+    compositeScore = clamp(compositeScore, 0, 100);
+
+    let ratingKey = 'ok';
+    if (compositeScore >= 85) {
+      ratingKey = 'excellent';
+    } else if (compositeScore >= 65) {
+      ratingKey = 'good';
+    } else if (compositeScore < 45) {
+      ratingKey = 'poor';
+    }
+
+    const ratingConfig = INVESTMENT_PROFILE_RATINGS[ratingKey] ?? INVESTMENT_PROFILE_RATINGS.unknown;
+    const ratingLabel = ratingConfig.label ?? ratingKey;
+    const ratingArticle = /^[aeiou]/i.test(ratingLabel) ? 'an' : 'a';
+    const headline = `This is ${ratingArticle} ${ratingLabel} investment`;
+
+    const sentences = [];
+    if (Number.isFinite(irrValue)) {
+      if (Number.isFinite(irrHurdleValue) && irrHurdleValue > 0) {
+        const gap = irrValue - irrHurdleValue;
+        if (gap > 0.0005) {
+          const gapText = gap > 0.0005 ? ` by ${formatPercent(gap)}` : '';
+          sentences.push(
+            `Projected IRR of ${formatPercent(irrValue)} clears your ${formatPercent(irrHurdleValue)} hurdle${gapText}.`
+          );
+        } else if (Math.abs(gap) <= 0.0005) {
+          sentences.push(
+            `Projected IRR of ${formatPercent(irrValue)} is right on your ${formatPercent(irrHurdleValue)} hurdle.`
+          );
+        } else {
+          sentences.push(
+            `Projected IRR of ${formatPercent(irrValue)} sits ${formatPercent(Math.abs(gap))} below your ${formatPercent(
+              irrHurdleValue
+            )} hurdle.`
+          );
+        }
+      } else {
+        sentences.push(
+          `Projected IRR comes in at ${formatPercent(irrValue)}, offering a view on total return efficiency over the hold period.`
+        );
+      }
+    }
+
+    if (Number.isFinite(cocValue)) {
+      let cocText = `Cash-on-cash return sits at ${formatPercent(cocValue)}`;
+      if (Number.isFinite(afterTaxCashValue) && Number.isFinite(cashInValue) && cashInValue > 0) {
+        cocText += `, delivering ${currency(afterTaxCashValue)} of year-one after-tax cash on ${currency(cashInValue)} invested`;
+      }
+      sentences.push(`${cocText}.`);
+    }
+
+    if (Number.isFinite(npvValue)) {
+      const rateText = Number.isFinite(discountRateValue)
+        ? formatPercent(discountRateValue)
+        : 'your chosen discount rate';
+      const direction = npvValue >= 0 ? 'adding value relative to today' : 'signalling value erosion versus today';
+      sentences.push(`Discounting cash flows at ${rateText} yields an NPV of ${currency(npvValue)}, ${direction}.`);
+    }
+
+    const roundedComposite = Math.round(compositeScore);
+    const baseScoreRounded = Number.isFinite(baseScoreValue) ? Math.round(baseScoreValue) : null;
+    let closing = `Overall these signals point to a ${ratingLabel} profile with an investment score of ${roundedComposite}/100`;
+    if (baseScoreRounded !== null && baseScoreRounded !== roundedComposite) {
+      closing += ` (base score ${baseScoreRounded}/100).`;
+    } else {
+      closing += '.';
+    }
+    sentences.push(closing);
+
+    const summary = sentences.filter(Boolean).join(' ');
+
+    const chips = [];
+    if (Number.isFinite(irrValue)) {
+      let tone = 'neutral';
+      if (irrValue >= irrBenchmark + 0.02) {
+        tone = 'positive';
+      } else if (irrValue >= irrBenchmark) {
+        tone = 'positive';
+      } else if (irrValue >= irrBenchmark - 0.01) {
+        tone = 'warning';
+      } else {
+        tone = 'negative';
+      }
+      chips.push({
+        label: 'IRR',
+        value: formatPercent(irrValue),
+        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+      });
+    }
+    if (Number.isFinite(irrHurdleValue) && irrHurdleValue > 0) {
+      const tone = Number.isFinite(irrValue) && irrValue < irrHurdleValue ? 'warning' : 'neutral';
+      chips.push({
+        label: 'IRR hurdle',
+        value: formatPercent(irrHurdleValue),
+        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+      });
+    }
+    if (Number.isFinite(cocValue)) {
+      const tone = cocValue >= 0.1 ? 'positive' : cocValue >= 0.06 ? 'neutral' : 'warning';
+      chips.push({
+        label: 'Cash-on-cash',
+        value: formatPercent(cocValue),
+        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+      });
+    }
+    if (Number.isFinite(afterTaxCashValue)) {
+      const tone = afterTaxCashValue >= 0 ? 'positive' : 'negative';
+      chips.push({
+        label: 'Year 1 after-tax cash',
+        value: currency(afterTaxCashValue),
+        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+      });
+    }
+    if (Number.isFinite(cashInValue) && cashInValue > 0) {
+      chips.push({
+        label: 'Cash invested',
+        value: currency(cashInValue),
+        className: INVESTMENT_PROFILE_CHIP_TONES.neutral,
+      });
+    }
+    if (Number.isFinite(npvValue)) {
+      const tone = npvValue > 0 ? 'positive' : npvValue < 0 ? 'negative' : 'neutral';
+      chips.push({
+        label: 'NPV',
+        value: currency(npvValue),
+        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+      });
+    }
+    if (Number.isFinite(baseScoreValue)) {
+      chips.push({
+        label: 'Base score',
+        value: `${Math.round(baseScoreValue)} / 100`,
+        className: INVESTMENT_PROFILE_CHIP_TONES.neutral,
+      });
+    }
+
+    return {
+      ratingKey,
+      ratingLabel,
+      panelClass: ratingConfig.panelClass,
+      badgeClass: ratingConfig.badgeClass,
+      headline,
+      compositeScore,
+      baseScore: Number.isFinite(baseScoreValue) ? baseScoreValue : null,
+      summary,
+      chips,
+    };
+  }, [equity, inputs.discountRate, inputs.irrHurdle]);
+
   const knowledgeMetricList = useMemo(
     () =>
       Object.entries(KNOWLEDGE_METRICS).map(([id, definition]) => ({
@@ -8178,6 +8426,75 @@ export default function App() {
                       onExport={handleExportCashflowCsv}
                     />
                   </>
+                ) : null}
+              </div>
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.investmentProfile ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('investmentProfile')}
+                      aria-expanded={!collapsedSections.investmentProfile}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.investmentProfile ? 'Show investment profile' : 'Hide investment profile'}
+                    >
+                      {collapsedSections.investmentProfile ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Investment profile"
+                      tooltip={SECTION_DESCRIPTIONS.investmentProfile}
+                      className="text-sm font-semibold text-slate-700"
+                      knowledgeKey="investmentProfile"
+                    />
+                  </div>
+                </div>
+                {!collapsedSections.investmentProfile ? (
+                  investmentProfile ? (
+                    <>
+                      <div
+                        className={`mb-3 rounded-xl px-4 py-3 ${
+                          investmentProfile.panelClass ?? 'border border-slate-200 bg-slate-50 text-slate-700'
+                        }`}
+                      >
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <span
+                            className={`inline-flex items-center rounded-full px-3 py-0.5 text-[11px] font-semibold ${
+                              investmentProfile.badgeClass ?? 'bg-slate-600 text-white'
+                            }`}
+                          >
+                            {investmentProfile.headline}
+                          </span>
+                          <span className="text-[11px] font-semibold text-slate-600">
+                            {`${Math.round(investmentProfile.compositeScore)} / 100`}
+                          </span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed">{investmentProfile.summary}</p>
+                      </div>
+                      {investmentProfile.chips.length > 0 ? (
+                        <div className="flex flex-wrap gap-2 text-[11px]">
+                          {investmentProfile.chips.map((chip) => (
+                            <span
+                              key={`${chip.label}-${chip.value}`}
+                              className={`inline-flex items-center gap-1 rounded-full border px-3 py-1 font-semibold ${
+                                chip.className ?? INVESTMENT_PROFILE_CHIP_TONES.neutral
+                              }`}
+                            >
+                              <span className="text-slate-500">{chip.label}</span>
+                              <span className="text-slate-700">{chip.value}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+                      Provide purchase, rent, and financing inputs to evaluate the investment profile.
+                    </div>
+                  )
                 ) : null}
               </div>
             </div>
