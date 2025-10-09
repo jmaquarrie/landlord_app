@@ -19,6 +19,12 @@ npm run build
 
 > **Note:** The default styling relies on Tailwind CSS, which is compiled during the build step.
 
+## UK market data & scoring
+
+- Choose a property type in the **Property info** panel to align the analysis with Land Registry averages for detached, semi-detached, terraced, or flats/maisonettes. The selector surfaces the latest national pricing snapshot and long-run CAGR pulled from `Average-prices-Property-Type-2025-07.csv`.
+- Under **Rental cashflow** you can keep a manual capital growth assumption or toggle to apply the historical CAGR for the selected property type across 1, 5, 10, or 20-year windows. When enabled, projections ignore the manual field and compound using the chosen data window.
+- The composite investment score now blends cap rate strength, DSCR resilience, 20-year market growth, and crime safety (benchmarked against UK averages) alongside the existing return metrics so the grade reflects both performance and location risk.
+
 ## Scenario persistence
 
 Saved scenarios are stored locally in the browser by default. To sync them across devices, run the lightweight Express + MySQL service in `server/index.js` and point the frontend at it. Start the backend alongside the Vite dev server in another terminal:
