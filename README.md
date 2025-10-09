@@ -2,6 +2,12 @@
 
 A Vite + React single-page application for reviewing the financial performance of a UK buy-to-let property investment. The app models cash needs, year-one operations, leverage metrics, and a comparison to investing in an index fund.
 
+## Market data insights
+
+- **Property type intelligence** – Choose between detached, semi-detached, terraced, and flat/maisonette stock to tailor cash-flow and appreciation assumptions. Historical price data from `Average-prices-Property-Type-2025-07.csv` is parsed at runtime so the projection reflects the selected asset class.
+- **Historical appreciation overlays** – Swap the manual growth assumption for 1, 5, 10, or 20 year UK averages derived from the CSV data. When enabled, the projection automatically applies the relevant long-run appreciation rate for the property type in question.
+- **Comprehensive scoring** – The investment score now blends market growth resilience, local crime safety (benchmarked against UK averages), DSCR, LTV, total ROI, and traditional return metrics to produce a richer composite rating.
+
 ## Getting started
 
 ```bash

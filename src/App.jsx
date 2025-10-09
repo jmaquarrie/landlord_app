@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
+import propertyPriceDataUrl from '../Average-prices-Property-Type-2025-07.csv?url';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const currencyNoPence = (value) =>
@@ -146,6 +147,31 @@ const CASHFLOW_BAR_COLORS = {
   netCashflow: '#10b981',
 };
 
+const PROPERTY_TYPE_OPTIONS = [
+  { value: 'detached', label: 'Detached house', column: 'Detached_Average_Price' },
+  { value: 'semi_detached', label: 'Semi-detached house', column: 'Semi_Detached_Average_Price' },
+  { value: 'terraced', label: 'Terraced house', column: 'Terraced_Average_Price' },
+  { value: 'flat_maisonette', label: 'Flats / maisonette', column: 'Flat_Average_Price' },
+];
+
+const PROPERTY_TYPE_COLUMN_LOOKUP = PROPERTY_TYPE_OPTIONS.reduce((acc, option) => {
+  acc[option.value] = option.column;
+  return acc;
+}, {});
+
+const PROPERTY_TYPE_LABEL_LOOKUP = PROPERTY_TYPE_OPTIONS.reduce((acc, option) => {
+  acc[option.value] = option.label;
+  return acc;
+}, {});
+
+const PROPERTY_GROWTH_WINDOWS = [1, 5, 10, 20];
+const DEFAULT_PROPERTY_TYPE = PROPERTY_TYPE_OPTIONS[0]?.value ?? 'detached';
+
+const UK_CRIME_RATE_PER_1000 = 90;
+const UK_AVG_POP_DENSITY_PER_SQKM = 281;
+const MIN_CRIME_POPULATION_ESTIMATE = 500;
+const MIN_CRIME_AREA_SQKM = 0.3;
+
 const ROI_HEATMAP_OFFSETS = [-0.02, -0.01, 0, 0.01, 0.02];
 const HEATMAP_COLOR_START = [248, 113, 113];
 const HEATMAP_COLOR_END = [34, 197, 94];
@@ -191,6 +217,125 @@ const formatCrimeMonth = (value) => {
     return value;
   }
   return new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric' }).format(date);
+};
+
+const parseHistoricalPropertyPrices = (csvText) => {
+  if (typeof csvText !== 'string') {
+    return null;
+  }
+  const trimmed = csvText.trim();
+  if (trimmed === '') {
+    return null;
+  }
+  const lines = trimmed.split(/\r?\n/);
+  if (lines.length <= 1) {
+    return null;
+  }
+  const header = lines[0].split(',');
+  const dateIndex = header.indexOf('Date');
+  const regionIndex = header.indexOf('Region_Name');
+  const columnIndices = Object.entries(PROPERTY_TYPE_COLUMN_LOOKUP).reduce((acc, [key, columnName]) => {
+    acc[key] = header.indexOf(columnName);
+    return acc;
+  }, {});
+
+  const yearlyAggregates = Object.keys(PROPERTY_TYPE_COLUMN_LOOKUP).reduce((acc, key) => {
+    acc[key] = new Map();
+    return acc;
+  }, {});
+
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line) continue;
+    const parts = line.split(',');
+    if (parts.length < header.length) continue;
+    if (regionIndex >= 0 && parts[regionIndex] !== 'United Kingdom') continue;
+    const yearString = parts[dateIndex]?.slice(0, 4);
+    const year = Number.parseInt(yearString, 10);
+    if (!Number.isFinite(year)) continue;
+    Object.entries(columnIndices).forEach(([type, columnIndex]) => {
+      if (columnIndex < 0) {
+        return;
+      }
+      const value = Number(parts[columnIndex]);
+      if (!Number.isFinite(value) || value <= 0) {
+        return;
+      }
+      const aggregates = yearlyAggregates[type];
+      const current = aggregates.get(year) ?? { sum: 0, count: 0 };
+      current.sum += value;
+      current.count += 1;
+      aggregates.set(year, current);
+    });
+  }
+
+  const byType = {};
+  Object.entries(yearlyAggregates).forEach(([type, aggregates]) => {
+    const yearly = Array.from(aggregates.entries())
+      .map(([year, { sum, count }]) => ({ year, averagePrice: count > 0 ? sum / count : null }))
+      .filter((entry) => Number.isFinite(entry.averagePrice))
+      .sort((a, b) => a.year - b.year);
+
+    const yoy = [];
+    for (let i = 1; i < yearly.length; i += 1) {
+      const previous = yearly[i - 1];
+      const current = yearly[i];
+      if (!previous?.averagePrice || previous.averagePrice <= 0) {
+        continue;
+      }
+      const change = (current.averagePrice - previous.averagePrice) / previous.averagePrice;
+      if (Number.isFinite(change)) {
+        yoy.push({ year: current.year, change });
+      }
+    }
+
+    const timeframeAverages = {};
+    PROPERTY_GROWTH_WINDOWS.forEach((window) => {
+      if (yoy.length === 0) {
+        timeframeAverages[window] = null;
+        return;
+      }
+      const slice = yoy.slice(-window);
+      if (slice.length === 0) {
+        timeframeAverages[window] = null;
+        return;
+      }
+      const sum = slice.reduce((acc, entry) => acc + entry.change, 0);
+      timeframeAverages[window] = sum / slice.length;
+    });
+
+    byType[type] = {
+      yearly,
+      yoy,
+      timeframeAverages,
+      latestYear: yearly.length > 0 ? yearly[yearly.length - 1].year : null,
+    };
+  });
+
+  return { byType };
+};
+
+const estimateCrimeAreaSqKm = (bounds) => {
+  if (!Array.isArray(bounds) || bounds.length !== 2) {
+    return null;
+  }
+  const [[minLat, minLon], [maxLat, maxLon]] = bounds;
+  if (![minLat, minLon, maxLat, maxLon].every((value) => Number.isFinite(value))) {
+    return null;
+  }
+  const latDelta = Math.max(0, maxLat - minLat);
+  const lonDelta = Math.max(0, maxLon - minLon);
+  if (latDelta === 0 || lonDelta === 0) {
+    return 0;
+  }
+  const meanLat = (minLat + maxLat) / 2;
+  const latKm = latDelta * 111;
+  const lonKm = Math.abs(lonDelta * 111 * Math.cos((meanLat * Math.PI) / 180));
+  const area = latKm * lonKm;
+  if (!Number.isFinite(area) || area <= 0) {
+    return 0;
+  }
+  return area;
 };
 
 const getAddressComponent = (address, keys) => {
@@ -941,6 +1086,7 @@ const DEFAULT_INPUTS = {
   propertyLatitude: null,
   propertyLongitude: null,
   propertyDisplayName: '',
+  propertyType: DEFAULT_PROPERTY_TYPE,
   bedrooms: 3,
   bathrooms: 1,
   purchasePrice: 70000,
@@ -961,6 +1107,8 @@ const DEFAULT_INPUTS = {
   otherOpexPerYear: 300,
   annualAppreciation: 0.03,
   rentGrowth: 0.02,
+  useHistoricalAppreciation: false,
+  historicalAppreciationWindow: 5,
   exitYear: 20,
   sellingCostsPct: 0.02,
   discountRate: 0.07,
@@ -1015,6 +1163,14 @@ const roundTo = (value, decimals = 2) => {
   if (!Number.isFinite(value)) return 0;
   const factor = Math.pow(10, decimals);
   return Math.round((value + Number.EPSILON) * factor) / factor;
+};
+
+const formatPerThousand = (value) => {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  const rounded = roundTo(value, 1);
+  return `${rounded.toFixed(1)} / 1k`;
 };
 
 const formatPercent = (value, decimals = 2) => {
@@ -1083,7 +1239,7 @@ const decodeSharePayload = (value) => {
 
 const SCORE_TOOLTIPS = {
   overall:
-    'Score blends IRR strength, performance versus your hurdle, cash-on-cash return, year-one after-tax cash flow, total cash invested, and discounted net present value into a 0-100 composite.',
+    'Score blends IRR strength, performance versus your hurdle, cash-on-cash return, year-one after-tax cash flow, total cash invested, discounted net present value, market growth resilience, local safety, debt coverage, leverage health, and total ROI into a composite score.',
   delta:
     'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
   deltaAfterTax:
@@ -1097,6 +1253,11 @@ const SCORE_COMPONENT_CONFIG = {
   cashflow: { label: 'Year 1 after-tax cash', maxPoints: 10 },
   cashInvested: { label: 'Cash invested', maxPoints: 10 },
   npv: { label: 'NPV', maxPoints: 20 },
+  propertyGrowth: { label: 'Market growth', maxPoints: 12 },
+  crimeSafety: { label: 'Local safety', maxPoints: 10 },
+  dscr: { label: 'Debt coverage', maxPoints: 8 },
+  ltv: { label: 'Leverage health', maxPoints: 8 },
+  roi: { label: 'Total ROI', maxPoints: 12 },
 };
 
 const TOTAL_SCORE_MAX = Object.values(SCORE_COMPONENT_CONFIG).reduce(
@@ -1188,6 +1349,9 @@ const KEY_RATIO_TOOLTIPS = {
   mortgage: 'Estimated monthly mortgage payment for the modeled loan.',
   irr: 'Internal rate of return based on annual cash flows and sale proceeds through the modeled exit year.',
   npv: 'Discounted net present value of after-tax cash flow plus exit proceeds through your modelled hold period.',
+  growthModel:
+    'Annual property price growth applied in the projection, using historic averages for the selected property type when enabled.',
+  crimeRate: 'Estimated annual crime incidents per 1,000 residents based on the most recent police data for the property area.',
 };
 
 const KNOWLEDGE_GROUPS = {
@@ -1461,10 +1625,11 @@ const KNOWLEDGE_METRICS = {
   score: {
     label: 'Investment score',
     groups: ['investmentProfile'],
-    description: 'Composite 0-100 score blending cash-on-cash, cap rate, DSCR, NPV, and year-one after-tax cash flow.',
+    description:
+      'Composite score blending IRR strength, hurdle performance, cash returns, market fundamentals, leverage, and risk signals.',
     calculation:
-      'Weighted blend of cash-on-cash (40%), cap rate (25%), DSCR (15%), discounted NPV (15%), and year-one cash flow (5%).',
-    importance: 'Summarises the deal’s efficiency against key underwriting levers in a single indicator.',
+      'Weighted sum of IRR, hurdle delta, cash-on-cash, year-one after-tax cash flow, cash invested efficiency, discounted NPV, 20-year market growth, local safety versus UK averages, DSCR, leverage health, and total ROI.',
+    importance: 'Summarises the deal’s efficiency, resilience, and market context in a single indicator.',
     unit: 'score',
   },
   dscr: {
@@ -1663,8 +1828,8 @@ const KNOWLEDGE_METRICS = {
     label: 'Capital growth rate',
     groups: ['roiHeatmap'],
     description: 'Assumed annual property price growth used in the projection.',
-    calculation: 'User-specified appreciation %.',
-    importance: 'Drives exit value and therefore total returns.',
+    calculation: 'User-specified appreciation % or the selected historical average when enabled.',
+    importance: 'Drives exit value and therefore total returns; historical averages provide market context.',
     unit: 'percent',
   },
   rentGrowth: {
@@ -1952,6 +2117,13 @@ function scoreDeal({
   cashInvested,
   purchasePrice,
   npv,
+  dscr,
+  loanToValue,
+  totalRoi,
+  propertyGrowthRate20,
+  localCrimeRatePerThousand,
+  ukCrimeRatePerThousand,
+  propertyTypeLabel,
 }) {
   const components = {};
   let total = 0;
@@ -2175,6 +2347,192 @@ function scoreDeal({
     displayValue: currency(npv),
     explanation: npvExplanation,
   });
+
+  const growthConfig = SCORE_COMPONENT_CONFIG.propertyGrowth;
+  if (growthConfig) {
+    const growthRate = Number(propertyGrowthRate20);
+    let growthPoints = 0;
+    let growthExplanation = '20-year market growth data unavailable.';
+    if (Number.isFinite(growthRate)) {
+      const label = propertyTypeLabel || 'the selected property type';
+      if (growthRate >= 0.05) {
+        growthPoints = growthConfig.maxPoints;
+        growthExplanation = `${formatPercent(growthRate)} average annual appreciation over the past 20 years for ${label} strongly supports the projection.`;
+      } else if (growthRate >= 0.035) {
+        growthPoints = growthConfig.maxPoints * 0.85;
+        growthExplanation = `${formatPercent(growthRate)} 20-year average growth for ${label} is comfortably above inflation.`;
+      } else if (growthRate >= 0.025) {
+        growthPoints = growthConfig.maxPoints * 0.7;
+        growthExplanation = `${formatPercent(growthRate)} long-run appreciation indicates a steady market for ${label}.`;
+      } else if (growthRate >= 0.015) {
+        growthPoints = growthConfig.maxPoints * 0.5;
+        growthExplanation = `${formatPercent(growthRate)} 20-year growth suggests modest capital upside for ${label}.`;
+      } else if (growthRate >= 0) {
+        growthPoints = growthConfig.maxPoints * 0.3;
+        growthExplanation = `${formatPercent(growthRate)} long-run growth is subdued for ${label}, so projections rely more on cash flow.`;
+      } else {
+        growthPoints = growthConfig.maxPoints * 0.1;
+        growthExplanation = `${formatPercent(growthRate)} 20-year trend indicates price contraction for ${label}, signalling a weak capital market.`;
+      }
+    }
+    addComponent('propertyGrowth', {
+      points: growthPoints,
+      value: Number.isFinite(growthRate) ? growthRate : null,
+      displayValue: Number.isFinite(growthRate) ? formatPercent(growthRate) : '—',
+      explanation: growthExplanation,
+    });
+  }
+
+  const crimeConfig = SCORE_COMPONENT_CONFIG.crimeSafety;
+  if (crimeConfig) {
+    const localRate = Number(localCrimeRatePerThousand);
+    const nationalRate = Number(ukCrimeRatePerThousand);
+    let crimePoints = 0;
+    let crimeExplanation = 'Local crime rate unavailable.';
+    if (Number.isFinite(localRate) && localRate >= 0) {
+      if (Number.isFinite(nationalRate) && nationalRate > 0) {
+        const ratio = localRate / nationalRate;
+        if (ratio <= 0.6) {
+          crimePoints = crimeConfig.maxPoints;
+          crimeExplanation = `Local crime averages ${formatPerThousand(localRate)} per 1k people, well below the UK average of ${formatPerThousand(nationalRate)}.`;
+        } else if (ratio <= 0.8) {
+          crimePoints = crimeConfig.maxPoints * 0.85;
+          crimeExplanation = `Local crime of ${formatPerThousand(localRate)} is comfortably below the national average (${formatPerThousand(nationalRate)}).`;
+        } else if (ratio <= 1) {
+          crimePoints = crimeConfig.maxPoints * 0.65;
+          crimeExplanation = `Local crime of ${formatPerThousand(localRate)} is broadly in line with the UK average (${formatPerThousand(nationalRate)}).`;
+        } else if (ratio <= 1.2) {
+          crimePoints = crimeConfig.maxPoints * 0.45;
+          crimeExplanation = `Local crime of ${formatPerThousand(localRate)} is slightly above the national average (${formatPerThousand(nationalRate)}).`;
+        } else if (ratio <= 1.5) {
+          crimePoints = crimeConfig.maxPoints * 0.2;
+          crimeExplanation = `Local crime of ${formatPerThousand(localRate)} is materially higher than the UK average (${formatPerThousand(nationalRate)}).`;
+        } else {
+          crimePoints = 0;
+          crimeExplanation = `Local crime of ${formatPerThousand(localRate)} is significantly above the UK average (${formatPerThousand(nationalRate)}), increasing risk.`;
+        }
+      } else {
+        if (localRate === 0) {
+          crimePoints = crimeConfig.maxPoints;
+          crimeExplanation = 'No recorded incidents in the latest month for this area.';
+        } else {
+          crimePoints = crimeConfig.maxPoints * 0.5;
+          crimeExplanation = `Local crime recorded at ${formatPerThousand(localRate)} per 1k people.`;
+        }
+      }
+    }
+    addComponent('crimeSafety', {
+      points: crimePoints,
+      value: Number.isFinite(localRate) ? localRate : null,
+      displayValue: Number.isFinite(localRate) ? `${formatPerThousand(localRate)}` : '—',
+      explanation: crimeExplanation,
+    });
+  }
+
+  const dscrConfig = SCORE_COMPONENT_CONFIG.dscr;
+  if (dscrConfig) {
+    const dscrValue = Number(dscr);
+    let dscrPoints = 0;
+    let dscrExplanation = 'Debt service coverage ratio unavailable.';
+    if (Number.isFinite(dscrValue) && dscrValue > 0) {
+      if (dscrValue >= 1.5) {
+        dscrPoints = dscrConfig.maxPoints;
+        dscrExplanation = `DSCR of ${dscrValue.toFixed(2)} provides a strong buffer above debt obligations.`;
+      } else if (dscrValue >= 1.35) {
+        dscrPoints = dscrConfig.maxPoints * 0.85;
+        dscrExplanation = `DSCR of ${dscrValue.toFixed(2)} offers comfortable coverage.`;
+      } else if (dscrValue >= 1.25) {
+        dscrPoints = dscrConfig.maxPoints * 0.65;
+        dscrExplanation = `DSCR of ${dscrValue.toFixed(2)} clears typical lender requirements.`;
+      } else if (dscrValue >= 1.15) {
+        dscrPoints = dscrConfig.maxPoints * 0.45;
+        dscrExplanation = `DSCR of ${dscrValue.toFixed(2)} leaves a limited cushion.`;
+      } else if (dscrValue >= 1.05) {
+        dscrPoints = dscrConfig.maxPoints * 0.25;
+        dscrExplanation = `DSCR of ${dscrValue.toFixed(2)} is marginal and vulnerable to stress.`;
+      } else {
+        dscrPoints = 0;
+        dscrExplanation = `DSCR of ${dscrValue.toFixed(2)} fails to cover debt service.`;
+      }
+    }
+    addComponent('dscr', {
+      points: dscrPoints,
+      value: Number.isFinite(dscrValue) ? dscrValue : null,
+      displayValue: Number.isFinite(dscrValue) ? dscrValue.toFixed(2) : '—',
+      explanation: dscrExplanation,
+    });
+  }
+
+  const ltvConfig = SCORE_COMPONENT_CONFIG.ltv;
+  if (ltvConfig) {
+    const ltvValue = Number(loanToValue);
+    let ltvPoints = 0;
+    let ltvExplanation = 'Loan-to-value not available.';
+    if (Number.isFinite(ltvValue) && ltvValue > 0) {
+      if (ltvValue <= 0.6) {
+        ltvPoints = ltvConfig.maxPoints;
+        ltvExplanation = `LTV of ${formatPercent(ltvValue)} is conservative, reducing refinancing risk.`;
+      } else if (ltvValue <= 0.7) {
+        ltvPoints = ltvConfig.maxPoints * 0.85;
+        ltvExplanation = `LTV of ${formatPercent(ltvValue)} balances leverage with resilience.`;
+      } else if (ltvValue <= 0.75) {
+        ltvPoints = ltvConfig.maxPoints * 0.7;
+        ltvExplanation = `LTV of ${formatPercent(ltvValue)} is within typical buy-to-let lending limits.`;
+      } else if (ltvValue <= 0.8) {
+        ltvPoints = ltvConfig.maxPoints * 0.5;
+        ltvExplanation = `LTV of ${formatPercent(ltvValue)} is high and leaves less room for market shocks.`;
+      } else if (ltvValue <= 0.85) {
+        ltvPoints = ltvConfig.maxPoints * 0.3;
+        ltvExplanation = `LTV of ${formatPercent(ltvValue)} is stretched and may limit refinancing options.`;
+      } else {
+        ltvPoints = ltvConfig.maxPoints * 0.1;
+        ltvExplanation = `LTV of ${formatPercent(ltvValue)} is very aggressive, amplifying downside risk.`;
+      }
+    }
+    addComponent('ltv', {
+      points: ltvPoints,
+      value: Number.isFinite(ltvValue) ? ltvValue : null,
+      displayValue: Number.isFinite(ltvValue) ? formatPercent(ltvValue) : '—',
+      explanation: ltvExplanation,
+    });
+  }
+
+  const roiConfig = SCORE_COMPONENT_CONFIG.roi;
+  if (roiConfig) {
+    const roiValue = Number(totalRoi);
+    let roiPoints = 0;
+    let roiExplanation = 'Total ROI unavailable.';
+    if (Number.isFinite(roiValue)) {
+      if (roiValue >= 2.5) {
+        roiPoints = roiConfig.maxPoints;
+        roiExplanation = `Total ROI of ${formatPercent(roiValue)} indicates capital more than tripling.`;
+      } else if (roiValue >= 2) {
+        roiPoints = roiConfig.maxPoints * 0.85;
+        roiExplanation = `Total ROI of ${formatPercent(roiValue)} more than doubles invested capital.`;
+      } else if (roiValue >= 1.5) {
+        roiPoints = roiConfig.maxPoints * 0.7;
+        roiExplanation = `Total ROI of ${formatPercent(roiValue)} delivers strong compounded returns.`;
+      } else if (roiValue >= 1) {
+        roiPoints = roiConfig.maxPoints * 0.5;
+        roiExplanation = `Total ROI of ${formatPercent(roiValue)} doubles equity over the hold.`;
+      } else if (roiValue >= 0.5) {
+        roiPoints = roiConfig.maxPoints * 0.3;
+        roiExplanation = `Total ROI of ${formatPercent(roiValue)} produces moderate capital growth.`;
+      } else if (roiValue > 0) {
+        roiPoints = roiConfig.maxPoints * 0.15;
+        roiExplanation = `Total ROI of ${formatPercent(roiValue)} keeps capital growing, albeit slowly.`;
+      } else {
+        roiPoints = 0;
+        roiExplanation = `Total ROI of ${formatPercent(roiValue)} signals capital erosion over the hold.`;
+      }
+    }
+    addComponent('roi', {
+      points: roiPoints,
+      value: Number.isFinite(roiValue) ? roiValue : null,
+      displayValue: Number.isFinite(roiValue) ? formatPercent(roiValue) : '—',
+      explanation: roiExplanation,
+    });
+  }
 
   return {
     total: clamp(total, 0, TOTAL_SCORE_MAX),
@@ -2735,6 +3093,18 @@ function calculateEquity(rawInputs) {
   const irrValue = irr(cf);
   const propertyTaxYear1 = propertyTaxes[0] ?? 0;
   const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
+  const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
+  const propertyGrossWealthAtExit = futureValue + exitCumCash;
+  const loanToValue = inputs.purchasePrice > 0 ? loan / inputs.purchasePrice : 0;
+  const totalRoi = totalCashRequired === 0 ? 0 : propertyNetWealthAtExit / totalCashRequired - 1;
+  const propertyGrowth20 = Number(rawInputs?.longTermAppreciation20Year);
+  const localCrimeRateValue = Number(rawInputs?.localCrimeRate);
+  const ukCrimeRateValue = Number(rawInputs?.ukCrimeRate);
+  const propertyTypeLabel =
+    typeof rawInputs?.propertyTypeLabel === 'string'
+      ? rawInputs.propertyTypeLabel
+      : PROPERTY_TYPE_LABEL_LOOKUP[inputs.propertyType] ?? '';
+
   const scoreResult = scoreDeal({
     irr: irrValue,
     irrHurdle: irrHurdleValue,
@@ -2743,11 +3113,16 @@ function calculateEquity(rawInputs) {
     cashInvested: cashIn,
     purchasePrice: inputs.purchasePrice,
     npv: npvValue,
+    dscr,
+    loanToValue,
+    totalRoi,
+    propertyGrowthRate20: Number.isFinite(propertyGrowth20) ? propertyGrowth20 : null,
+    localCrimeRatePerThousand: Number.isFinite(localCrimeRateValue) ? localCrimeRateValue : null,
+    ukCrimeRatePerThousand: Number.isFinite(ukCrimeRateValue) ? ukCrimeRateValue : null,
+    propertyTypeLabel,
   });
   const score = scoreResult.total;
 
-  const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
-  const propertyGrossWealthAtExit = futureValue + exitCumCash;
   const wealthDelta = propertyNetWealthAtExit - indexVal;
   const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
   const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
@@ -2797,6 +3172,8 @@ function calculateEquity(rawInputs) {
     exitNetSaleProceeds,
     propertyNetWealthAtExit,
     propertyGrossWealthAtExit,
+    roi: totalRoi,
+    ltv: loanToValue,
     wealthDelta,
     wealthDeltaPct,
     totalPropertyTax,
@@ -2819,6 +3196,20 @@ function calculateEquity(rawInputs) {
     annualPrincipal,
     irr: irrValue,
     irrHurdle: irrHurdleValue,
+    effectiveAnnualAppreciation: inputs.annualAppreciation,
+    manualAnnualAppreciation: Number.isFinite(rawInputs?.manualAnnualAppreciation)
+      ? rawInputs.manualAnnualAppreciation
+      : inputs.annualAppreciation,
+    datasetAppreciationRate: Number.isFinite(rawInputs?.historicalAppreciationRate)
+      ? rawInputs.historicalAppreciationRate
+      : null,
+    datasetAppreciationWindow: Number.isFinite(rawInputs?.selectedAppreciationWindow)
+      ? rawInputs.selectedAppreciationWindow
+      : null,
+    propertyGrowthAverage20: Number.isFinite(propertyGrowth20) ? propertyGrowth20 : null,
+    propertyTypeLabel,
+    localCrimeRatePerThousand: Number.isFinite(localCrimeRateValue) ? localCrimeRateValue : null,
+    ukCrimeRatePerThousand: Number.isFinite(ukCrimeRateValue) ? ukCrimeRateValue : null,
   };
 }
 
@@ -2985,10 +3376,62 @@ export default function App() {
   const [syncError, setSyncError] = useState('');
   const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
   const [crimeState, setCrimeState] = useState(INITIAL_CRIME_STATE);
+  const [propertyGrowthState, setPropertyGrowthState] = useState({ status: 'loading', data: null, error: '' });
   const [urlSyncReady, setUrlSyncReady] = useState(false);
   const urlSyncLastValueRef = useRef('');
   const propertyAddress = (inputs.propertyAddress ?? '').trim();
   const hasPropertyAddress = propertyAddress !== '';
+  const selectedPropertyType = useMemo(() => {
+    const fallback = PROPERTY_TYPE_OPTIONS[0] ?? {
+      value: DEFAULT_PROPERTY_TYPE,
+      label: PROPERTY_TYPE_LABEL_LOOKUP[DEFAULT_PROPERTY_TYPE] ?? 'Detached house',
+    };
+    if (!inputs.propertyType) {
+      return fallback;
+    }
+    const match = PROPERTY_TYPE_OPTIONS.find((option) => option.value === inputs.propertyType);
+    return match ?? fallback;
+  }, [inputs.propertyType]);
+  const selectedAppreciationWindow = useMemo(() => {
+    const windowValue = Number(inputs.historicalAppreciationWindow);
+    if (PROPERTY_GROWTH_WINDOWS.includes(windowValue)) {
+      return windowValue;
+    }
+    return PROPERTY_GROWTH_WINDOWS[1] ?? PROPERTY_GROWTH_WINDOWS[0];
+  }, [inputs.historicalAppreciationWindow]);
+  const propertyGrowthMetrics = useMemo(() => {
+    if (propertyGrowthState.status !== 'success' || !propertyGrowthState.data) {
+      return { timeframes: null, latestYear: null };
+    }
+    const typeKey = selectedPropertyType?.value ?? DEFAULT_PROPERTY_TYPE;
+    const stats = propertyGrowthState.data.byType?.[typeKey];
+    if (!stats) {
+      return { timeframes: null, latestYear: null };
+    }
+    return {
+      timeframes: stats.timeframeAverages ?? {},
+      latestYear: stats.latestYear ?? null,
+    };
+  }, [propertyGrowthState, selectedPropertyType?.value]);
+  const datasetAppreciationRateRaw =
+    propertyGrowthMetrics.timeframes && selectedAppreciationWindow
+      ? propertyGrowthMetrics.timeframes[selectedAppreciationWindow]
+      : null;
+  const datasetAppreciationRate =
+    typeof datasetAppreciationRateRaw === 'number' && Number.isFinite(datasetAppreciationRateRaw)
+      ? datasetAppreciationRateRaw
+      : null;
+  const datasetTwentyYearAverageRaw = propertyGrowthMetrics.timeframes
+    ? propertyGrowthMetrics.timeframes[20]
+    : null;
+  const datasetTwentyYearAverage =
+    typeof datasetTwentyYearAverageRaw === 'number' && Number.isFinite(datasetTwentyYearAverageRaw)
+      ? datasetTwentyYearAverageRaw
+      : null;
+  const manualAppreciationRate = Number.isFinite(inputs.annualAppreciation) ? inputs.annualAppreciation : 0;
+  const useDatasetAppreciation = Boolean(inputs.useHistoricalAppreciation) && datasetAppreciationRate !== null;
+  const effectiveAppreciationRate = useDatasetAppreciation ? datasetAppreciationRate : manualAppreciationRate;
+  const propertyGrowthLatestYear = propertyGrowthMetrics.latestYear;
   const geocodeLat = Number(geocodeState.data?.lat);
   const geocodeLon = Number(geocodeState.data?.lon);
   const geocodeDisplayName = geocodeState.data?.displayName ?? '';
@@ -3002,6 +3445,65 @@ export default function App() {
   const geocodePostcode = geocodeAddressDetails.postcode;
 
   const remoteAvailable = remoteEnabled && authStatus === 'ready';
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadPropertyGrowth = async () => {
+      if (typeof fetch !== 'function') {
+        setPropertyGrowthState({
+          status: 'error',
+          data: null,
+          error: 'Historical property dataset is not available in this environment.',
+        });
+        return;
+      }
+      try {
+        const response = await fetch(propertyPriceDataUrl, { headers: { Accept: 'text/csv' } });
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`);
+        }
+        const text = await response.text();
+        if (cancelled) {
+          return;
+        }
+        const parsed = parseHistoricalPropertyPrices(text);
+        if (parsed && parsed.byType) {
+          setPropertyGrowthState({ status: 'success', data: parsed, error: '' });
+        } else {
+          setPropertyGrowthState({
+            status: 'error',
+            data: null,
+            error: 'Unable to parse historical property price data.',
+          });
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        console.warn('Unable to load property price dataset:', error);
+        setPropertyGrowthState({
+          status: 'error',
+          data: null,
+          error: 'Unable to load historical property price data.',
+        });
+      }
+    };
+
+    loadPropertyGrowth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [propertyPriceDataUrl]);
+
+  useEffect(() => {
+    if (inputs.useHistoricalAppreciation && propertyGrowthState.status === 'error') {
+      setInputs((prev) => ({
+        ...prev,
+        useHistoricalAppreciation: false,
+      }));
+    }
+  }, [inputs.useHistoricalAppreciation, propertyGrowthState.status]);
 
   function applyUiState(uiState) {
     if (!uiState || typeof uiState !== 'object') {
@@ -3879,7 +4381,39 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [shareNotice]);
 
-  const equity = useMemo(() => calculateEquity(inputs), [inputs]);
+  const calculationInputs = useMemo(() => {
+    const manualRate = manualAppreciationRate;
+    const datasetRate = datasetAppreciationRate;
+    const longTermRate = datasetTwentyYearAverage;
+    const effectiveRate = Number.isFinite(effectiveAppreciationRate)
+      ? effectiveAppreciationRate
+      : manualRate;
+    const propertyTypeLabelValue = selectedPropertyType?.label
+      ?? PROPERTY_TYPE_LABEL_LOOKUP[selectedPropertyType?.value] ?? '';
+    return {
+      ...inputs,
+      propertyType: selectedPropertyType?.value ?? DEFAULT_PROPERTY_TYPE,
+      annualAppreciation: effectiveRate,
+      manualAnnualAppreciation: manualRate,
+      historicalAppreciationRate: datasetRate,
+      longTermAppreciation20Year: longTermRate,
+      selectedAppreciationWindow,
+      propertyTypeLabel: propertyTypeLabelValue,
+      localCrimeRate: localCrimeRatePerThousand,
+      ukCrimeRate: UK_CRIME_RATE_PER_1000,
+    };
+  }, [
+    inputs,
+    selectedPropertyType?.value,
+    selectedPropertyType?.label,
+    effectiveAppreciationRate,
+    manualAppreciationRate,
+    datasetAppreciationRate,
+    datasetTwentyYearAverage,
+    selectedAppreciationWindow,
+    localCrimeRatePerThousand,
+  ]);
+  const equity = useMemo(() => calculateEquity(calculationInputs), [calculationInputs]);
 
   const scenarioTableData = useMemo(
     () =>
@@ -4405,7 +4939,9 @@ export default function App() {
 
 
   const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
-  const appreciationRate = Number(inputs.annualAppreciation) || 0;
+  const appreciationRate = Number.isFinite(equity.effectiveAnnualAppreciation)
+    ? equity.effectiveAnnualAppreciation
+    : Number(inputs.annualAppreciation) || 0;
   const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
   const appreciationFactor = 1 + appreciationRate;
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
@@ -4500,6 +5036,24 @@ export default function App() {
 
   const waitingForGeocode = hasPropertyAddress && geocodeState.status === 'loading';
   const crimeSummary = crimeState.data;
+  const crimeMetrics = useMemo(() => {
+    if (!crimeSummary) {
+      return { ratePerThousand: null, areaSqKm: null, estimatedPopulation: null, annualisedIncidents: null };
+    }
+    const incidents = Number(crimeSummary.totalIncidents ?? 0);
+    if (!Number.isFinite(incidents) || incidents < 0) {
+      return { ratePerThousand: null, areaSqKm: null, estimatedPopulation: null, annualisedIncidents: null };
+    }
+    const area = estimateCrimeAreaSqKm(crimeSummary.mapBounds);
+    const safeArea = Number.isFinite(area) && area > 0 ? Math.max(area, MIN_CRIME_AREA_SQKM) : MIN_CRIME_AREA_SQKM;
+    const estimatedPopulation = Math.max(safeArea * UK_AVG_POP_DENSITY_PER_SQKM, MIN_CRIME_POPULATION_ESTIMATE);
+    const annualisedIncidents = incidents * 12;
+    const ratePerThousand = estimatedPopulation > 0 ? annualisedIncidents / (estimatedPopulation / 1000) : null;
+    return { ratePerThousand, areaSqKm: safeArea, estimatedPopulation, annualisedIncidents };
+  }, [crimeSummary]);
+  const localCrimeRatePerThousand = Number.isFinite(crimeMetrics.ratePerThousand)
+    ? crimeMetrics.ratePerThousand
+    : null;
   const hasCrimeIncidents = crimeState.status === 'success' && Boolean(crimeSummary);
   const crimeLoading = crimeState.status === 'loading';
   const crimeError = crimeState.status === 'error' ? crimeState.error : '';
@@ -5320,7 +5874,9 @@ export default function App() {
     const roiValue = totalCashRequiredValue > 0 ? propertyNetValue / totalCashRequiredValue - 1 : 0;
     const efficiencyValue =
       Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue) ? irrValue * propertyNetAfterTaxValue : 0;
-    const appreciationRateValue = Number(inputs.annualAppreciation) || 0;
+    const appreciationRateValue = Number.isFinite(equity.effectiveAnnualAppreciation)
+      ? equity.effectiveAnnualAppreciation
+      : Number(inputs.annualAppreciation) || 0;
     const rentGrowthRateValue = Number(inputs.rentGrowth) || 0;
     const scoreValue = Number(equity.score) || 0;
     const scoreMaxValue = Number.isFinite(equity.scoreMax) ? Number(equity.scoreMax) : TOTAL_SCORE_MAX;
@@ -5429,6 +5985,7 @@ export default function App() {
     equity.annualPrincipal,
     equity.annualDebtService,
     inputs.depositPct,
+    equity.effectiveAnnualAppreciation,
     inputs.annualAppreciation,
     inputs.rentGrowth,
     propertyNetAfterTaxLabel,
@@ -5460,12 +6017,16 @@ export default function App() {
 
     const scoreValue = clamp(Number.isFinite(scoreValueRaw) ? scoreValueRaw : 0, 0, scoreMax);
 
+    const excellentThreshold = scoreMax * 0.85;
+    const goodThreshold = scoreMax * 0.65;
+    const poorThreshold = scoreMax * 0.45;
+
     let ratingKey = 'ok';
-    if (scoreValue >= 85) {
+    if (scoreValue >= excellentThreshold) {
       ratingKey = 'excellent';
-    } else if (scoreValue >= 65) {
+    } else if (scoreValue >= goodThreshold) {
       ratingKey = 'good';
-    } else if (scoreValue < 45) {
+    } else if (scoreValue < poorThreshold) {
       ratingKey = 'poor';
     }
 
@@ -5578,8 +6139,68 @@ export default function App() {
         className: toneToClass(npvComponent?.tone ?? (npvValue > 0 ? 'positive' : npvValue < 0 ? 'negative' : 'neutral')),
       });
     }
+    const growthComponent = componentFor('propertyGrowth');
+    if (growthComponent) {
+      chips.push({
+        label: 'Market growth',
+        value:
+          growthComponent.displayValue ??
+          (Number.isFinite(equity.propertyGrowthAverage20)
+            ? formatPercent(equity.propertyGrowthAverage20)
+            : '—'),
+        className: toneToClass(growthComponent.tone ?? 'neutral'),
+      });
+    }
+    const crimeComponent = componentFor('crimeSafety');
+    if (crimeComponent) {
+      chips.push({
+        label: 'Local safety',
+        value:
+          crimeComponent.displayValue ??
+          (Number.isFinite(equity.localCrimeRatePerThousand)
+            ? formatPerThousand(equity.localCrimeRatePerThousand)
+            : '—'),
+        className: toneToClass(crimeComponent.tone ?? 'neutral'),
+      });
+    }
+    const dscrComponent = componentFor('dscr');
+    if (dscrComponent) {
+      chips.push({
+        label: 'DSCR',
+        value: dscrComponent.displayValue ?? (Number.isFinite(equity.dscr) ? equity.dscr.toFixed(2) : '—'),
+        className: toneToClass(dscrComponent.tone ?? 'neutral'),
+      });
+    }
+    const ltvComponent = componentFor('ltv');
+    if (ltvComponent) {
+      chips.push({
+        label: 'LTV',
+        value: ltvComponent.displayValue ?? (Number.isFinite(equity.ltv) ? formatPercent(equity.ltv) : '—'),
+        className: toneToClass(ltvComponent.tone ?? 'neutral'),
+      });
+    }
+    const roiComponent = componentFor('roi');
+    if (roiComponent) {
+      chips.push({
+        label: 'Total ROI',
+        value: roiComponent.displayValue ?? (Number.isFinite(equity.roi) ? formatPercent(equity.roi) : '—'),
+        className: toneToClass(roiComponent.tone ?? 'neutral'),
+      });
+    }
 
-    const visuals = ['irr', 'irrHurdle', 'cashOnCash', 'cashflow', 'cashInvested', 'npv']
+    const visuals = [
+      'irr',
+      'irrHurdle',
+      'cashOnCash',
+      'cashflow',
+      'cashInvested',
+      'npv',
+      'propertyGrowth',
+      'crimeSafety',
+      'dscr',
+      'ltv',
+      'roi',
+    ]
       .map((key) => {
         const component = componentFor(key);
         if (!component) {
@@ -5934,13 +6555,20 @@ export default function App() {
     const share2 = roundTo(inputs.ownershipShare2 * 100, 2).toFixed(2);
     const lines = [
       `Property address: ${inputs.propertyAddress || 'Not provided'}`,
+      `Property type: ${selectedPropertyType?.label ?? 'Not specified'}`,
       `Property URL: ${inputs.propertyUrl || 'Not provided'}`,
       `Buyer type: ${inputs.buyerType} (properties owned: ${inputs.propertiesOwned})`,
       `Purchase price: ${currency(inputs.purchasePrice)}; deposit: ${formatPercent(inputs.depositPct)}; closing costs: ${formatPercent(inputs.closingCostsPct)}; renovation: ${currency(inputs.renovationCost)}`,
       `Loan: ${inputs.loanType} over ${inputs.mortgageYears} years at ${formatPercent(inputs.interestRate)}`,
       `Rent: ${currency(inputs.monthlyRent)} /mo; vacancy: ${formatPercent(inputs.vacancyPct)}; management: ${formatPercent(inputs.mgmtPct)}; repairs: ${formatPercent(inputs.repairsPct)}`,
       `Insurance: ${currency(inputs.insurancePerYear)}; other OpEx: ${currency(inputs.otherOpexPerYear)}`,
-      `Growth assumptions: appreciation ${formatPercent(inputs.annualAppreciation)}, rent growth ${formatPercent(inputs.rentGrowth)}, index fund ${formatPercent(inputs.indexFundGrowth)}`,
+      `Growth assumptions: appreciation ${formatPercent(
+        equity.effectiveAnnualAppreciation
+      )}${
+        useDatasetAppreciation
+          ? ` (historical ${selectedAppreciationWindow}-yr avg for ${selectedPropertyType?.label})`
+          : ''
+      }, rent growth ${formatPercent(inputs.rentGrowth)}, index fund ${formatPercent(inputs.indexFundGrowth)}`,
       `Exit year: ${inputs.exitYear}; selling costs: ${formatPercent(inputs.sellingCostsPct)}; discount rate: ${formatPercent(inputs.discountRate)}`,
       `Household incomes: ${currency(inputs.incomePerson1)} (${share1}%) and ${currency(inputs.incomePerson2)} (${share2}%)`,
       `Reinvest after-tax cash flow: ${inputs.reinvestIncome ? `${formatPercent(inputs.reinvestPct)} of after-tax cash` : 'No reinvestment'}`,
@@ -6941,6 +7569,11 @@ export default function App() {
                     <li>Year-one after-tax cash flow (up to {SCORE_COMPONENT_CONFIG.cashflow.maxPoints} points).</li>
                     <li>Cash invested efficiency (up to {SCORE_COMPONENT_CONFIG.cashInvested.maxPoints} points).</li>
                     <li>Discounted NPV contribution (up to {SCORE_COMPONENT_CONFIG.npv.maxPoints} points).</li>
+                    <li>Market growth resilience (up to {SCORE_COMPONENT_CONFIG.propertyGrowth.maxPoints} points).</li>
+                    <li>Local safety versus UK average (up to {SCORE_COMPONENT_CONFIG.crimeSafety.maxPoints} points).</li>
+                    <li>Debt coverage (DSCR) strength (up to {SCORE_COMPONENT_CONFIG.dscr.maxPoints} points).</li>
+                    <li>Leverage health (LTV) (up to {SCORE_COMPONENT_CONFIG.ltv.maxPoints} points).</li>
+                    <li>Total ROI delivered (up to {SCORE_COMPONENT_CONFIG.roi.maxPoints} points).</li>
                   </ul>
                   <p className="mt-2 text-slate-500">
                     Points are summed across the components and clipped between 0 and {TOTAL_SCORE_MAX}.
@@ -7002,6 +7635,25 @@ export default function App() {
                     <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
                     <div>{stepperInput('bedrooms', 'Bedrooms', { min: 0, step: 1 })}</div>
                     <div>{stepperInput('bathrooms', 'Bathrooms', { min: 0, step: 1 })}</div>
+                    <div className="flex flex-col gap-1 md:col-span-2">
+                      <label className="text-xs font-medium text-slate-600">Property type</label>
+                      <select
+                        value={selectedPropertyType?.value ?? DEFAULT_PROPERTY_TYPE}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            propertyType: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+                      >
+                        {PROPERTY_TYPE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                     <div className="flex flex-col gap-1 md:col-span-2">
                     <label className="text-xs font-medium text-slate-600">Property URL</label>
                     <div className="flex items-center gap-2">
@@ -7289,6 +7941,63 @@ export default function App() {
                   {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
                   {pctInput('annualAppreciation', 'Appreciation %')}
                   {pctInput('rentGrowth', 'Rent growth %')}
+                  <div className="col-span-2 rounded-xl border border-slate-200 p-3">
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(inputs.useHistoricalAppreciation)}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            useHistoricalAppreciation: event.target.checked && datasetAppreciationRate !== null,
+                          }))
+                        }
+                        disabled={propertyGrowthState.status !== 'success' || datasetAppreciationRate === null}
+                      />
+                      <span>
+                        Use {selectedAppreciationWindow}-year UK average for {selectedPropertyType?.label}
+                      </span>
+                    </label>
+                    <div className="mt-2 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <div className="text-[11px] text-slate-500">
+                        {propertyGrowthState.status === 'loading'
+                          ? 'Loading national property price data…'
+                          : propertyGrowthState.status === 'error'
+                          ? propertyGrowthState.error
+                          : datasetAppreciationRate !== null
+                          ? `Historical average: ${formatPercent(datasetAppreciationRate)} per year.`
+                          : 'Historical average unavailable for this property type.'}
+                        {datasetTwentyYearAverage !== null ? (
+                          <span className="ml-2 text-[10px] uppercase tracking-wide text-slate-400">
+                            20-yr mean: {formatPercent(datasetTwentyYearAverage)}
+                            {propertyGrowthLatestYear ? ` · Data through ${propertyGrowthLatestYear}` : ''}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                        <span>Window</span>
+                        <select
+                          value={selectedAppreciationWindow}
+                          onChange={(event) =>
+                            setInputs((prev) => ({
+                              ...prev,
+                              historicalAppreciationWindow: Number(event.target.value) || PROPERTY_GROWTH_WINDOWS[0],
+                            }))
+                          }
+                          className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                        >
+                          {PROPERTY_GROWTH_WINDOWS.map((window) => (
+                            <option key={window} value={window}>{`${window} year${window === 1 ? '' : 's'}`}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    {inputs.useHistoricalAppreciation && datasetAppreciationRate === null ? (
+                      <p className="mt-2 text-[11px] text-amber-600">
+                        Historical averages are not available for the selected configuration; manual appreciation will be used.
+                      </p>
+                    ) : null}
+                  </div>
                   {pctInput('indexFundGrowth', 'Index fund growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
                   {pctInput('sellingCostsPct', 'Selling costs %')}
@@ -7493,6 +8202,21 @@ export default function App() {
                   value={currency(equity.npv)}
                   tooltip={KEY_RATIO_TOOLTIPS.npv}
                   knowledgeKey="npv"
+                />
+                <Line
+                  label="Capital growth (model)"
+                  value={formatPercent(equity.effectiveAnnualAppreciation)}
+                  tooltip={KEY_RATIO_TOOLTIPS.growthModel}
+                  knowledgeKey="annualAppreciation"
+                />
+                <Line
+                  label="Local crime rate"
+                  value={
+                    Number.isFinite(localCrimeRatePerThousand)
+                      ? formatPerThousand(localCrimeRatePerThousand)
+                      : '—'
+                  }
+                  tooltip={`${KEY_RATIO_TOOLTIPS.crimeRate} UK average ${formatPerThousand(UK_CRIME_RATE_PER_1000)}.`}
                 />
                 <Line
                   label="Mortgage pmt (mo)"
