@@ -159,7 +159,15 @@ const PROPERTY_TYPE_COLUMN_LOOKUP = PROPERTY_TYPE_OPTIONS.reduce((acc, option) =
   return acc;
 }, {});
 
-const PROPERTY_PRICE_REGION = 'United Kingdom';
+const COUNTRY_REGION_SYNONYMS = {
+  uk: 'united kingdom',
+  'u.k.': 'united kingdom',
+  gb: 'united kingdom',
+  'great britain': 'united kingdom',
+  britain: 'united kingdom',
+  'united kingdom of great britain and northern ireland': 'united kingdom',
+};
+
 const PROPERTY_APPRECIATION_WINDOWS = [1, 5, 10, 20];
 const DEFAULT_APPRECIATION_WINDOW = 5;
 const UK_ANNUAL_CRIME_PER_1000 = 79.2;
@@ -422,6 +430,7 @@ const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
   const state = getAddressComponent(address, ['state']);
   const postcode = getAddressComponent(address, ['postcode']);
   const country = getAddressComponent(address, ['country']);
+  const countryCode = getAddressComponent(address, ['country_code']);
 
   const propertyLine = [building, road].filter(Boolean).join(' ').trim();
   const localityLine = locality ? locality : '';
@@ -469,7 +478,17 @@ const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
   const summary = summaryParts.length > 0 ? summaryParts.join(', ') : summaryFallback;
   const query = queryParts.length > 0 ? queryParts.join(', ') : summary || summaryFallback;
 
-  return { summary, query, bounds, postcode, city, county };
+  return {
+    summary,
+    query,
+    bounds,
+    postcode,
+    city,
+    county,
+    state,
+    country,
+    countryCode,
+  };
 };
 
 const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, signal }) => {
@@ -1986,6 +2005,7 @@ function scoreDeal({
   propertyGrowth20Year,
   propertyGrowthWindowRate,
   propertyGrowthWindowYears,
+  propertyGrowthSource,
   propertyTypeLabel,
   localCrimeRatePerThousand,
   ukCrimeRatePerThousand,
@@ -2293,7 +2313,8 @@ function scoreDeal({
         windowRate !== null
           ? ` Recent ${windowYears}-year CAGR sits at ${formatPercent(windowRate)}.`
           : '';
-      growthExplanation = `UK Land Registry data shows a ${formatPercent(longRunRate)} CAGR for ${
+      const growthSource = propertyGrowthSource || 'Historical market data';
+      growthExplanation = `${growthSource} shows a ${formatPercent(longRunRate)} CAGR for ${
         propertyTypeLabel || 'this property type'
       } over the past 20 years.${windowPart}`;
     }
@@ -2496,34 +2517,39 @@ function calculatePropertyCagr(series, years) {
   return Math.pow(ratio, 1 / yearSpan) - 1;
 }
 
-function buildPropertyGrowthStats(records, { region = PROPERTY_PRICE_REGION } = {}) {
-  if (!Array.isArray(records) || records.length === 0) {
-    return {};
+function normalizeRegionKey(value) {
+  if (typeof value !== 'string') {
+    return '';
   }
-  const filtered = records.filter((row) => row.region === region);
-  if (filtered.length === 0) {
-    return {};
+  return value.trim().toLowerCase();
+}
+
+function canonicalizeRegionKey(value) {
+  const normalized = normalizeRegionKey(value);
+  if (!normalized) {
+    return '';
   }
-  const seriesByType = PROPERTY_TYPE_OPTIONS.reduce((acc, option) => {
+  return COUNTRY_REGION_SYNONYMS[normalized] ?? normalized;
+}
+
+function createEmptyPropertySeries() {
+  return PROPERTY_TYPE_OPTIONS.reduce((acc, option) => {
     acc[option.value] = [];
     return acc;
   }, {});
-  filtered.forEach((row) => {
-    PROPERTY_TYPE_OPTIONS.forEach((option) => {
-      const value = row.values[option.value];
-      if (Number.isFinite(value) && value > 0) {
-        seriesByType[option.value].push({ date: row.date, price: value });
-      }
-    });
-  });
+}
+
+function computePropertyStatsFromSeries(seriesByType) {
+  if (!seriesByType || typeof seriesByType !== 'object') {
+    return {};
+  }
   const stats = {};
-  Object.entries(seriesByType).forEach(([key, series]) => {
-    if (!Array.isArray(series) || series.length === 0) {
+  Object.entries(seriesByType).forEach(([key, rawSeries]) => {
+    if (!Array.isArray(rawSeries) || rawSeries.length === 0) {
       return;
     }
-    const sortedSeries = series
-      .slice()
-      .filter((entry) => Number.isFinite(entry.price) && entry.price > 0)
+    const sortedSeries = rawSeries
+      .filter((entry) => entry && entry.date instanceof Date && Number.isFinite(entry.price) && entry.price > 0)
       .sort((a, b) => a.date.getTime() - b.date.getTime());
     if (sortedSeries.length === 0) {
       return;
@@ -2539,6 +2565,87 @@ function buildPropertyGrowthStats(records, { region = PROPERTY_PRICE_REGION } = 
     stats[key] = { series: sortedSeries, latest, cagr };
   });
   return stats;
+}
+
+function buildPropertyGrowthStatsIndex(records) {
+  if (!Array.isArray(records) || records.length === 0) {
+    return { regions: {}, global: { label: '', stats: {} } };
+  }
+
+  const regionSeriesMap = new Map();
+  const totalsByDate = new Map();
+
+  records.forEach((row) => {
+    if (!row || !(row.date instanceof Date)) {
+      return;
+    }
+    const regionKey = typeof row.region === 'string' ? row.region.trim() : '';
+    if (regionKey) {
+      const canonicalKey = canonicalizeRegionKey(regionKey);
+      if (canonicalKey) {
+        let seriesByType = regionSeriesMap.get(canonicalKey);
+        if (!seriesByType) {
+          seriesByType = { label: regionKey, series: createEmptyPropertySeries() };
+          regionSeriesMap.set(canonicalKey, seriesByType);
+        }
+        PROPERTY_TYPE_OPTIONS.forEach((option) => {
+          const price = row.values?.[option.value];
+          if (Number.isFinite(price) && price > 0) {
+            seriesByType.series[option.value].push({ date: row.date, price });
+          }
+        });
+      }
+    }
+
+    const dateKey = row.date.getTime();
+    let totals = totalsByDate.get(dateKey);
+    if (!totals) {
+      totals = {
+        date: row.date,
+        sums: {},
+        counts: {},
+      };
+      totalsByDate.set(dateKey, totals);
+    }
+    PROPERTY_TYPE_OPTIONS.forEach((option) => {
+      const price = row.values?.[option.value];
+      if (Number.isFinite(price) && price > 0) {
+        totals.sums[option.value] = (totals.sums[option.value] ?? 0) + price;
+        totals.counts[option.value] = (totals.counts[option.value] ?? 0) + 1;
+      }
+    });
+  });
+
+  const regions = {};
+  regionSeriesMap.forEach((entry, canonicalKey) => {
+    const stats = computePropertyStatsFromSeries(entry.series);
+    if (Object.keys(stats).length > 0) {
+      regions[canonicalKey] = { label: entry.label, stats };
+    }
+  });
+
+  const averageSeries = createEmptyPropertySeries();
+  totalsByDate.forEach(({ date, sums, counts }) => {
+    PROPERTY_TYPE_OPTIONS.forEach((option) => {
+      const count = counts[option.value] ?? 0;
+      if (count > 0) {
+        averageSeries[option.value].push({
+          date,
+          price: sums[option.value] / count,
+        });
+      }
+    });
+  });
+
+  const globalStats = computePropertyStatsFromSeries(averageSeries);
+
+  return {
+    regions,
+    global: {
+      label: 'Dataset average',
+      stats: globalStats,
+    },
+  };
 }
 
 function getControlDisplayValue(node) {
@@ -3079,6 +3186,7 @@ function calculateEquity(rawInputs) {
     propertyGrowthWindowYears: Number.isFinite(inputs.propertyGrowthWindowYears)
       ? inputs.propertyGrowthWindowYears
       : null,
+    propertyGrowthSource: propertyGrowthRegionSummary,
     propertyTypeLabel: typeof inputs.propertyTypeLabel === 'string' ? inputs.propertyTypeLabel : '',
     localCrimeRatePerThousand: Number.isFinite(inputs.localCrimeRatePerThousand)
       ? inputs.localCrimeRatePerThousand
@@ -3369,8 +3477,8 @@ export default function App() {
           return;
         }
         const parsed = parsePropertyPriceCsv(text);
-        const stats = buildPropertyGrowthStats(parsed);
-        setPropertyPriceState({ status: 'success', data: { records: parsed, stats }, error: '' });
+        const statsIndex = buildPropertyGrowthStatsIndex(parsed);
+        setPropertyPriceState({ status: 'success', data: { records: parsed, statsIndex }, error: '' });
       } catch (error) {
         if (error?.name === 'AbortError') {
           return;
@@ -3393,12 +3501,76 @@ export default function App() {
     };
   }, []);
 
-  const propertyPriceStats = useMemo(() => {
+  const propertyAddress = (inputs.propertyAddress ?? '').trim();
+  const hasPropertyAddress = propertyAddress !== '';
+  const geocodeLat = Number(geocodeState.data?.lat);
+  const geocodeLon = Number(geocodeState.data?.lon);
+  const geocodeDisplayName = geocodeState.data?.displayName ?? '';
+  const geocodeAddressDetails = useMemo(
+    () => resolveGeocodeAddressDetails(geocodeState.data, propertyAddress),
+    [geocodeState.data, propertyAddress]
+  );
+  const geocodeLocationSummary = geocodeAddressDetails.summary;
+  const geocodeAddressQuery = geocodeAddressDetails.query;
+  const geocodeBounds = geocodeAddressDetails.bounds;
+  const geocodePostcode = geocodeAddressDetails.postcode;
+  const geocodeStateName = geocodeAddressDetails.state;
+  const geocodeCountry = geocodeAddressDetails.country;
+  const geocodeCountryCode = geocodeAddressDetails.countryCode;
+
+  const propertyPriceStatsSelection = useMemo(() => {
     if (propertyPriceState.status !== 'success') {
-      return {};
+      return { stats: {}, label: '', fallback: true };
     }
-    return propertyPriceState.data?.stats ?? {};
-  }, [propertyPriceState]);
+    const statsIndex = propertyPriceState.data?.statsIndex;
+    if (!statsIndex || typeof statsIndex !== 'object') {
+      return { stats: {}, label: '', fallback: true };
+    }
+    const regions = statsIndex.regions ?? {};
+    const globalEntry = statsIndex.global ?? { label: '', stats: {} };
+    const seen = new Set();
+    const candidateKeys = [];
+    const pushCandidate = (value) => {
+      const canonical = canonicalizeRegionKey(value);
+      if (!canonical || seen.has(canonical)) {
+        return;
+      }
+      seen.add(canonical);
+      candidateKeys.push(canonical);
+    };
+    if (geocodeCountry) {
+      pushCandidate(geocodeCountry);
+    }
+    if (geocodeStateName) {
+      pushCandidate(geocodeStateName);
+    }
+    if (geocodeCountryCode) {
+      pushCandidate(geocodeCountryCode);
+      const mapped = COUNTRY_REGION_SYNONYMS[normalizeRegionKey(geocodeCountryCode)];
+      if (mapped) {
+        pushCandidate(mapped);
+      }
+    }
+    for (const canonicalKey of candidateKeys) {
+      const regionEntry = regions[canonicalKey];
+      if (regionEntry?.stats && Object.keys(regionEntry.stats).length > 0) {
+        return {
+          stats: regionEntry.stats,
+          label: regionEntry.label ?? canonicalKey,
+          fallback: false,
+        };
+      }
+    }
+    return {
+      stats: globalEntry?.stats ?? {},
+      label: globalEntry?.label ?? '',
+      fallback: true,
+    };
+  }, [propertyPriceState, geocodeCountry, geocodeCountryCode, geocodeStateName]);
+
+  const propertyPriceStats = propertyPriceStatsSelection.stats;
+  const propertyGrowthRegionLabel = propertyPriceStatsSelection.label;
+  const propertyGrowthRegionIsFallback = propertyPriceStatsSelection.fallback;
 
   const propertyTypeOption = useMemo(() => {
     const selectedValue = typeof inputs.propertyType === 'string' ? inputs.propertyType : '';
@@ -3423,6 +3595,15 @@ export default function App() {
   const propertyGrowthStatus = propertyPriceState.status;
   const propertyGrowthLoading = propertyGrowthStatus === 'loading';
   const propertyGrowthError = propertyGrowthStatus === 'error' ? propertyPriceState.error || '' : '';
+  const propertyGrowthRegionSummary = (() => {
+    if (propertyGrowthRegionIsFallback) {
+      return propertyGrowthRegionLabel || 'Dataset average';
+    }
+    if (propertyGrowthRegionLabel) {
+      return `${propertyGrowthRegionLabel} market data`;
+    }
+    return '';
+  })();
   const propertyGrowthLatestLabel = propertyGrowthLatestDate
     ? propertyGrowthLatestDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
     : '';
@@ -3437,6 +3618,9 @@ export default function App() {
   const historicalToggleChecked = useHistoricalAppreciation && propertyGrowthWindowRateValue !== null;
   const propertyGrowthLatestSummary = (() => {
     const parts = [];
+    if (propertyGrowthRegionSummary) {
+      parts.push(propertyGrowthRegionSummary);
+    }
     if (propertyGrowthLatestLabel) {
       parts.push(`latest data ${propertyGrowthLatestLabel}`);
     }
@@ -3482,20 +3666,6 @@ export default function App() {
       );
     }
   }, [inputs.useHistoricalAppreciation, propertyGrowthLoading, propertyGrowthWindowRateValue, setInputs]);
-  const propertyAddress = (inputs.propertyAddress ?? '').trim();
-  const hasPropertyAddress = propertyAddress !== '';
-  const geocodeLat = Number(geocodeState.data?.lat);
-  const geocodeLon = Number(geocodeState.data?.lon);
-  const geocodeDisplayName = geocodeState.data?.displayName ?? '';
-  const geocodeAddressDetails = useMemo(
-    () => resolveGeocodeAddressDetails(geocodeState.data, propertyAddress),
-    [geocodeState.data, propertyAddress]
-  );
-  const geocodeLocationSummary = geocodeAddressDetails.summary;
-  const geocodeAddressQuery = geocodeAddressDetails.query;
-  const geocodeBounds = geocodeAddressDetails.bounds;
-  const geocodePostcode = geocodeAddressDetails.postcode;
-
   const remoteAvailable = remoteEnabled && authStatus === 'ready';
 
   function applyUiState(uiState) {
@@ -7672,18 +7842,18 @@ export default function App() {
                       </select>
                       <p className="mt-1 text-[11px] text-slate-500">
                         {propertyGrowthLoading
-                          ? 'Loading UK market data…'
+                          ? 'Loading market data…'
                           : propertyGrowthError
                           ? `Market data unavailable: ${propertyGrowthError}`
                           : propertyGrowth20YearValue !== null
-                          ? `UK Land Registry${propertyGrowthLatestLabel ? ` (${propertyGrowthLatestLabel})` : ''} 20-year CAGR: ${formatPercent(
-                              propertyGrowth20YearValue
-                            )}${
+                          ? `${propertyGrowthRegionSummary || 'Market data'}${
+                              propertyGrowthLatestLabel ? ` (${propertyGrowthLatestLabel})` : ''
+                            } 20-year CAGR: ${formatPercent(propertyGrowth20YearValue)}${
                               propertyGrowthWindowRateValue !== null
                                 ? ` · ${sanitizedHistoricalWindow}-year CAGR: ${formatPercent(propertyGrowthWindowRateValue)}`
                                 : ''
                             }${propertyGrowthLatestPriceLabel ? ` · Latest avg price ${propertyGrowthLatestPriceLabel}` : ''}.`
-                          : 'Historical UK growth data not available for this property type.'}
+                          : 'Historical growth data not available for this property type.'}
                       </p>
                     </div>
                     <div>{stepperInput('bedrooms', 'Bedrooms', { min: 0, step: 1 })}</div>
