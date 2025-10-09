@@ -3186,7 +3186,8 @@ function calculateEquity(rawInputs) {
     propertyGrowthWindowYears: Number.isFinite(inputs.propertyGrowthWindowYears)
       ? inputs.propertyGrowthWindowYears
       : null,
-    propertyGrowthSource: propertyGrowthRegionSummary,
+    propertyGrowthSource:
+      typeof inputs.propertyGrowthSource === 'string' ? inputs.propertyGrowthSource : '',
     propertyTypeLabel: typeof inputs.propertyTypeLabel === 'string' ? inputs.propertyTypeLabel : '',
     localCrimeRatePerThousand: Number.isFinite(inputs.localCrimeRatePerThousand)
       ? inputs.localCrimeRatePerThousand
@@ -4558,6 +4559,7 @@ export default function App() {
       propertyGrowthWindowRate: derivedRate,
       propertyGrowth20Year: longRunRate,
       propertyTypeLabel,
+      propertyGrowthSource: propertyGrowthRegionSummary,
       localCrimeRatePerThousand: crimeRateValue,
       ukCrimeRatePerThousand: UK_ANNUAL_CRIME_PER_1000,
     };
@@ -4569,6 +4571,7 @@ export default function App() {
     derivedHistoricalRate,
     longTermGrowthRate,
     propertyTypeLabel,
+    propertyGrowthRegionSummary,
     localCrimeAnnualRatePerThousand,
   ]);
 
