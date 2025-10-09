@@ -1369,7 +1369,7 @@ const KNOWLEDGE_METRICS = {
     unit: 'currency',
   },
   mortgagePackageFee: {
-    label: 'Mortgage package fee',
+    label: 'Mortgage fee',
     groups: ['cashNeeded'],
     description: 'Upfront lender or broker fee charged to arrange the mortgage.',
     calculation: 'User-entered flat fee paid at completion.',
@@ -2981,7 +2981,6 @@ function calculateEquity(rawInputs) {
       if (month === monthsToModel) {
         annualDebtService[yearIndex] += bridgingAmount;
         annualPrincipal[yearIndex] += bridgingAmount;
-        annualBridgingDebtService[yearIndex] += bridgingAmount;
       }
     }
   }
@@ -3657,6 +3656,18 @@ export default function App() {
   const geocodeStateName = geocodeAddressDetails.state;
   const geocodeCountry = geocodeAddressDetails.country;
   const geocodeCountryCode = geocodeAddressDetails.countryCode;
+  const storedPropertyLat = Number(inputs.propertyLatitude);
+  const storedPropertyLon = Number(inputs.propertyLongitude);
+  const crimeLat = Number.isFinite(storedPropertyLat)
+    ? storedPropertyLat
+    : Number.isFinite(geocodeLat)
+    ? geocodeLat
+    : null;
+  const crimeLon = Number.isFinite(storedPropertyLon)
+    ? storedPropertyLon
+    : Number.isFinite(geocodeLon)
+    ? geocodeLon
+    : null;
 
   const propertyPriceStatsSelection = useMemo(() => {
     if (propertyPriceState.status !== 'success') {
@@ -4415,7 +4426,7 @@ export default function App() {
       return;
     }
 
-    if (!Number.isFinite(geocodeLat) || !Number.isFinite(geocodeLon)) {
+    if (!Number.isFinite(crimeLat) || !Number.isFinite(crimeLon)) {
       if (geocodeState.status === 'error') {
         setCrimeState({
           status: 'error',
@@ -4489,8 +4500,8 @@ export default function App() {
           return params;
         };
 
-        const latParam = formatCoordinate(geocodeLat);
-        const lonParam = formatCoordinate(geocodeLon);
+        const latParam = formatCoordinate(crimeLat);
+        const lonParam = formatCoordinate(crimeLon);
 
         const baseParams = createCrimeParams({
           lat: latParam,
@@ -4581,8 +4592,8 @@ export default function App() {
         if (!finalCrimeData) {
           try {
             const neighbourhood = await fetchNeighbourhoodBoundary({
-              lat: geocodeLat,
-              lon: geocodeLon,
+              lat: crimeLat,
+              lon: crimeLon,
               postcode: geocodePostcode,
               addressQuery: geocodeAddressQuery,
               signal: controller.signal,
@@ -4629,15 +4640,15 @@ export default function App() {
           lastUpdatedMonth || (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '')
         );
         const summary = summarizeCrimeData(finalCrimeData, {
-          lat: geocodeLat,
-          lon: geocodeLon,
+          lat: crimeLat,
+          lon: crimeLon,
           month,
           lastUpdated: normalizeCrimeMonth(lastUpdatedDate) || lastUpdatedDate,
           fallbackLocationName: geocodeLocationSummary || geocodeDisplayName || propertyAddress,
           mapBoundsOverride: summaryBoundsHint ?? geocodeBounds,
           mapCenterOverride:
-            Number.isFinite(geocodeLat) && Number.isFinite(geocodeLon)
-              ? { lat: geocodeLat, lon: geocodeLon }
+            Number.isFinite(crimeLat) && Number.isFinite(crimeLon)
+              ? { lat: crimeLat, lon: crimeLon }
               : null,
         });
         if (!controller.signal.aborted) {
@@ -4671,8 +4682,8 @@ export default function App() {
     };
   }, [
     hasPropertyAddress,
-    geocodeLat,
-    geocodeLon,
+    crimeLat,
+    crimeLon,
     geocodeDisplayName,
     geocodeLocationSummary,
     propertyAddress,
@@ -5433,22 +5444,20 @@ export default function App() {
   const crimeIncidentsCount = crimeSummary?.totalIncidents ?? 0;
   const crimeHasRecordedIncidents = crimeIncidentsCount > 0;
   const crimeMapCenter = useMemo(() => {
+    const fallbackLat = Number.isFinite(crimeLat) ? crimeLat : null;
+    const fallbackLon = Number.isFinite(crimeLon) ? crimeLon : null;
     const lat = Number.isFinite(crimeSummary?.mapCenter?.lat)
       ? crimeSummary.mapCenter.lat
-      : Number.isFinite(geocodeLat)
-      ? geocodeLat
-      : null;
+      : fallbackLat;
     const lon = Number.isFinite(crimeSummary?.mapCenter?.lon)
       ? crimeSummary.mapCenter.lon
-      : Number.isFinite(geocodeLon)
-      ? geocodeLon
-      : null;
+      : fallbackLon;
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
       return null;
     }
     const zoom = Number.isFinite(crimeSummary?.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14;
     return { lat, lon, zoom };
-  }, [crimeSummary, geocodeLat, geocodeLon]);
+  }, [crimeSummary, crimeLat, crimeLon]);
 
   const crimeMapEmbedUrl = useMemo(() => {
     if (!crimeMapCenter) {
@@ -8366,7 +8375,7 @@ export default function App() {
                   {pctInput('closingCostsPct', 'Other closing costs %')}
                   {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
                   {moneyInput('renovationCost', 'Renovation (upfront) £', 500)}
-                  {moneyInput('mortgagePackageFee', 'Mortgage package fee (£)', 100)}
+                  {moneyInput('mortgagePackageFee', 'Mortgage fee (£)', 100)}
                   {smallInput('mortgageYears', 'Mortgage term (years)')}
 
                   <div className="col-span-2">
@@ -8507,7 +8516,7 @@ export default function App() {
                           }))
                         }
                       />
-                      <span>Reinvest after-tax cash flow into index fund</span>
+                      <span>Send after-tax cash to index fund</span>
                     </label>
                     {inputs.reinvestIncome && (
                       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 sm:items-center">
@@ -8574,7 +8583,7 @@ export default function App() {
                   knowledgeKey="closingCosts"
                 />
                 <Line
-                  label="Mortgage package fee"
+                  label="Mortgage fee"
                   value={currency(equity.packageFees)}
                   knowledgeKey="mortgagePackageFee"
                 />
@@ -8592,19 +8601,10 @@ export default function App() {
                       knowledgeKey="totalCashRequired"
                     />
                     <Line
-                      label="Cash required from investor"
-                      value={currency(
-                        Number.isFinite(equity.initialCashOutlay)
-                          ? equity.initialCashOutlay
-                          : equity.cashIn
-                      )}
-                      bold
-                      knowledgeKey="netCashIn"
+                      label="Bridging loan"
+                      value={currency(equity.bridgingLoanAmount)}
+                      knowledgeKey="bridgingLoanAmount"
                     />
-                    <p className="mt-2 text-[11px] text-slate-500">
-                      Deposit funded via bridging facility of {currency(equity.bridgingLoanAmount)};
-                      mortgage payments resume after the bridge period.
-                    </p>
                   </>
                 ) : (
                   <Line
