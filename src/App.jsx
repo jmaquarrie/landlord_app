@@ -1052,18 +1052,22 @@ const DEFAULT_INPUTS = {
   ownershipShare2: 0.5,
   reinvestIncome: false,
   reinvestPct: 0.5,
+  deductOperatingExpenses: true,
 };
 
-const EXTRA_SETTING_KEYS = ['discountRate', 'irrHurdle', 'indexFundGrowth'];
+const EXTRA_SETTINGS_DEFAULTS = {
+  discountRate: Number.isFinite(DEFAULT_INPUTS.discountRate) ? Number(DEFAULT_INPUTS.discountRate) : 0,
+  irrHurdle: Number.isFinite(DEFAULT_INPUTS.irrHurdle) ? Number(DEFAULT_INPUTS.irrHurdle) : 0,
+  indexFundGrowth: Number.isFinite(DEFAULT_INPUTS.indexFundGrowth)
+    ? Number(DEFAULT_INPUTS.indexFundGrowth)
+    : DEFAULT_INDEX_GROWTH,
+  deductOperatingExpenses: true,
+};
+
+const EXTRA_SETTING_KEYS = Object.keys(EXTRA_SETTINGS_DEFAULTS);
 const EXTRA_SETTINGS_STORAGE_KEY = 'landlord-extra-settings-v1';
 
-const getDefaultExtraSettings = () => {
-  const defaults = {};
-  EXTRA_SETTING_KEYS.forEach((key) => {
-    defaults[key] = Number.isFinite(DEFAULT_INPUTS[key]) ? Number(DEFAULT_INPUTS[key]) : 0;
-  });
-  return defaults;
-};
+const getDefaultExtraSettings = () => ({ ...EXTRA_SETTINGS_DEFAULTS });
 
 const loadStoredExtraSettings = () => {
   const defaults = getDefaultExtraSettings();
@@ -1078,8 +1082,25 @@ const loadStoredExtraSettings = () => {
     const parsed = JSON.parse(raw);
     const next = { ...defaults };
     EXTRA_SETTING_KEYS.forEach((key) => {
-      const value = Number(parsed?.[key]);
-      next[key] = Number.isFinite(value) ? value : defaults[key];
+      const defaultValue = defaults[key];
+      const storedValue = parsed?.[key];
+      if (typeof defaultValue === 'boolean') {
+        if (typeof storedValue === 'boolean') {
+          next[key] = storedValue;
+        } else if (typeof storedValue === 'string') {
+          const lowered = storedValue.toLowerCase();
+          if (lowered === 'true') {
+            next[key] = true;
+          } else if (lowered === 'false') {
+            next[key] = false;
+          }
+        } else if (storedValue === 1 || storedValue === 0) {
+          next[key] = Boolean(storedValue);
+        }
+      } else {
+        const value = Number(storedValue);
+        next[key] = Number.isFinite(value) ? value : defaultValue;
+      }
     });
     return next;
   } catch (error) {
@@ -2944,6 +2965,7 @@ function calculateEquity(rawInputs) {
   const shareTotal = sharePct1 + sharePct2;
   const normalizedShare1 = shareTotal > 0 ? sharePct1 / shareTotal : 0.5;
   const normalizedShare2 = shareTotal > 0 ? sharePct2 / shareTotal : 0.5;
+  const deductOperatingExpensesForTax = inputs.deductOperatingExpenses !== false;
 
   const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
   const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
@@ -3155,7 +3177,8 @@ function calculateEquity(rawInputs) {
 
     const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
     const principalPaid = annualPrincipal[y - 1] ?? (inputs.loanType === 'interest_only' ? 0 : debtService - interestPaid);
-    const taxableProfit = noi - interestPaid;
+    const taxableBase = deductOperatingExpensesForTax ? noi : gross;
+    const taxableProfit = taxableBase - interestPaid;
     let propertyTax = 0;
     if (isCompanyBuyer) {
       propertyTax = roundTo(Math.max(0, taxableProfit) * 0.19, 2);
@@ -4161,7 +4184,10 @@ export default function App() {
       const payload = {};
       EXTRA_SETTING_KEYS.forEach((key) => {
         const value = extraSettings[key];
-        if (Number.isFinite(value)) {
+        const defaultValue = EXTRA_SETTINGS_DEFAULTS[key];
+        if (typeof defaultValue === 'boolean') {
+          payload[key] = typeof value === 'boolean' ? value : defaultValue;
+        } else if (Number.isFinite(value)) {
           payload[key] = value;
         }
       });
@@ -4176,8 +4202,14 @@ export default function App() {
       const defaults = getDefaultExtraSettings();
       const next = {};
       EXTRA_SETTING_KEYS.forEach((key) => {
-        const value = Number(extraSettings[key]);
-        next[key] = Number.isFinite(value) ? value : defaults[key];
+        const defaultValue = defaults[key];
+        if (typeof defaultValue === 'boolean') {
+          const value = extraSettings[key];
+          next[key] = typeof value === 'boolean' ? value : defaultValue;
+        } else {
+          const value = Number(extraSettings[key]);
+          next[key] = Number.isFinite(value) ? value : defaultValue;
+        }
       });
       const previous = prev ?? {};
       const changed = EXTRA_SETTING_KEYS.some((key) => next[key] !== previous[key]);
@@ -4192,10 +4224,19 @@ export default function App() {
     setInputs((prev) => {
       let changed = false;
       const next = { ...prev };
+      const defaults = getDefaultExtraSettings();
       EXTRA_SETTING_KEYS.forEach((key) => {
-        const value = extraSettings[key];
-        if (Number.isFinite(value) && next[key] !== value) {
-          next[key] = value;
+        const defaultValue = defaults[key];
+        let normalized = defaultValue;
+        if (typeof defaultValue === 'boolean') {
+          const value = extraSettings[key];
+          normalized = typeof value === 'boolean' ? value : defaultValue;
+        } else {
+          const value = Number(extraSettings[key]);
+          normalized = Number.isFinite(value) ? value : defaultValue;
+        }
+        if (next[key] !== normalized) {
+          next[key] = normalized;
           changed = true;
         }
       });
@@ -7453,14 +7494,26 @@ export default function App() {
     if (!EXTRA_SETTING_KEYS.includes(key)) {
       return;
     }
-    const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
-    setPendingExtraSettings((prev) => {
-      if (prev[key] === rounded) {
+    const defaultValue = EXTRA_SETTINGS_DEFAULTS[key];
+    let nextValue = defaultValue;
+    if (typeof defaultValue === 'boolean') {
+      nextValue = Boolean(value);
+    } else {
+      const numeric = Number(value);
+      nextValue = Number.isFinite(numeric) ? roundTo(numeric, decimals) : defaultValue;
+    }
+    setPendingExtraSettings((prev = {}) => {
+      if (prev[key] === nextValue) {
         return prev;
       }
-      return { ...prev, [key]: rounded };
+      return { ...prev, [key]: nextValue };
     });
-    setInputs((prev) => ({ ...prev, [key]: rounded }));
+    setInputs((prev) => {
+      if (prev[key] === nextValue) {
+        return prev;
+      }
+      return { ...prev, [key]: nextValue };
+    });
   };
 
   const handleSaveExtraSettings = () => {
@@ -7470,18 +7523,52 @@ export default function App() {
     const defaults = getDefaultExtraSettings();
     const payload = {};
     EXTRA_SETTING_KEYS.forEach((key) => {
-      const value = Number(pendingExtraSettings?.[key]);
-      payload[key] = Number.isFinite(value) ? value : defaults[key];
+      const defaultValue = defaults[key];
+      const pendingValue = pendingExtraSettings?.[key];
+      if (typeof defaultValue === 'boolean') {
+        if (typeof pendingValue === 'boolean') {
+          payload[key] = pendingValue;
+        } else if (typeof pendingValue === 'string') {
+          const lowered = pendingValue.toLowerCase();
+          if (lowered === 'true') {
+            payload[key] = true;
+          } else if (lowered === 'false') {
+            payload[key] = false;
+          } else {
+            payload[key] = defaultValue;
+          }
+        } else if (pendingValue === 1 || pendingValue === 0) {
+          payload[key] = Boolean(pendingValue);
+        } else if (pendingValue === undefined) {
+          payload[key] = defaultValue;
+        } else {
+          payload[key] = Boolean(pendingValue);
+        }
+      } else {
+        const value = Number(pendingValue);
+        payload[key] = Number.isFinite(value) ? roundTo(value, 6) : defaultValue;
+      }
     });
     setExtraSettings(payload);
   };
 
   const extraSettingsDirty = useMemo(() => {
+    const defaults = getDefaultExtraSettings();
     return EXTRA_SETTING_KEYS.some((key) => {
+      const defaultValue = defaults[key];
+      if (typeof defaultValue === 'boolean') {
+        const pending =
+          typeof pendingExtraSettings?.[key] === 'boolean'
+            ? pendingExtraSettings[key]
+            : defaultValue;
+        const saved =
+          typeof extraSettings?.[key] === 'boolean' ? extraSettings[key] : defaultValue;
+        return pending !== saved;
+      }
       const pendingValue = Number(pendingExtraSettings?.[key]);
       const savedValue = Number(extraSettings?.[key]);
-      const pending = Number.isFinite(pendingValue) ? pendingValue : 0;
-      const saved = Number.isFinite(savedValue) ? savedValue : 0;
+      const pending = Number.isFinite(pendingValue) ? pendingValue : defaultValue;
+      const saved = Number.isFinite(savedValue) ? savedValue : defaultValue;
       return Math.abs(pending - saved) > 1e-6;
     });
   }, [extraSettings, pendingExtraSettings]);
@@ -8698,6 +8785,25 @@ export default function App() {
                     {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
                     {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
                     {extraSettingPctInput('indexFundGrowth', 'Index fund growth %')}
+                    <div className="sm:col-span-2 rounded-xl border border-slate-200 p-3">
+                      <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(pendingExtraSettings?.deductOperatingExpenses)}
+                          onChange={(event) =>
+                            handlePendingExtraSettingChange(
+                              'deductOperatingExpenses',
+                              event.target.checked
+                            )
+                          }
+                        />
+                        <span>Treat operating expenses as tax deductible</span>
+                      </label>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        When enabled, annual operating costs reduce taxable rental profit before
+                        calculating income or corporation tax.
+                      </p>
+                    </div>
                   </div>
                   <div className="mt-3 flex flex-col gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-[11px] text-slate-600">
