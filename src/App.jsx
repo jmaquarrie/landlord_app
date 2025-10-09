@@ -23,16 +23,24 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
+const currencyNoPence = (value) =>
+  Number.isFinite(value)
+    ? value.toLocaleString(undefined, {
+        style: 'currency',
+        currency: 'GBP',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+      })
+    : '–';
 const currencyThousands = (value) => {
   if (!isFinite(value)) {
     return '–';
   }
   const negative = value < 0;
   const absoluteThousands = Math.abs(value) / 1000;
-  const maximumFractionDigits = absoluteThousands >= 100 ? 0 : absoluteThousands >= 10 ? 1 : 2;
   const formatted = absoluteThousands.toLocaleString(undefined, {
     minimumFractionDigits: 0,
-    maximumFractionDigits,
+    maximumFractionDigits: 0,
   });
   return `${negative ? '−' : ''}£${formatted}k`;
 };
@@ -1009,11 +1017,12 @@ const roundTo = (value, decimals = 2) => {
   return Math.round((value + Number.EPSILON) * factor) / factor;
 };
 
-const formatPercent = (value) => {
+const formatPercent = (value, decimals = 2) => {
   if (!Number.isFinite(value)) {
     return '—';
   }
-  return `${roundTo(value * 100, 2).toFixed(2)}%`;
+  const safeDecimals = Math.max(0, Math.min(4, Math.floor(decimals)));
+  return `${roundTo(value * 100, safeDecimals).toFixed(safeDecimals)}%`;
 };
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -1074,12 +1083,26 @@ const decodeSharePayload = (value) => {
 
 const SCORE_TOOLTIPS = {
   overall:
-    'Score blends cash-on-cash return, cap rate, debt service coverage, discounted net present value, and year-one after-tax cash flow into a 0-100 composite.',
+    'Score blends IRR strength, performance versus your hurdle, cash-on-cash return, year-one after-tax cash flow, total cash invested, and discounted net present value into a 0-100 composite.',
   delta:
     'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
   deltaAfterTax:
     'After-tax wealth delta compares property net proceeds plus after-tax cash flow (and reinvested fund) to the index alternative at exit, using income or corporation tax depending on buyer type.',
 };
+
+const SCORE_COMPONENT_CONFIG = {
+  irr: { label: 'IRR', maxPoints: 25 },
+  irrHurdle: { label: 'IRR hurdle', maxPoints: 15 },
+  cashOnCash: { label: 'Cash-on-cash', maxPoints: 20 },
+  cashflow: { label: 'Year 1 after-tax cash', maxPoints: 10 },
+  cashInvested: { label: 'Cash invested', maxPoints: 10 },
+  npv: { label: 'NPV', maxPoints: 20 },
+};
+
+const TOTAL_SCORE_MAX = Object.values(SCORE_COMPONENT_CONFIG).reduce(
+  (total, component) => total + component.maxPoints,
+  0
+);
 
 const INVESTMENT_PROFILE_RATINGS = {
   excellent: {
@@ -1116,13 +1139,20 @@ const INVESTMENT_PROFILE_CHIP_TONES = {
   neutral: 'border-slate-200 bg-slate-50 text-slate-600',
 };
 
+const INVESTMENT_PROFILE_BAR_TONES = {
+  positive: 'bg-emerald-500',
+  warning: 'bg-amber-500',
+  negative: 'bg-rose-500',
+  neutral: 'bg-slate-500',
+};
+
 const SECTION_DESCRIPTIONS = {
   cashNeeded:
     'Breaks down the upfront funds required to close the purchase, including deposit, stamp duty, closing costs, and renovation spend.',
   performance:
     'Shows rent, operating expenses, debt service, taxes, and cash flow for the selected hold year so you can compare annual performance.',
   keyRatios:
-    'Highlights core deal ratios such as cap rate, yield on cost, cash-on-cash return, DSCR, monthly mortgage payment, and IRR across the modeled hold period.',
+    'Highlights core deal ratios such as cap rate, rental yield, yield on cost, cash-on-cash return, IRR, monthly mortgage payment, and discounted net present value across the modeled hold period.',
   exit:
     'Projects future value, remaining loan balance, selling costs, and estimated equity at the chosen exit year.',
   npv:
@@ -1157,6 +1187,7 @@ const KEY_RATIO_TOOLTIPS = {
   dscr: 'Debt service coverage ratio: Year 1 NOI divided by annual debt service.',
   mortgage: 'Estimated monthly mortgage payment for the modeled loan.',
   irr: 'Internal rate of return based on annual cash flows and sale proceeds through the modeled exit year.',
+  npv: 'Discounted net present value of after-tax cash flow plus exit proceeds through your modelled hold period.',
 };
 
 const KNOWLEDGE_GROUPS = {
@@ -1913,14 +1944,243 @@ const shortenUrlWithShortIo = async (originalUrl) => {
   }
 };
 
-function scoreDeal({ coc, cap, dscr, npv, cashflowYear1 }) {
-  let s = 0;
-  s += Math.min(40, coc * 100 * 1.2);
-  s += Math.min(25, cap * 100 * 0.8);
-  s += Math.min(15, Math.max(0, (dscr - 1) * 25));
-  s += Math.min(15, Math.max(0, npv / 20000));
-  s += Math.min(5, Math.max(0, cashflowYear1 / 1000));
-  return Math.max(0, Math.min(100, s));
+function scoreDeal({
+  irr,
+  irrHurdle,
+  cashOnCash,
+  cashflowYear1AfterTax,
+  cashInvested,
+  purchasePrice,
+  npv,
+}) {
+  const components = {};
+  let total = 0;
+
+  const addComponent = (key, component) => {
+    const config = SCORE_COMPONENT_CONFIG[key];
+    if (!config) {
+      return;
+    }
+    const maxPoints = config.maxPoints;
+    const clampedPoints = clamp(Number(component.points) || 0, 0, maxPoints);
+    const tone = component.tone || deriveToneFromScore(clampedPoints, maxPoints);
+    components[key] = {
+      key,
+      label: config.label,
+      maxPoints,
+      points: clampedPoints,
+      value: component.value ?? null,
+      displayValue: component.displayValue ?? '',
+      explanation: component.explanation || '',
+      tone,
+    };
+    total += clampedPoints;
+  };
+
+  const deriveToneFromScore = (points, maxPoints) => {
+    if (!Number.isFinite(points) || !Number.isFinite(maxPoints) || maxPoints <= 0) {
+      return 'neutral';
+    }
+    const ratio = points / maxPoints;
+    if (ratio >= 0.75) {
+      return 'positive';
+    }
+    if (ratio >= 0.45) {
+      return 'neutral';
+    }
+    if (ratio <= 0.15) {
+      return 'negative';
+    }
+    return 'warning';
+  };
+
+  const irrConfig = SCORE_COMPONENT_CONFIG.irr;
+  let irrPoints = 0;
+  let irrExplanation = 'IRR not available.';
+  if (Number.isFinite(irr)) {
+    if (irr >= 0.2) {
+      irrPoints = irrConfig.maxPoints;
+    } else if (irr >= 0.15) {
+      irrPoints = irrConfig.maxPoints * 0.88;
+    } else if (irr >= 0.12) {
+      irrPoints = irrConfig.maxPoints * 0.72;
+    } else if (irr >= 0.1) {
+      irrPoints = irrConfig.maxPoints * 0.56;
+    } else if (irr >= 0.08) {
+      irrPoints = irrConfig.maxPoints * 0.36;
+    } else if (irr > 0) {
+      irrPoints = irrConfig.maxPoints * 0.16;
+    } else {
+      irrPoints = 0;
+    }
+    irrExplanation = `Projected IRR of ${formatPercent(irr)} influences the score based on absolute return strength.`;
+  }
+  addComponent('irr', {
+    points: irrPoints,
+    value: irr,
+    displayValue: formatPercent(irr),
+    explanation: irrExplanation,
+  });
+
+  const hurdleConfig = SCORE_COMPONENT_CONFIG.irrHurdle;
+  const hurdleBenchmark = Number.isFinite(irrHurdle) && irrHurdle > 0 ? irrHurdle : 0.08;
+  let hurdlePoints = 0;
+  let hurdleExplanation = '';
+  if (!Number.isFinite(irr)) {
+    hurdleExplanation = 'IRR comparison unavailable, so no hurdle points awarded.';
+  } else {
+    const delta = irr - hurdleBenchmark;
+    if (delta >= 0.05) {
+      hurdlePoints = hurdleConfig.maxPoints;
+      hurdleExplanation = `IRR exceeds your ${formatPercent(hurdleBenchmark)} hurdle by ${formatPercent(delta, 2)}.`;
+    } else if (delta >= 0.02) {
+      hurdlePoints = hurdleConfig.maxPoints * 0.8;
+      hurdleExplanation = `IRR clears the ${formatPercent(hurdleBenchmark)} hurdle by ${formatPercent(delta, 2)}.`;
+    } else if (delta >= 0) {
+      hurdlePoints = hurdleConfig.maxPoints * 0.6;
+      hurdleExplanation = `IRR meets your ${formatPercent(hurdleBenchmark)} hurdle.`;
+    } else if (delta >= -0.02) {
+      hurdlePoints = hurdleConfig.maxPoints * 0.33;
+      hurdleExplanation = `IRR is just below the ${formatPercent(hurdleBenchmark)} hurdle (short by ${formatPercent(Math.abs(delta), 2)}).`;
+    } else {
+      hurdlePoints = 0;
+      hurdleExplanation = `IRR falls well short of the ${formatPercent(hurdleBenchmark)} hurdle (short by ${formatPercent(Math.abs(delta), 2)}).`;
+    }
+  }
+  if (!Number.isFinite(irrHurdle) || irrHurdle <= 0) {
+    hurdleExplanation += ' Using a default 8% benchmark for comparison.';
+  }
+  addComponent('irrHurdle', {
+    points: hurdlePoints,
+    value: hurdleBenchmark,
+    displayValue: formatPercent(hurdleBenchmark),
+    explanation: hurdleExplanation.trim(),
+  });
+
+  const cashOnCashConfig = SCORE_COMPONENT_CONFIG.cashOnCash;
+  let cocPoints = 0;
+  let cocExplanation = 'Cash-on-cash return unavailable.';
+  if (Number.isFinite(cashOnCash)) {
+    if (cashOnCash >= 0.2) {
+      cocPoints = cashOnCashConfig.maxPoints;
+    } else if (cashOnCash >= 0.15) {
+      cocPoints = cashOnCashConfig.maxPoints * 0.85;
+    } else if (cashOnCash >= 0.1) {
+      cocPoints = cashOnCashConfig.maxPoints * 0.7;
+    } else if (cashOnCash >= 0.08) {
+      cocPoints = cashOnCashConfig.maxPoints * 0.5;
+    } else if (cashOnCash >= 0.05) {
+      cocPoints = cashOnCashConfig.maxPoints * 0.3;
+    } else if (cashOnCash > 0) {
+      cocPoints = cashOnCashConfig.maxPoints * 0.15;
+    } else {
+      cocPoints = 0;
+    }
+    cocExplanation = `Year-one cash-on-cash of ${formatPercent(cashOnCash)} contributes proportionally to the score.`;
+  }
+  addComponent('cashOnCash', {
+    points: cocPoints,
+    value: cashOnCash,
+    displayValue: formatPercent(cashOnCash),
+    explanation: cocExplanation,
+  });
+
+  const cashflowConfig = SCORE_COMPONENT_CONFIG.cashflow;
+  let cashflowPoints = 0;
+  let cashflowExplanation = 'After-tax cash flow unavailable.';
+  if (Number.isFinite(cashflowYear1AfterTax)) {
+    if (cashflowYear1AfterTax >= 10000) {
+      cashflowPoints = cashflowConfig.maxPoints;
+    } else if (cashflowYear1AfterTax >= 6000) {
+      cashflowPoints = cashflowConfig.maxPoints * 0.8;
+    } else if (cashflowYear1AfterTax >= 3000) {
+      cashflowPoints = cashflowConfig.maxPoints * 0.6;
+    } else if (cashflowYear1AfterTax >= 0) {
+      cashflowPoints = cashflowConfig.maxPoints * 0.4;
+    } else if (cashflowYear1AfterTax >= -2000) {
+      cashflowPoints = cashflowConfig.maxPoints * 0.2;
+    } else {
+      cashflowPoints = 0;
+    }
+    const direction = cashflowYear1AfterTax >= 0 ? 'positive' : 'negative';
+    cashflowExplanation = `Year-one after-tax cash flow of ${currency(cashflowYear1AfterTax)} (${direction}) feeds into the score.`;
+  }
+  addComponent('cashflow', {
+    points: cashflowPoints,
+    value: cashflowYear1AfterTax,
+    displayValue: currency(cashflowYear1AfterTax),
+    explanation: cashflowExplanation,
+  });
+
+  const cashInvestedConfig = SCORE_COMPONENT_CONFIG.cashInvested;
+  let cashInvestedPoints = 0;
+  let cashInvestedExplanation = 'Cash invested not available.';
+  const investedValue = Number.isFinite(cashInvested) ? cashInvested : null;
+  const priceValue = Number.isFinite(purchasePrice) && purchasePrice > 0 ? purchasePrice : null;
+  if (investedValue !== null) {
+    if (priceValue) {
+      const ratio = investedValue / priceValue;
+      if (ratio <= 0.2) {
+        cashInvestedPoints = cashInvestedConfig.maxPoints;
+      } else if (ratio <= 0.3) {
+        cashInvestedPoints = cashInvestedConfig.maxPoints * 0.8;
+      } else if (ratio <= 0.4) {
+        cashInvestedPoints = cashInvestedConfig.maxPoints * 0.6;
+      } else if (ratio <= 0.5) {
+        cashInvestedPoints = cashInvestedConfig.maxPoints * 0.4;
+      } else {
+        cashInvestedPoints = cashInvestedConfig.maxPoints * 0.2;
+      }
+      cashInvestedExplanation = `Cash invested of ${currency(investedValue)} represents ${formatPercent(ratio, 0)} of the price.`;
+    } else {
+      if (investedValue <= 40000) {
+        cashInvestedPoints = cashInvestedConfig.maxPoints * 0.8;
+      } else if (investedValue <= 80000) {
+        cashInvestedPoints = cashInvestedConfig.maxPoints * 0.5;
+      } else {
+        cashInvestedPoints = cashInvestedConfig.maxPoints * 0.25;
+      }
+      cashInvestedExplanation = `Cash invested of ${currency(investedValue)} is considered when pricing leverage efficiency.`;
+    }
+  }
+  addComponent('cashInvested', {
+    points: cashInvestedPoints,
+    value: investedValue,
+    displayValue: investedValue !== null ? currency(investedValue) : '—',
+    explanation: cashInvestedExplanation,
+  });
+
+  const npvConfig = SCORE_COMPONENT_CONFIG.npv;
+  let npvPoints = 0;
+  let npvExplanation = 'NPV unavailable.';
+  if (Number.isFinite(npv)) {
+    if (npv >= 100000) {
+      npvPoints = npvConfig.maxPoints;
+    } else if (npv >= 50000) {
+      npvPoints = npvConfig.maxPoints * 0.8;
+    } else if (npv >= 20000) {
+      npvPoints = npvConfig.maxPoints * 0.6;
+    } else if (npv >= 0) {
+      npvPoints = npvConfig.maxPoints * 0.4;
+    } else if (npv >= -20000) {
+      npvPoints = npvConfig.maxPoints * 0.2;
+    } else {
+      npvPoints = 0;
+    }
+    npvExplanation = `Discounted NPV of ${currency(npv)} adjusts the score toward long-term value creation.`;
+  }
+  addComponent('npv', {
+    points: npvPoints,
+    value: npv,
+    displayValue: currency(npv),
+    explanation: npvExplanation,
+  });
+
+  return {
+    total: clamp(total, 0, TOTAL_SCORE_MAX),
+    max: TOTAL_SCORE_MAX,
+    components,
+  };
 }
 
 function badgeColor(score) {
@@ -2472,7 +2732,19 @@ function calculateEquity(rawInputs) {
   }
 
   const npvValue = npv(inputs.discountRate, npvCashflows);
-  const score = scoreDeal({ cap, coc, dscr, npv: npvValue, cashflowYear1 });
+  const irrValue = irr(cf);
+  const propertyTaxYear1 = propertyTaxes[0] ?? 0;
+  const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
+  const scoreResult = scoreDeal({
+    irr: irrValue,
+    irrHurdle: irrHurdleValue,
+    cashOnCash: coc,
+    cashflowYear1AfterTax,
+    cashInvested: cashIn,
+    purchasePrice: inputs.purchasePrice,
+    npv: npvValue,
+  });
+  const score = scoreResult.total;
 
   const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
   const propertyGrossWealthAtExit = futureValue + exitCumCash;
@@ -2482,9 +2754,7 @@ function calculateEquity(rawInputs) {
   const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTax;
   const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
   const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
-  const propertyTaxYear1 = propertyTaxes[0] ?? 0;
-  const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
-  const irrValue = irr(cf);
+  
 
   return {
     deposit,
@@ -2509,6 +2779,8 @@ function calculateEquity(rawInputs) {
     sellingCosts,
     npv: npvValue,
     score,
+    scoreMax: scoreResult.max,
+    scoreComponents: scoreResult.components,
     cf,
     chart,
     cashIn,
@@ -4522,14 +4794,14 @@ export default function App() {
             />
             <YAxis
               yAxisId="cash"
-              tickFormatter={(value) => currency(value)}
+              tickFormatter={(value) => currencyNoPence(value)}
               tick={{ fontSize: 10, fill: '#475569' }}
               width={88}
             />
             <YAxis
               yAxisId="discount"
               orientation="right"
-              tickFormatter={(value) => formatPercent(value)}
+              tickFormatter={(value) => formatPercent(value, 0)}
               tick={{ fontSize: 10, fill: '#475569' }}
               width={56}
               domain={[0, (dataMax) => Math.max(1, Number(dataMax) || 0)]}
@@ -5051,6 +5323,7 @@ export default function App() {
     const appreciationRateValue = Number(inputs.annualAppreciation) || 0;
     const rentGrowthRateValue = Number(inputs.rentGrowth) || 0;
     const scoreValue = Number(equity.score) || 0;
+    const scoreMaxValue = Number.isFinite(equity.scoreMax) ? Number(equity.scoreMax) : TOTAL_SCORE_MAX;
 
     return {
       deposit: { value: depositValue, formatted: currency(depositValue) },
@@ -5079,7 +5352,7 @@ export default function App() {
       mortgagePayment: { value: mortgagePaymentValue, formatted: currency(mortgagePaymentValue) },
       npvToDate: { value: npvValue, formatted: currency(npvValue) },
       discountRateSetting: { value: discountRateSettingValue, formatted: formatPercent(discountRateSettingValue) },
-      score: { value: scoreValue, formatted: `${Math.round(scoreValue)} / 100` },
+      score: { value: scoreValue, formatted: `${Math.round(scoreValue)} / ${Math.round(scoreMaxValue)}` },
       npvInitialOutlay: { value: initialOutlayValue, formatted: currency(initialOutlayValue) },
       npvSaleProceeds: { value: exitSaleProceedsValue, formatted: currency(exitSaleProceedsValue) },
       npvCumulativeCash: { value: cumulativeUndiscountedValue, formatted: currency(cumulativeUndiscountedValue) },
@@ -5135,6 +5408,8 @@ export default function App() {
     equity.irr,
     inputs.irrHurdle,
     inputs.discountRate,
+    equity.score,
+    equity.scoreMax,
     equity.dscr,
     equity.mortgage,
     equity.npv,
@@ -5171,48 +5446,26 @@ export default function App() {
     const cashInValue = Number(equity.cashIn);
     const afterTaxCashValue = Number(equity.cashflowYear1AfterTax);
     const discountRateValue = Number(inputs.discountRate);
-    const baseScoreValue = Number(equity.score);
+    const scoreValueRaw = Number(equity.score);
+    const scoreMax = Number.isFinite(equity.scoreMax) ? Number(equity.scoreMax) : TOTAL_SCORE_MAX;
+    const scoreComponents = equity.scoreComponents || {};
     const hasSignals =
-      Number.isFinite(irrValue) || Number.isFinite(cocValue) || Number.isFinite(npvValue);
+      Number.isFinite(scoreValueRaw) ||
+      Number.isFinite(irrValue) ||
+      Number.isFinite(cocValue) ||
+      Number.isFinite(npvValue);
     if (!hasSignals) {
       return null;
     }
 
-    const irrBenchmark = Number.isFinite(irrHurdleValue) && irrHurdleValue > 0 ? irrHurdleValue : 0.08;
-    let compositeScore = Number.isFinite(baseScoreValue) ? baseScoreValue : 0;
-
-    if (Number.isFinite(irrValue)) {
-      if (irrValue >= irrBenchmark + 0.04) {
-        compositeScore += 10;
-      } else if (irrValue >= irrBenchmark) {
-        compositeScore += 5;
-      } else if (irrValue >= irrBenchmark - 0.02) {
-        compositeScore -= 5;
-      } else {
-        compositeScore -= 15;
-      }
-    } else {
-      compositeScore -= 5;
-    }
-
-    if (Number.isFinite(npvValue)) {
-      if (npvValue > 50000) {
-        compositeScore += 5;
-      } else if (npvValue > 0) {
-        compositeScore += 3;
-      } else if (npvValue < 0) {
-        compositeScore -= 8;
-      }
-    }
-
-    compositeScore = clamp(compositeScore, 0, 100);
+    const scoreValue = clamp(Number.isFinite(scoreValueRaw) ? scoreValueRaw : 0, 0, scoreMax);
 
     let ratingKey = 'ok';
-    if (compositeScore >= 85) {
+    if (scoreValue >= 85) {
       ratingKey = 'excellent';
-    } else if (compositeScore >= 65) {
+    } else if (scoreValue >= 65) {
       ratingKey = 'good';
-    } else if (compositeScore < 45) {
+    } else if (scoreValue < 45) {
       ratingKey = 'poor';
     }
 
@@ -5226,9 +5479,8 @@ export default function App() {
       if (Number.isFinite(irrHurdleValue) && irrHurdleValue > 0) {
         const gap = irrValue - irrHurdleValue;
         if (gap > 0.0005) {
-          const gapText = gap > 0.0005 ? ` by ${formatPercent(gap)}` : '';
           sentences.push(
-            `Projected IRR of ${formatPercent(irrValue)} clears your ${formatPercent(irrHurdleValue)} hurdle${gapText}.`
+            `Projected IRR of ${formatPercent(irrValue)} clears your ${formatPercent(irrHurdleValue)} hurdle by ${formatPercent(gap, 2)}.`
           );
         } else if (Math.abs(gap) <= 0.0005) {
           sentences.push(
@@ -5236,7 +5488,7 @@ export default function App() {
           );
         } else {
           sentences.push(
-            `Projected IRR of ${formatPercent(irrValue)} sits ${formatPercent(Math.abs(gap))} below your ${formatPercent(
+            `Projected IRR of ${formatPercent(irrValue)} sits ${formatPercent(Math.abs(gap), 2)} below your ${formatPercent(
               irrHurdleValue
             )} hurdle.`
           );
@@ -5264,82 +5516,90 @@ export default function App() {
       sentences.push(`Discounting cash flows at ${rateText} yields an NPV of ${currency(npvValue)}, ${direction}.`);
     }
 
-    const roundedComposite = Math.round(compositeScore);
-    const baseScoreRounded = Number.isFinite(baseScoreValue) ? Math.round(baseScoreValue) : null;
-    let closing = `Overall these signals point to a ${ratingLabel} profile with an investment score of ${roundedComposite}/100`;
-    if (baseScoreRounded !== null && baseScoreRounded !== roundedComposite) {
-      closing += ` (base score ${baseScoreRounded}/100).`;
-    } else {
-      closing += '.';
-    }
-    sentences.push(closing);
+    sentences.push(
+      `Overall these signals point to a ${ratingLabel} profile with an investment score of ${Math.round(
+        scoreValue
+      )}/${Math.round(scoreMax)}.`
+    );
 
     const summary = sentences.filter(Boolean).join(' ');
 
+    const toneToClass = (tone) =>
+      INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral;
+
+    const componentFor = (key) => scoreComponents?.[key] ?? null;
+
     const chips = [];
+    const irrComponent = componentFor('irr');
     if (Number.isFinite(irrValue)) {
-      let tone = 'neutral';
-      if (irrValue >= irrBenchmark + 0.02) {
-        tone = 'positive';
-      } else if (irrValue >= irrBenchmark) {
-        tone = 'positive';
-      } else if (irrValue >= irrBenchmark - 0.01) {
-        tone = 'warning';
-      } else {
-        tone = 'negative';
-      }
       chips.push({
         label: 'IRR',
-        value: formatPercent(irrValue),
-        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+        value: irrComponent?.displayValue ?? formatPercent(irrValue),
+        className: toneToClass(irrComponent?.tone ?? 'neutral'),
       });
     }
+    const hurdleComponent = componentFor('irrHurdle');
     if (Number.isFinite(irrHurdleValue) && irrHurdleValue > 0) {
-      const tone = Number.isFinite(irrValue) && irrValue < irrHurdleValue ? 'warning' : 'neutral';
       chips.push({
         label: 'IRR hurdle',
-        value: formatPercent(irrHurdleValue),
-        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+        value: hurdleComponent?.displayValue ?? formatPercent(irrHurdleValue),
+        className: toneToClass(hurdleComponent?.tone ?? (Number.isFinite(irrValue) && irrValue < irrHurdleValue ? 'warning' : 'neutral')),
       });
     }
+    const cocComponent = componentFor('cashOnCash');
     if (Number.isFinite(cocValue)) {
-      const tone = cocValue >= 0.1 ? 'positive' : cocValue >= 0.06 ? 'neutral' : 'warning';
       chips.push({
         label: 'Cash-on-cash',
-        value: formatPercent(cocValue),
-        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+        value: cocComponent?.displayValue ?? formatPercent(cocValue),
+        className: toneToClass(cocComponent?.tone ?? (cocValue >= 0.1 ? 'positive' : cocValue >= 0.06 ? 'neutral' : 'warning')),
       });
     }
+    const cashflowComponent = componentFor('cashflow');
     if (Number.isFinite(afterTaxCashValue)) {
-      const tone = afterTaxCashValue >= 0 ? 'positive' : 'negative';
       chips.push({
         label: 'Year 1 after-tax cash',
-        value: currency(afterTaxCashValue),
-        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+        value: cashflowComponent?.displayValue ?? currency(afterTaxCashValue),
+        className: toneToClass(cashflowComponent?.tone ?? (afterTaxCashValue >= 0 ? 'positive' : 'negative')),
       });
     }
-    if (Number.isFinite(cashInValue) && cashInValue > 0) {
+    const investedComponent = componentFor('cashInvested');
+    if (Number.isFinite(cashInValue) && cashInValue !== 0) {
       chips.push({
         label: 'Cash invested',
-        value: currency(cashInValue),
-        className: INVESTMENT_PROFILE_CHIP_TONES.neutral,
+        value: investedComponent?.displayValue ?? currency(cashInValue),
+        className: toneToClass(investedComponent?.tone ?? 'neutral'),
       });
     }
+    const npvComponent = componentFor('npv');
     if (Number.isFinite(npvValue)) {
-      const tone = npvValue > 0 ? 'positive' : npvValue < 0 ? 'negative' : 'neutral';
       chips.push({
         label: 'NPV',
-        value: currency(npvValue),
-        className: INVESTMENT_PROFILE_CHIP_TONES[tone] ?? INVESTMENT_PROFILE_CHIP_TONES.neutral,
+        value: npvComponent?.displayValue ?? currency(npvValue),
+        className: toneToClass(npvComponent?.tone ?? (npvValue > 0 ? 'positive' : npvValue < 0 ? 'negative' : 'neutral')),
       });
     }
-    if (Number.isFinite(baseScoreValue)) {
-      chips.push({
-        label: 'Base score',
-        value: `${Math.round(baseScoreValue)} / 100`,
-        className: INVESTMENT_PROFILE_CHIP_TONES.neutral,
-      });
-    }
+
+    const visuals = ['irr', 'irrHurdle', 'cashOnCash', 'cashflow', 'cashInvested', 'npv']
+      .map((key) => {
+        const component = componentFor(key);
+        if (!component) {
+          return null;
+        }
+        const fillPercent = component.maxPoints > 0 ? clamp((component.points / component.maxPoints) * 100, 0, 100) : 0;
+        const totalContribution = scoreMax > 0 ? (component.points / scoreMax) * 100 : 0;
+        return {
+          key,
+          label: component.label,
+          displayValue: component.displayValue || component.value || '—',
+          points: Math.round(component.points),
+          maxPoints: component.maxPoints,
+          explanation: component.explanation || '',
+          tone: component.tone || 'neutral',
+          fillPercent,
+          contributionPercent: clamp(totalContribution, 0, 100),
+        };
+      })
+      .filter(Boolean);
 
     return {
       ratingKey,
@@ -5347,12 +5607,13 @@ export default function App() {
       panelClass: ratingConfig.panelClass,
       badgeClass: ratingConfig.badgeClass,
       headline,
-      compositeScore,
-      baseScore: Number.isFinite(baseScoreValue) ? baseScoreValue : null,
+      score: scoreValue,
+      scoreMax,
       summary,
       chips,
+      visuals,
     };
-  }, [equity, inputs.discountRate, inputs.irrHurdle]);
+  }, [equity, equity.score, equity.scoreComponents, equity.scoreMax, inputs.discountRate, inputs.irrHurdle]);
 
   const knowledgeMetricList = useMemo(
     () =>
@@ -6662,7 +6923,9 @@ export default function App() {
                   tabIndex={0}
                   aria-describedby="overall-score-tooltip"
                 >
-                  Score: {Math.round(equity.score)} / 100
+                  Score: {Math.round(equity.score)} / {Math.round(
+                    Number.isFinite(equity.scoreMax) ? equity.scoreMax : TOTAL_SCORE_MAX
+                  )}
                 </div>
                 <div
                   id="overall-score-tooltip"
@@ -6672,13 +6935,16 @@ export default function App() {
                   <p className="font-semibold text-slate-700">How this score is built</p>
                   <p className="mt-1">{SCORE_TOOLTIPS.overall}</p>
                   <ul className="mt-2 list-disc space-y-1 pl-4 text-left">
-                    <li>Cash-on-cash return × 1.2, capped at 40 points.</li>
-                    <li>Cap rate × 0.8, capped at 25 points.</li>
-                    <li>(DSCR − 1) × 25, capped at 15 points.</li>
-                    <li>NPV ÷ £20k, capped at 15 points.</li>
-                    <li>Year-one after-tax cash flow ÷ £1k, capped at 5 points.</li>
+                    <li>IRR strength (up to {SCORE_COMPONENT_CONFIG.irr.maxPoints} points).</li>
+                    <li>Performance versus your IRR hurdle (up to {SCORE_COMPONENT_CONFIG.irrHurdle.maxPoints} points).</li>
+                    <li>Cash-on-cash return (up to {SCORE_COMPONENT_CONFIG.cashOnCash.maxPoints} points).</li>
+                    <li>Year-one after-tax cash flow (up to {SCORE_COMPONENT_CONFIG.cashflow.maxPoints} points).</li>
+                    <li>Cash invested efficiency (up to {SCORE_COMPONENT_CONFIG.cashInvested.maxPoints} points).</li>
+                    <li>Discounted NPV contribution (up to {SCORE_COMPONENT_CONFIG.npv.maxPoints} points).</li>
                   </ul>
-                  <p className="mt-2 text-slate-500">Points are summed and clipped between 0 and 100.</p>
+                  <p className="mt-2 text-slate-500">
+                    Points are summed across the components and clipped between 0 and {TOTAL_SCORE_MAX}.
+                  </p>
                 </div>
               </div>
               <div
@@ -7223,10 +7489,10 @@ export default function App() {
                   knowledgeKey="irr"
                 />
                 <Line
-                  label="DSCR"
-                  value={equity.dscr > 0 ? equity.dscr.toFixed(2) : '—'}
-                  tooltip={KEY_RATIO_TOOLTIPS.dscr}
-                  knowledgeKey="dscr"
+                  label="NPV"
+                  value={currency(equity.npv)}
+                  tooltip={KEY_RATIO_TOOLTIPS.npv}
+                  knowledgeKey="npv"
                 />
                 <Line
                   label="Mortgage pmt (mo)"
@@ -7361,7 +7627,7 @@ export default function App() {
                           tick={{ fontSize: 10, fill: '#475569' }}
                         />
                         <YAxis
-                          tickFormatter={(v) => currency(v)}
+                          tickFormatter={(v) => currencyNoPence(v)}
                           tick={{ fontSize: 10, fill: '#475569' }}
                           width={90}
                         />
@@ -7482,16 +7748,6 @@ export default function App() {
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => {
-                          setRateChartRange({ start: 0, end: maxChartYear });
-                          setRateRangeTouched(false);
-                        }}
-                        className="hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
-                      >
-                        Reset range
-                      </button>
-                      <button
-                        type="button"
                         onClick={() => setShowRatesModal(true)}
                         className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
                       >
@@ -7504,21 +7760,11 @@ export default function App() {
                   <>
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
                       <span>Years {rateChartRange.start} – {rateChartRange.end}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRateChartRange({ start: 0, end: maxChartYear });
-                          setRateRangeTouched(false);
-                        }}
-                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 sm:hidden"
-                      >
-                        Reset range
-                      </button>
                     </div>
                     <div className="h-72 w-full">
                       {rateChartDataWithMovingAverage.length > 0 ? (
                         <ResponsiveContainer>
-                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 70, left: 0, bottom: 0 }}>
+                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 32, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis
                               dataKey="year"
@@ -7527,16 +7773,16 @@ export default function App() {
                             />
                             <YAxis
                               yAxisId="percent"
-                              tickFormatter={(v) => formatPercent(v)}
+                              tickFormatter={(v) => formatPercent(v, 0)}
                               tick={{ fontSize: 10, fill: '#475569' }}
-                              width={70}
+                              width={60}
                             />
                             <YAxis
                               yAxisId="currency"
                               orientation="right"
-                              tickFormatter={(v) => currency(v)}
+                              tickFormatter={(v) => currencyThousands(v)}
                               tick={{ fontSize: 10, fill: '#475569' }}
-                              width={90}
+                              width={80}
                             />
                             <Tooltip
                               formatter={(value, name, entry) => {
@@ -7644,15 +7890,6 @@ export default function App() {
                   </div>
                   {!collapsedSections.npvTimeline ? (
                     <div className="flex items-center gap-2">
-                      {hasNpvTimelineData ? (
-                        <button
-                          type="button"
-                          onClick={resetNpvChartRange}
-                          className="hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
-                        >
-                          Reset range
-                        </button>
-                      ) : null}
                       <button
                         type="button"
                         onClick={() => setShowNpvModal(true)}
@@ -7676,13 +7913,6 @@ export default function App() {
                           </span>
                           <span>Discount rate: {formatPercent(inputs.discountRate)}</span>
                         </div>
-                        <button
-                          type="button"
-                          onClick={resetNpvChartRange}
-                          className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 font-semibold text-slate-700 transition hover:bg-slate-100 sm:hidden"
-                        >
-                          Reset range
-                        </button>
                       </div>
                     ) : (
                       <p className="mb-2 text-[11px] text-slate-500">
@@ -7728,7 +7958,7 @@ export default function App() {
                           <AreaChart data={equityGrowthChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
-                            <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={100} />
+                            <YAxis tickFormatter={(value) => currencyNoPence(value)} tick={{ fontSize: 10, fill: '#475569' }} width={100} />
                             <Tooltip
                               formatter={(value, name) => currency(value)}
                               labelFormatter={(label) => `Year ${label}`}
@@ -7798,7 +8028,7 @@ export default function App() {
                           <ComposedChart data={annualCashflowChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 10, fill: '#475569' }} />
-                            <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 10, fill: '#475569' }} width={90} />
+                            <YAxis tickFormatter={(value) => currencyNoPence(value)} tick={{ fontSize: 10, fill: '#475569' }} width={90} />
                             <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
                             <Legend
                               content={(props) => (
@@ -8099,7 +8329,7 @@ export default function App() {
                         <AreaChart data={interestSplitChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
-                          <YAxis tickFormatter={(value) => currency(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
+                          <YAxis tickFormatter={(value) => currencyNoPence(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
                           <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
                           <Legend />
                           <Area
@@ -8169,7 +8399,7 @@ export default function App() {
                               <CartesianGrid strokeDasharray="3 3" />
                               <XAxis
                                 dataKey="ltv"
-                                tickFormatter={(value) => formatPercent(value)}
+                                tickFormatter={(value) => formatPercent(value, 0)}
                                 tick={{ fontSize: 11, fill: '#475569' }}
                                 domain={[0.1, 0.95]}
                                 type="number"
@@ -8177,7 +8407,7 @@ export default function App() {
                               />
                               <YAxis
                                 yAxisId="left"
-                                tickFormatter={(value) => formatPercent(value)}
+                                tickFormatter={(value) => formatPercent(value, 0)}
                                 tick={{ fontSize: 11, fill: '#475569' }}
                                 width={80}
                               />
@@ -8469,7 +8699,9 @@ export default function App() {
                             {investmentProfile.headline}
                           </span>
                           <span className="text-[11px] font-semibold text-slate-600">
-                            {`${Math.round(investmentProfile.compositeScore)} / 100`}
+                            {`${Math.round(investmentProfile.score)} / ${Math.round(
+                              investmentProfile.scoreMax
+                            )}`}
                           </span>
                         </div>
                         <p className="text-[11px] leading-relaxed">{investmentProfile.summary}</p>
@@ -8486,6 +8718,50 @@ export default function App() {
                               <span className="text-slate-500">{chip.label}</span>
                               <span className="text-slate-700">{chip.value}</span>
                             </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {investmentProfile.visuals.length > 0 ? (
+                        <div className="mt-4 space-y-2">
+                          {investmentProfile.visuals.map((visual) => (
+                            <div
+                              key={visual.key}
+                              className="group relative rounded-xl border border-slate-200 bg-slate-50 p-3 transition hover:border-slate-300"
+                            >
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                    {visual.label}
+                                  </div>
+                                  <div className="text-sm font-semibold text-slate-800">
+                                    {typeof visual.displayValue === 'number'
+                                      ? visual.displayValue.toLocaleString()
+                                      : visual.displayValue}
+                                  </div>
+                                </div>
+                                <div className="w-full sm:w-auto">
+                                  <div className="flex items-center justify-between text-[10px] text-slate-500">
+                                    <span>
+                                      {Math.round(visual.points)} / {visual.maxPoints} pts
+                                    </span>
+                                    <span>{Math.round(visual.contributionPercent)}% of score</span>
+                                  </div>
+                                  <div className="mt-1 h-2 w-full rounded-full bg-slate-200">
+                                    <div
+                                      className={`h-2 rounded-full ${
+                                        INVESTMENT_PROFILE_BAR_TONES[visual.tone] ?? INVESTMENT_PROFILE_BAR_TONES.neutral
+                                      }`}
+                                      style={{ width: `${visual.fillPercent}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                              {visual.explanation ? (
+                                <div className="pointer-events-none absolute left-1/2 top-full z-20 hidden w-64 -translate-x-1/2 translate-y-2 rounded-lg border border-slate-200 bg-white p-3 text-[11px] text-slate-600 shadow-lg group-hover:block">
+                                  {visual.explanation}
+                                </div>
+                              ) : null}
+                            </div>
                           ))}
                         </div>
                       ) : null}
@@ -8873,7 +9149,7 @@ export default function App() {
                           <XAxis dataKey="year" tickFormatter={(t) => `Y${t}`} tick={{ fontSize: 11, fill: '#475569' }} />
                           <YAxis
                             yAxisId="currency"
-                            tickFormatter={(v) => currency(v)}
+                            tickFormatter={(v) => currencyNoPence(v)}
                             tick={{ fontSize: 11, fill: '#475569' }}
                             width={110}
                           />
@@ -9302,7 +9578,7 @@ export default function App() {
                     <div className="relative flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       {rateChartDataWithMovingAverage.length > 0 ? (
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 90, left: 0, bottom: 0 }}>
+                          <LineChart data={rateChartDataWithMovingAverage} margin={{ top: 10, right: 40, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis
                               dataKey="year"
@@ -9311,16 +9587,16 @@ export default function App() {
                             />
                             <YAxis
                               yAxisId="percent"
-                              tickFormatter={(v) => formatPercent(v)}
+                              tickFormatter={(v) => formatPercent(v, 0)}
                               tick={{ fontSize: 11, fill: '#475569' }}
                               width={80}
                             />
                             <YAxis
                               yAxisId="currency"
                               orientation="right"
-                              tickFormatter={(v) => currency(v)}
+                              tickFormatter={(v) => currencyThousands(v)}
                               tick={{ fontSize: 11, fill: '#475569' }}
-                              width={110}
+                              width={90}
                             />
                             <Tooltip
                               formatter={(value, name, entry) => {
