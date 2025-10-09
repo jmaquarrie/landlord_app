@@ -1433,9 +1433,11 @@ const KNOWLEDGE_METRICS = {
   bridgingDebtService: {
     label: 'Debt service (bridging)',
     groups: ['performance', 'cashflowBars'],
-    description: 'Interest-only payments on the bridging loan prior to refinancing.',
-    calculation: 'Bridging balance × monthly bridge rate × term months within the year.',
-    importance: 'Temporary cost that can erode early-year cash flow until permanent financing begins.',
+    description:
+      'Interest and principal paid on the bridging facility before it is refinanced into long-term debt or cash.',
+    calculation: 'Bridge interest each month plus the outstanding balance when the bridge is repaid.',
+    importance:
+      'Captures the total cash needed to service and retire the bridge before permanent financing resumes.',
     unit: 'currency',
   },
   cashflowPreTax: {
@@ -2966,10 +2968,9 @@ function calculateEquity(rawInputs) {
         annualBridgingDebtService[yearIndex] += monthlyInterest;
       }
       if (month === monthsToModel) {
-        // The bridging principal is refinanced into the long-term mortgage at the
-        // end of the term, so it should not be treated as an investor cash
-        // outflow in the annual debt service totals. We still keep the
-        // interest for the term above but skip adding the principal here.
+        annualDebtService[yearIndex] += bridgingAmount;
+        annualPrincipal[yearIndex] += bridgingAmount;
+        annualBridgingDebtService[yearIndex] += bridgingAmount;
       }
     }
   }
