@@ -585,7 +585,7 @@ const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
 
 const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, signal }) => {
   const queries = [];
-  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+  if (hasUsableCoordinates(lat, lon)) {
     queries.push(`${lat},${lon}`);
   }
   if (typeof postcode === 'string' && postcode.trim() !== '') {
@@ -1185,6 +1185,16 @@ const formatPercent = (value, decimals = 2) => {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+const hasUsableCoordinates = (lat, lon) => {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return false;
+  }
+  const magnitude = Math.abs(lat) + Math.abs(lon);
+  return magnitude > 0.0002;
+};
+
+const resolveCoordinatePair = (lat, lon) => (hasUsableCoordinates(lat, lon) ? { lat, lon } : null);
+
 const CrimeMap = ({ center, bounds, markers, className, title }) => {
   const normalizedCenter = useMemo(() => {
     const lat = Number(center?.lat);
@@ -1272,12 +1282,7 @@ const CrimeMap = ({ center, bounds, markers, className, title }) => {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link
-      rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-oQZmQ6ZjN7FXiZx0drXr4IjuvyWsye++H5cS0M9wkwk="
-      crossorigin="anonymous"
-    />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous" />
     <style>
       html, body, #map { height: 100%; margin: 0; }
       body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
@@ -1286,7 +1291,7 @@ const CrimeMap = ({ center, bounds, markers, className, title }) => {
   </head>
   <body>
     <div id="map" role="img" aria-label="${ariaLabel}"></div>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o2EiOBIXP8Ij2BXexdFv+Frq4eF3Jr0Xvu0wQek8Wpg=" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
     <script>
       (function() {
         const decode = (value) => JSON.parse(decodeURIComponent(value));
@@ -4002,20 +4007,12 @@ export default function App() {
   const postcodeCrimeLon = Number(crimePostcodeState.data?.lon);
   const storedPropertyLat = Number(inputs.propertyLatitude);
   const storedPropertyLon = Number(inputs.propertyLongitude);
-  const crimeLat = Number.isFinite(storedPropertyLat)
-    ? storedPropertyLat
-    : Number.isFinite(postcodeCrimeLat)
-    ? postcodeCrimeLat
-    : Number.isFinite(geocodeLat)
-    ? geocodeLat
-    : null;
-  const crimeLon = Number.isFinite(storedPropertyLon)
-    ? storedPropertyLon
-    : Number.isFinite(postcodeCrimeLon)
-    ? postcodeCrimeLon
-    : Number.isFinite(geocodeLon)
-    ? geocodeLon
-    : null;
+  const storedCoordinates = resolveCoordinatePair(storedPropertyLat, storedPropertyLon);
+  const postcodeCoordinates = resolveCoordinatePair(postcodeCrimeLat, postcodeCrimeLon);
+  const geocodeCoordinates = resolveCoordinatePair(geocodeLat, geocodeLon);
+  const resolvedCoordinates = storedCoordinates || postcodeCoordinates || geocodeCoordinates || null;
+  const crimeLat = resolvedCoordinates ? resolvedCoordinates.lat : null;
+  const crimeLon = resolvedCoordinates ? resolvedCoordinates.lon : null;
 
   const propertyPriceStatsSelection = useMemo(() => {
     if (propertyPriceState.status !== 'success') {
@@ -4892,7 +4889,7 @@ export default function App() {
       return;
     }
 
-    if (!Number.isFinite(crimeLat) || !Number.isFinite(crimeLon)) {
+    if (!hasUsableCoordinates(crimeLat, crimeLon)) {
       if (geocodeState.status === 'error') {
         setCrimeState({
           status: 'error',
@@ -5053,12 +5050,7 @@ export default function App() {
 
         finalCrimeData = await attemptFetch(baseParams, { boundsHint: geocodeBounds || null });
 
-        if (
-          !finalCrimeData &&
-          crimePostcodeQuery !== '' &&
-          Number.isFinite(crimeLat) &&
-          Number.isFinite(crimeLon)
-        ) {
+        if (!finalCrimeData && crimePostcodeQuery !== '' && hasUsableCoordinates(crimeLat, crimeLon)) {
           const latLngParams = createCrimeParams({ lat: latParam, lng: lonParam });
           finalCrimeData = await attemptFetch(latLngParams, { boundsHint: geocodeBounds || null });
         }
@@ -5129,9 +5121,7 @@ export default function App() {
           fallbackLocationName: geocodeLocationSummary || geocodeDisplayName || propertyAddress,
           mapBoundsOverride: summaryBoundsHint ?? geocodeBounds,
           mapCenterOverride:
-            Number.isFinite(crimeLat) && Number.isFinite(crimeLon)
-              ? { lat: crimeLat, lon: crimeLon }
-              : null,
+            hasUsableCoordinates(crimeLat, crimeLon) ? { lat: crimeLat, lon: crimeLon } : null,
         });
         if (!controller.signal.aborted) {
           setCrimeState({ status: 'success', data: summary, error: '' });
@@ -5961,15 +5951,16 @@ export default function App() {
   const crimeIncidentsCount = crimeSummary?.totalIncidents ?? 0;
   const crimeHasRecordedIncidents = crimeIncidentsCount > 0;
   const crimeMapCenter = useMemo(() => {
-    const fallbackLat = Number.isFinite(crimeLat) ? crimeLat : null;
-    const fallbackLon = Number.isFinite(crimeLon) ? crimeLon : null;
+    const fallbackCoordinates = hasUsableCoordinates(crimeLat, crimeLon)
+      ? { lat: crimeLat, lon: crimeLon }
+      : null;
     const lat = Number.isFinite(crimeSummary?.mapCenter?.lat)
       ? crimeSummary.mapCenter.lat
-      : fallbackLat;
+      : fallbackCoordinates?.lat ?? null;
     const lon = Number.isFinite(crimeSummary?.mapCenter?.lon)
       ? crimeSummary.mapCenter.lon
-      : fallbackLon;
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      : fallbackCoordinates?.lon ?? null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !hasUsableCoordinates(lat, lon)) {
       return null;
     }
     const zoom = Number.isFinite(crimeSummary?.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14;
