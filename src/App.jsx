@@ -6104,6 +6104,15 @@ export default function App() {
     (point) => Number.isFinite(point.irr) || Number.isFinite(point.roi)
   );
 
+  const isCompanyBuyer = inputs.buyerType === 'company';
+  const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
+  const rentalTaxCumulativeLabel = isCompanyBuyer
+    ? 'Corporation tax on rent (cumulative)'
+    : 'Rental income tax (cumulative)';
+  const propertyNetAfterTaxLabel = isCompanyBuyer
+    ? 'Property net after corporation tax'
+    : 'Property net after tax';
+
   const leverageMetricOptions = useMemo(
     () => [
       { key: 'irr', label: 'IRR' },
@@ -6545,14 +6554,6 @@ export default function App() {
     setChartFocusLocked(false);
   }, []);
 
-  const isCompanyBuyer = inputs.buyerType === 'company';
-  const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
-  const rentalTaxCumulativeLabel = isCompanyBuyer
-    ? 'Corporation tax on rent (cumulative)'
-    : 'Rental income tax (cumulative)';
-  const propertyNetAfterTaxLabel = isCompanyBuyer
-    ? 'Property net after corporation tax'
-    : 'Property net after tax';
   const verifyingAuth = authStatus === 'verifying';
   const shouldShowAuthOverlay = remoteEnabled && (authStatus === 'unauthorized' || verifyingAuth);
   const selectedScenario = useMemo(
