@@ -66,6 +66,23 @@ const encodeForSrcdoc = (value) => {
     return encodeURIComponent('null');
   }
 };
+
+const useOverlayEscape = (open, onClose) => {
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open, onClose]);
+};
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
@@ -1330,34 +1347,10 @@ const CrimeMap = ({ center, bounds, markers, className, title }) => {
 </html>`;
   }, [mapTitle, normalizedBounds, normalizedCenter, normalizedMarkers]);
 
-  const iframeRef = useRef(null);
-  const canUseObjectUrl =
-    typeof window !== 'undefined' &&
-    typeof window.URL !== 'undefined' &&
-    typeof window.URL.createObjectURL === 'function';
-
-  useEffect(() => {
-    if (!canUseObjectUrl || !iframeRef.current) {
-      return undefined;
-    }
-    const blob = new Blob([mapDocument], { type: 'text/html' });
-    const url = window.URL.createObjectURL(blob);
-    iframeRef.current.src = url;
-    return () => {
-      if (iframeRef.current && iframeRef.current.src === url) {
-        iframeRef.current.src = 'about:blank';
-      }
-      window.URL.revokeObjectURL(url);
-    };
-  }, [canUseObjectUrl, mapDocument]);
-
-  const iframeProps = canUseObjectUrl ? { src: 'about:blank' } : { srcDoc: mapDocument };
-
   return (
     <iframe
-      ref={iframeRef}
       title={mapTitle}
-      {...iframeProps}
+      srcDoc={mapDocument}
       className={['h-full w-full border-0', className].filter(Boolean).join(' ')}
       loading="lazy"
       sandbox="allow-scripts allow-same-origin"
@@ -3832,9 +3825,9 @@ export default function App() {
     efficiency: true,
     irrHurdle: true,
   });
-  const [leverageOptionsOpen, setLeverageOptionsOpen] = useState(false);
-  const [interestSplitOptionsOpen, setInterestSplitOptionsOpen] = useState(false);
-  const [cashflowDetailOptionsOpen, setCashflowDetailOptionsOpen] = useState(false);
+  const [leverageExpanded, setLeverageExpanded] = useState(false);
+  const [interestSplitExpanded, setInterestSplitExpanded] = useState(false);
+  const [cashflowDetailExpanded, setCashflowDetailExpanded] = useState(false);
   const [leverageRange, setLeverageRange] = useState(() => ({
     min: LEVERAGE_LTV_OPTIONS[0],
     max: LEVERAGE_MAX_LTV,
@@ -3867,6 +3860,15 @@ export default function App() {
   const [chartFocus, setChartFocus] = useState(null);
   const [chartFocusLocked, setChartFocusLocked] = useState(false);
   const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
+  const closeInterestSplitOverlay = useCallback(() => {
+    setInterestSplitExpanded(false);
+  }, []);
+  const closeLeverageOverlay = useCallback(() => {
+    setLeverageExpanded(false);
+  }, []);
+  const closeCashflowDetailOverlay = useCallback(() => {
+    setCashflowDetailExpanded(false);
+  }, []);
   const chartAreaRef = useRef(null);
   const chartOverlayRef = useRef(null);
   const chartModalContentRef = useRef(null);
@@ -3907,21 +3909,25 @@ export default function App() {
 
   useEffect(() => {
     if (collapsedSections.leverage) {
-      setLeverageOptionsOpen(false);
+      setLeverageExpanded(false);
     }
   }, [collapsedSections.leverage]);
 
   useEffect(() => {
     if (collapsedSections.interestSplit) {
-      setInterestSplitOptionsOpen(false);
+      setInterestSplitExpanded(false);
     }
   }, [collapsedSections.interestSplit]);
 
   useEffect(() => {
     if (collapsedSections.cashflowDetail) {
-      setCashflowDetailOptionsOpen(false);
+      setCashflowDetailExpanded(false);
     }
   }, [collapsedSections.cashflowDetail]);
+
+  useOverlayEscape(interestSplitExpanded, closeInterestSplitOverlay);
+  useOverlayEscape(leverageExpanded, closeLeverageOverlay);
+  useOverlayEscape(cashflowDetailExpanded, closeCashflowDetailOverlay);
 
   useEffect(() => {
     let cancelled = false;
@@ -8162,6 +8168,177 @@ export default function App() {
     setCashflowDetailView((prev) => (prev === value ? prev : value));
   };
 
+  const renderInterestSplitChart = ({
+    heightClass = 'h-72 w-full',
+    fallbackMessage = 'Adjust the mortgage assumptions or expand the analysis to customise the interest and principal view.',
+  } = {}) => (
+    <div className={heightClass}>
+      {hasInterestSplitData ? (
+        <ResponsiveContainer>
+          <AreaChart data={interestSplitDisplayData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
+            <YAxis tickFormatter={(value) => currencyNoPence(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
+            <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+            <Legend />
+            <Area
+              type="monotone"
+              dataKey="interestPaid"
+              name="Interest"
+              stackId="payments"
+              stroke="#f97316"
+              fill="rgba(249,115,22,0.25)"
+              strokeWidth={2}
+              isAnimationActive={false}
+            />
+            <Area
+              type="monotone"
+              dataKey="principalPaid"
+              name="Principal"
+              stackId="payments"
+              stroke="#22c55e"
+              fill="rgba(34,197,94,0.3)"
+              strokeWidth={2}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      ) : (
+        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+          {fallbackMessage}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderLeverageChart = ({
+    heightClass = 'h-72 w-full',
+    fallbackMessage = 'Adjust the purchase inputs or expand the analysis to explore leverage outcomes in more detail.',
+  } = {}) => (
+    <div className={heightClass}>
+      {hasLeverageData ? (
+        <ResponsiveContainer>
+          <LineChart data={leverageDisplayData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              dataKey="ltv"
+              tickFormatter={(value) => formatPercent(value, 0)}
+              tick={{ fontSize: 11, fill: '#475569' }}
+              domain={[0.1, 0.95]}
+              type="number"
+              ticks={leverageDisplayTicks}
+            />
+            <YAxis
+              yAxisId="left"
+              tickFormatter={(value) => formatPercent(value, 0)}
+              tick={{ fontSize: 11, fill: '#475569' }}
+              width={80}
+            />
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tickFormatter={(value) => currencyThousands(value)}
+              tick={{ fontSize: 11, fill: '#475569' }}
+              width={72}
+            />
+            <Tooltip
+              formatter={(value, name, { dataKey }) => {
+                if (dataKey === 'propertyNetAfterTax' || dataKey === 'efficiency') {
+                  return [currency(value), name];
+                }
+                return [formatPercent(value), name];
+              }}
+              labelFormatter={(label) => `LTV ${formatPercent(label)}`}
+            />
+            <Legend
+              content={(props) => (
+                <ChartLegend
+                  {...props}
+                  activeSeries={leverageSeriesActive}
+                  onToggle={toggleLeverageSeries}
+                />
+              )}
+            />
+            {LEVERAGE_MAX_LTV > LEVERAGE_SAFE_MAX_LTV ? (
+              <ReferenceArea
+                x1={LEVERAGE_SAFE_MAX_LTV}
+                x2={LEVERAGE_MAX_LTV}
+                yAxisId="left"
+                y1="dataMin"
+                y2="dataMax"
+                strokeOpacity={0}
+                fill="#f1f5f9"
+                fillOpacity={0.35}
+              />
+            ) : null}
+            <RechartsLine
+              type="monotone"
+              dataKey="irr"
+              name="IRR"
+              yAxisId="left"
+              stroke={SERIES_COLORS.irrSeries}
+              strokeWidth={2}
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.irr}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="roi"
+              name="Total ROI"
+              yAxisId="left"
+              stroke="#0ea5e9"
+              strokeWidth={2}
+              strokeDasharray="4 2"
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.roi}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="irrHurdle"
+              name="IRR hurdle"
+              yAxisId="left"
+              stroke={SERIES_COLORS.irrHurdle}
+              strokeWidth={2}
+              strokeDasharray="4 4"
+              dot={false}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.irrHurdle}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="propertyNetAfterTax"
+              name={propertyNetAfterTaxLabel}
+              yAxisId="right"
+              stroke={SERIES_COLORS.propertyNetAfterTax}
+              strokeWidth={2}
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.propertyNetAfterTax}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="efficiency"
+              name="IRR × net wealth"
+              yAxisId="right"
+              stroke="#8b5cf6"
+              strokeWidth={2}
+              strokeDasharray="6 3"
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.efficiency}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      ) : (
+        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+          {fallbackMessage}
+        </div>
+      )}
+    </div>
+  );
+
   const handleScenarioSort = (key) => {
     setScenarioSort((prev) => {
       if (prev.key === key) {
@@ -10335,108 +10512,28 @@ export default function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => setInterestSplitOptionsOpen((prev) => !prev)}
-                    aria-expanded={interestSplitOptionsOpen}
-                    aria-controls="interest-split-options"
+                    onClick={() => setInterestSplitExpanded(true)}
                     className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title={interestSplitOptionsOpen ? 'Hide interest split filters' : 'Show interest split filters'}
+                    title="Expand interest split analysis"
                   >
-                    <span>Filters</span>
+                    <span>Expand</span>
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       viewBox="0 0 20 20"
                       fill="none"
                       stroke="currentColor"
                       strokeWidth="1.5"
-                      className={`h-3 w-3 transition-transform ${interestSplitOptionsOpen ? 'rotate-180' : ''}`}
+                      className="h-3 w-3"
                       aria-hidden="true"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5.5 7.5 10 12l4.5-4.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
                     </svg>
                   </button>
                 </div>
-                {interestSplitOptionsOpen ? (
-                  <div
-                    id="interest-split-options"
-                    className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600"
-                  >
-                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                      Filter repayment timeline
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[11px] font-semibold text-slate-700">Start year</span>
-                        <select
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
-                          value={String(interestSplitRange.start)}
-                          onChange={(event) => handleInterestSplitRangeChange('start', event.target.value)}
-                        >
-                          {interestSplitYearOptions.map((year) => (
-                            <option key={`interest-start-${year}`} value={year}>
-                              Year {year}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[11px] font-semibold text-slate-700">End year</span>
-                        <select
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
-                          value={String(interestSplitRange.end)}
-                          onChange={(event) => handleInterestSplitRangeChange('end', event.target.value)}
-                        >
-                          {interestSplitYearOptions.map((year) => (
-                            <option key={`interest-end-${year}`} value={year}>
-                              Year {year}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <p className="self-end text-[11px] text-slate-500">
-                        Narrow the chart to inspect where interest flips to principal during the hold period.
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
-                {!collapsedSections.interestSplit ? (
-                  <div className="h-72 w-full">
-                    {hasInterestSplitData ? (
-                      <ResponsiveContainer>
-                        <AreaChart data={interestSplitDisplayData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
-                          <YAxis tickFormatter={(value) => currencyNoPence(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
-                          <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
-                          <Legend />
-                          <Area
-                            type="monotone"
-                            dataKey="interestPaid"
-                            name="Interest"
-                            stackId="payments"
-                            stroke="#f97316"
-                            fill="rgba(249,115,22,0.25)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="principalPaid"
-                            name="Principal"
-                            stackId="payments"
-                            stroke="#22c55e"
-                            fill="rgba(34,197,94,0.3)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
-                        Adjust the mortgage assumptions or update the filters to model interest and principal payments.
-                      </div>
-                    )}
-                  </div>
-                ) : null}
+                {!collapsedSections.interestSplit ? renderInterestSplitChart() : null}
               </div>
               <div
                 className={`rounded-2xl bg-white p-3 shadow-sm ${
@@ -10463,221 +10560,33 @@ export default function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => setLeverageOptionsOpen((prev) => !prev)}
-                    aria-expanded={leverageOptionsOpen}
-                    aria-controls="leverage-options"
+                    onClick={() => setLeverageExpanded(true)}
                     className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title={leverageOptionsOpen ? 'Hide leverage filters' : 'Show leverage filters'}
+                    title="Expand leverage analysis"
                   >
-                    <span>Filters</span>
+                    <span>Expand</span>
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       viewBox="0 0 20 20"
                       fill="none"
                       stroke="currentColor"
                       strokeWidth="1.5"
-                      className={`h-3 w-3 transition-transform ${leverageOptionsOpen ? 'rotate-180' : ''}`}
+                      className="h-3 w-3"
                       aria-hidden="true"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5.5 7.5 10 12l4.5-4.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
                     </svg>
                   </button>
                 </div>
-                {leverageOptionsOpen ? (
-                  <div
-                    id="leverage-options"
-                    className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600"
-                  >
-                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                      Customise leverage sweep
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-3">
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[11px] font-semibold text-slate-700">Minimum LTV</span>
-                        <select
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
-                          value={String(leverageRange.min)}
-                          onChange={(event) => handleLeverageRangeChange('min', event.target.value)}
-                        >
-                          {LEVERAGE_LTV_OPTIONS.map((ltv) => (
-                            <option key={`leverage-min-${ltv}`} value={ltv}>
-                              {formatPercent(ltv, 0)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[11px] font-semibold text-slate-700">Maximum LTV</span>
-                        <select
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
-                          value={String(leverageRange.max)}
-                          onChange={(event) => handleLeverageRangeChange('max', event.target.value)}
-                        >
-                          {LEVERAGE_LTV_OPTIONS.map((ltv) => (
-                            <option key={`leverage-max-${ltv}`} value={ltv}>
-                              {formatPercent(ltv, 0)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="flex flex-col gap-1 md:col-span-1">
-                        <span className="text-[11px] font-semibold text-slate-700">Show metrics</span>
-                        <div className="flex flex-wrap gap-2">
-                          {leverageMetricOptions.map((option) => (
-                            <label
-                              key={`leverage-series-${option.key}`}
-                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 ${
-                                leverageSeriesActive[option.key] === false
-                                  ? 'border-slate-200 text-slate-400'
-                                  : 'border-slate-300 text-slate-600'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                className="h-3 w-3 accent-slate-600"
-                                checked={leverageSeriesActive[option.key] !== false}
-                                onChange={() => toggleLeverageSeries(option.key)}
-                              />
-                              <span>{option.label}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                      <p className="md:col-span-3 text-[11px] text-slate-500">
-                        Focus the leverage curve on the loan-to-value band you care about and hide any performance metrics that aren’t relevant to your investment criteria.
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
                 {!collapsedSections.leverage ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
                       Each point recalculates the deal using the same assumptions but with a different LTV. ROI reflects net wealth at exit versus cash invested.
                     </p>
-                    <div className="h-72 w-full">
-                      {hasLeverageData ? (
-                        <>
-                          <ResponsiveContainer>
-                            <LineChart data={leverageDisplayData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis
-                                dataKey="ltv"
-                                tickFormatter={(value) => formatPercent(value, 0)}
-                                tick={{ fontSize: 11, fill: '#475569' }}
-                                domain={[0.1, 0.95]}
-                                type="number"
-                                ticks={leverageDisplayTicks}
-                              />
-                              <YAxis
-                                yAxisId="left"
-                                tickFormatter={(value) => formatPercent(value, 0)}
-                                tick={{ fontSize: 11, fill: '#475569' }}
-                                width={80}
-                              />
-                              <YAxis
-                                yAxisId="right"
-                                orientation="right"
-                                tickFormatter={(value) => currencyThousands(value)}
-                                tick={{ fontSize: 11, fill: '#475569' }}
-                                width={72}
-                              />
-                              <Tooltip
-                                formatter={(value, name, { dataKey }) => {
-                                  if (dataKey === 'propertyNetAfterTax' || dataKey === 'efficiency') {
-                                    return [currency(value), name];
-                                  }
-                                  return [formatPercent(value), name];
-                                }}
-                                labelFormatter={(label) => `LTV ${formatPercent(label)}`}
-                              />
-                              <Legend
-                                content={(props) => (
-                                  <ChartLegend
-                                    {...props}
-                                    activeSeries={leverageSeriesActive}
-                                    onToggle={toggleLeverageSeries}
-                                  />
-                                )}
-                              />
-                              {LEVERAGE_MAX_LTV > LEVERAGE_SAFE_MAX_LTV ? (
-                                <ReferenceArea
-                                  x1={LEVERAGE_SAFE_MAX_LTV}
-                                  x2={LEVERAGE_MAX_LTV}
-                                  yAxisId="left"
-                                  y1="dataMin"
-                                  y2="dataMax"
-                                  strokeOpacity={0}
-                                  fill="#f1f5f9"
-                                  fillOpacity={0.35}
-                                />
-                              ) : null}
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="irr"
-                                name="IRR"
-                                yAxisId="left"
-                                stroke={SERIES_COLORS.irrSeries}
-                                strokeWidth={2}
-                                dot={{ r: 3 }}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.irr}
-                              />
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="roi"
-                                name="Total ROI"
-                                yAxisId="left"
-                                stroke="#0ea5e9"
-                                strokeWidth={2}
-                                strokeDasharray="4 2"
-                                dot={{ r: 3 }}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.roi}
-                              />
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="irrHurdle"
-                                name="IRR hurdle"
-                                yAxisId="left"
-                                stroke={SERIES_COLORS.irrHurdle}
-                                strokeWidth={2}
-                                strokeDasharray="4 4"
-                                dot={false}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.irrHurdle}
-                              />
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="propertyNetAfterTax"
-                                name={propertyNetAfterTaxLabel}
-                                yAxisId="right"
-                                stroke={SERIES_COLORS.propertyNetAfterTax}
-                                strokeWidth={2}
-                                dot={{ r: 3 }}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.propertyNetAfterTax}
-                              />
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="efficiency"
-                                name="IRR × net wealth"
-                                yAxisId="right"
-                                stroke="#8b5cf6"
-                                strokeWidth={2}
-                                strokeDasharray="6 3"
-                                dot={{ r: 3 }}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.efficiency}
-                              />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        </>
-                      ) : (
-                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
-                          Adjust the purchase inputs or expand the filters to explore leverage outcomes.
-                        </div>
-                      )}
-                    </div>
+                    {renderLeverageChart()}
                   </>
                 ) : null}
               </div>
@@ -10804,83 +10713,27 @@ export default function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => setCashflowDetailOptionsOpen((prev) => !prev)}
-                    aria-expanded={cashflowDetailOptionsOpen}
-                    aria-controls="cashflow-detail-options"
+                    onClick={() => setCashflowDetailExpanded(true)}
                     className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title={cashflowDetailOptionsOpen ? 'Hide cash flow filters' : 'Show cash flow filters'}
+                    title="Expand annual cash flow analysis"
                   >
-                    <span>Filters</span>
+                    <span>Expand</span>
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       viewBox="0 0 20 20"
                       fill="none"
                       stroke="currentColor"
                       strokeWidth="1.5"
-                      className={`h-3 w-3 transition-transform ${cashflowDetailOptionsOpen ? 'rotate-180' : ''}`}
+                      className="h-3 w-3"
                       aria-hidden="true"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5.5 7.5 10 12l4.5-4.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
                     </svg>
                   </button>
                 </div>
-                {cashflowDetailOptionsOpen ? (
-                  <div
-                    id="cashflow-detail-options"
-                    className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600"
-                  >
-                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                      Focus the annual cash flows
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[11px] font-semibold text-slate-700">Start year</span>
-                        <select
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
-                          value={String(cashflowDetailRange.start)}
-                          onChange={(event) => handleCashflowRangeChange('start', event.target.value)}
-                        >
-                          {cashflowYearOptions.map((year) => (
-                            <option key={`cashflow-start-${year}`} value={year}>
-                              Year {year}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[11px] font-semibold text-slate-700">End year</span>
-                        <select
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
-                          value={String(cashflowDetailRange.end)}
-                          onChange={(event) => handleCashflowRangeChange('end', event.target.value)}
-                        >
-                          {cashflowYearOptions.map((year) => (
-                            <option key={`cashflow-end-${year}`} value={year}>
-                              Year {year}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="flex flex-col gap-1 lg:col-span-2">
-                        <span className="text-[11px] font-semibold text-slate-700">Cash flow filter</span>
-                        <select
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
-                          value={cashflowDetailView}
-                          onChange={(event) => handleCashflowViewChange(event.target.value)}
-                        >
-                          {CASHFLOW_VIEW_OPTIONS.map((option) => (
-                            <option key={`cashflow-view-${option.value}`} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <p className="lg:col-span-4 text-[11px] text-slate-500">
-                        Zero in on the holding period that matters most or isolate positive and negative cash flow years.
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
                 {!collapsedSections.cashflowDetail ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
@@ -12392,6 +12245,284 @@ export default function App() {
       )}
 
       </div>
+
+      {interestSplitExpanded ? (
+        <div
+          className="no-print fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 px-4 py-8"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="interest-split-overlay-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeInterestSplitOverlay();
+            }
+          }}
+        >
+          <div
+            className="relative flex h-full max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2 id="interest-split-overlay-title" className="text-base font-semibold text-slate-900">
+                  Interest vs principal split
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Filter the repayment timeline to inspect how mortgage payments evolve across the hold period.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeInterestSplitOverlay}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-5">
+              <div className="mb-4 grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Start year</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(interestSplitRange.start)}
+                    onChange={(event) => handleInterestSplitRangeChange('start', event.target.value)}
+                  >
+                    {interestSplitYearOptions.map((year) => (
+                      <option key={`interest-overlay-start-${year}`} value={year}>
+                        Year {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">End year</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(interestSplitRange.end)}
+                    onChange={(event) => handleInterestSplitRangeChange('end', event.target.value)}
+                  >
+                    {interestSplitYearOptions.map((year) => (
+                      <option key={`interest-overlay-end-${year}`} value={year}>
+                        Year {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="self-end text-[11px] text-slate-500">
+                  Narrow the chart to inspect the transition from interest-heavy to principal-heavy payments.
+                </p>
+              </div>
+              {renderInterestSplitChart({
+                heightClass: 'h-[420px] w-full',
+                fallbackMessage: 'Adjust the filters above to populate the repayment chart.',
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {leverageExpanded ? (
+        <div
+          className="no-print fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 px-4 py-8"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="leverage-overlay-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeLeverageOverlay();
+            }
+          }}
+        >
+          <div
+            className="relative flex h-full max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2 id="leverage-overlay-title" className="text-base font-semibold text-slate-900">
+                  Leverage multiplier
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Compare outcomes across loan-to-value ratios and focus on the metrics that matter to your strategy.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeLeverageOverlay}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-5">
+              <div className="mb-4 grid gap-3 md:grid-cols-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Minimum LTV</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(leverageRange.min)}
+                    onChange={(event) => handleLeverageRangeChange('min', event.target.value)}
+                  >
+                    {LEVERAGE_LTV_OPTIONS.map((ltv) => (
+                      <option key={`leverage-overlay-min-${ltv}`} value={ltv}>
+                        {formatPercent(ltv, 0)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Maximum LTV</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(leverageRange.max)}
+                    onChange={(event) => handleLeverageRangeChange('max', event.target.value)}
+                  >
+                    {LEVERAGE_LTV_OPTIONS.map((ltv) => (
+                      <option key={`leverage-overlay-max-${ltv}`} value={ltv}>
+                        {formatPercent(ltv, 0)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex flex-col gap-1 md:col-span-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Show metrics</span>
+                  <div className="flex flex-wrap gap-2">
+                    {leverageMetricOptions.map((option) => (
+                      <label
+                        key={`leverage-overlay-series-${option.key}`}
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 ${
+                          leverageSeriesActive[option.key] === false
+                            ? 'border-slate-200 text-slate-400'
+                            : 'border-slate-300 text-slate-600'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-3 w-3 accent-slate-600"
+                          checked={leverageSeriesActive[option.key] !== false}
+                          onChange={() => toggleLeverageSeries(option.key)}
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <p className="md:col-span-3 text-[11px] text-slate-500">
+                  Focus the leverage curve on your preferred loan-to-value band and hide performance metrics that are less relevant.
+                </p>
+              </div>
+              {renderLeverageChart({
+                heightClass: 'h-[420px] w-full',
+                fallbackMessage: 'Adjust the LTV range or metrics above to refresh the leverage chart.',
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {cashflowDetailExpanded ? (
+        <div
+          className="no-print fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 px-4 py-8"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cashflow-overlay-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeCashflowDetailOverlay();
+            }
+          }}
+        >
+          <div
+            className="relative flex h-full max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2 id="cashflow-overlay-title" className="text-base font-semibold text-slate-900">
+                  Annual cash flow detail
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Choose the years and cash flow focus to review before exporting or comparing scenarios.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCashflowDetailOverlay}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-5">
+              <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Start year</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(cashflowDetailRange.start)}
+                    onChange={(event) => handleCashflowRangeChange('start', event.target.value)}
+                  >
+                    {cashflowYearOptions.map((year) => (
+                      <option key={`cashflow-overlay-start-${year}`} value={year}>
+                        Year {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">End year</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(cashflowDetailRange.end)}
+                    onChange={(event) => handleCashflowRangeChange('end', event.target.value)}
+                  >
+                    {cashflowYearOptions.map((year) => (
+                      <option key={`cashflow-overlay-end-${year}`} value={year}>
+                        Year {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 lg:col-span-2">
+                  <span className="text-[11px] font-semibold text-slate-700">Cash flow filter</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={cashflowDetailView}
+                    onChange={(event) => handleCashflowViewChange(event.target.value)}
+                  >
+                    {CASHFLOW_VIEW_OPTIONS.map((option) => (
+                      <option key={`cashflow-overlay-view-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="lg:col-span-4 text-[11px] text-slate-500">
+                  Refine the table, then export or copy the figures once you have the view you need.
+                </p>
+              </div>
+              {cashflowTableRows.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-center text-[11px] text-slate-500">
+                  Cash flow data becomes available once a hold period is defined.
+                </p>
+              ) : (
+                <div className="max-h-[480px] overflow-auto">
+                  <CashflowTable
+                    rows={cashflowFilteredRows}
+                    columns={selectedCashflowColumns}
+                    hiddenColumns={hiddenCashflowColumns}
+                    onRemoveColumn={handleRemoveCashflowColumn}
+                    onAddColumn={handleAddCashflowColumn}
+                    onExport={handleExportCashflowCsv}
+                    emptyMessage="No rows match the current filters. Adjust the year range or cash flow view to see results."
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <KnowledgeBaseOverlay
         open={knowledgeState.open}
