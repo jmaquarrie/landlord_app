@@ -9809,9 +9809,24 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setShowChartModal(true)}
-                    className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    title="Expand wealth trajectory analysis"
                   >
-                    Expand chart
+                    <span>Expand</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      className="h-3 w-3"
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                    </svg>
                   </button>
                 ) : null}
               </div>
@@ -9952,9 +9967,24 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setShowRatesModal(true)}
-                        className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand return ratio analysis"
                       >
-                        Expand chart
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
                       </button>
                     </div>
                   ) : null}
@@ -10096,9 +10126,24 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setShowNpvModal(true)}
-                        className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand NPV analysis"
                       >
-                        Expand chart
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
                       </button>
                     </div>
                   ) : null}
