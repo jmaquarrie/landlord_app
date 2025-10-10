@@ -9805,28 +9805,39 @@ export default function App() {
                     knowledgeKey="wealthTrajectory"
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setShowChartModal(true)}
-                  className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                  title="Expand wealth trajectory analysis"
-                >
-                  <span>Expand</span>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox="0 0 20 20"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    className="h-3 w-3"
-                    aria-hidden="true"
+                {showChartModal ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowChartModal(false)}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    title="Close wealth trajectory analysis"
                   >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                  </svg>
-                </button>
+                    <span>Close</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowChartModal(true)}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    title="Expand wealth trajectory analysis"
+                  >
+                    <span>Expand</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      className="h-3 w-3"
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                    </svg>
+                  </button>
+                )}
               </div>
               {!collapsedSections.wealthTrajectory ? (
                 <>
@@ -9961,28 +9972,39 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowRatesModal(true)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Expand return ratio analysis"
-                    >
-                      <span>Expand</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        className="h-3 w-3"
-                        aria-hidden="true"
+                    {showRatesModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowRatesModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close return ratio analysis"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                      </svg>
-                    </button>
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowRatesModal(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand return ratio analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
                 </div>
                 {!collapsedSections.rateTrends ? (
@@ -10118,28 +10140,39 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowNpvModal(true)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Expand NPV analysis"
-                    >
-                      <span>Expand</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        className="h-3 w-3"
-                        aria-hidden="true"
+                    {showNpvModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowNpvModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close NPV analysis"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                      </svg>
-                    </button>
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowNpvModal(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand NPV analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
                 </div>
                 {!collapsedSections.npvTimeline ? (
@@ -10562,28 +10595,39 @@ export default function App() {
                       knowledgeKey="interestSplit"
                     />
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setInterestSplitExpanded(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Expand interest split analysis"
-                  >
-                    <span>Expand</span>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      className="h-3 w-3"
-                      aria-hidden="true"
+                  {interestSplitExpanded ? (
+                    <button
+                      type="button"
+                      onClick={closeInterestSplitOverlay}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close interest split analysis"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                    </svg>
-                  </button>
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setInterestSplitExpanded(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand interest split analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
                 {!collapsedSections.interestSplit ? renderInterestSplitChart() : null}
               </div>
@@ -10610,28 +10654,39 @@ export default function App() {
                       knowledgeKey="leverage"
                     />
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setLeverageExpanded(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Expand leverage analysis"
-                  >
-                    <span>Expand</span>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      className="h-3 w-3"
-                      aria-hidden="true"
+                  {leverageExpanded ? (
+                    <button
+                      type="button"
+                      onClick={closeLeverageOverlay}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close leverage analysis"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                    </svg>
-                  </button>
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setLeverageExpanded(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand leverage analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
                 {!collapsedSections.leverage ? (
                   <>
@@ -10763,28 +10818,39 @@ export default function App() {
                     </button>
                     <SectionTitle label="Annual cash flow detail" className="text-sm font-semibold text-slate-700" />
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setCashflowDetailExpanded(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Expand annual cash flow analysis"
-                  >
-                    <span>Expand</span>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      className="h-3 w-3"
-                      aria-hidden="true"
+                  {cashflowDetailExpanded ? (
+                    <button
+                      type="button"
+                      onClick={closeCashflowDetailOverlay}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close annual cash flow analysis"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                    </svg>
-                  </button>
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setCashflowDetailExpanded(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand annual cash flow analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
                 {!collapsedSections.cashflowDetail ? (
                   <>
