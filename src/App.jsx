@@ -274,6 +274,21 @@ const LEVERAGE_LTV_OPTIONS = Array.from({ length: 18 }, (_, index) =>
 const LEVERAGE_SAFE_MAX_LTV = 0.75;
 const LEVERAGE_MAX_LTV = LEVERAGE_LTV_OPTIONS[LEVERAGE_LTV_OPTIONS.length - 1];
 const CRIME_SERIES_LIMIT = 400;
+const CRIME_TREND_MAX_MONTHS = 12;
+const CRIME_CATEGORY_PALETTE = [
+  '#ef4444',
+  '#f97316',
+  '#facc15',
+  '#22c55e',
+  '#3b82f6',
+  '#a855f7',
+  '#ec4899',
+  '#14b8a6',
+  '#0ea5e9',
+  '#6366f1',
+  '#8b5cf6',
+  '#f472b6',
+];
 const CASHFLOW_VIEW_OPTIONS = [
   { value: 'all', label: 'All cash flow' },
   { value: 'positive', label: 'Positive after-tax cash flow' },
@@ -297,6 +312,47 @@ const formatCrimeCategory = (value) => {
     .split('-')
     .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
     .join(' ');
+};
+
+const buildCrimeMonthRange = (latestMonth, limit = CRIME_TREND_MAX_MONTHS) => {
+  const normalized = normalizeCrimeMonth(latestMonth);
+  if (!normalized) {
+    return [];
+  }
+  const [yearString, monthString] = normalized.split('-');
+  let year = Number(yearString);
+  let monthIndex = Number(monthString) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) {
+    return [];
+  }
+  const months = [];
+  for (let offset = 0; offset < limit; offset += 1) {
+    const date = new Date(year, monthIndex - offset, 1);
+    if (Number.isNaN(date.getTime())) {
+      break;
+    }
+    const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    if (!months.includes(iso)) {
+      months.push(iso);
+    }
+  }
+  return months;
+};
+
+const compareCrimeMonths = (a, b) => {
+  const normalizedA = normalizeCrimeMonth(a);
+  const normalizedB = normalizeCrimeMonth(b);
+  if (!normalizedA && !normalizedB) return 0;
+  if (!normalizedA) return 1;
+  if (!normalizedB) return -1;
+  const [yearA, monthA] = normalizedA.split('-').map((value) => Number(value));
+  const [yearB, monthB] = normalizedB.split('-').map((value) => Number(value));
+  if (!Number.isFinite(yearA) || !Number.isFinite(monthA)) return 1;
+  if (!Number.isFinite(yearB) || !Number.isFinite(monthB)) return -1;
+  if (yearA === yearB) {
+    return monthA - monthB;
+  }
+  return yearA - yearB;
 };
 
 const formatCrimeMonth = (value) => {
@@ -771,14 +827,15 @@ const summarizeCrimeData = (
     });
   }
 
-  const topCategories = Array.from(categoryCounts.entries())
+  const categoryBreakdown = Array.from(categoryCounts.entries())
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
     .map(([label, count]) => ({
       label,
       count,
       share: totalIncidents > 0 ? count / totalIncidents : 0,
     }));
+
+  const topCategories = categoryBreakdown.slice(0, 3);
 
   const topOutcomes = Array.from(outcomeCounts.entries())
     .sort((a, b) => b[1] - a[1])
@@ -876,6 +933,7 @@ const summarizeCrimeData = (
     monthLabel: month ? formatCrimeMonth(month) : '',
     lastUpdated,
     totalIncidents,
+    categoryBreakdown,
     topCategories,
     topOutcomes,
     locationSummary: mostCommonStreet || fallbackLocationName || '',
@@ -3925,6 +3983,8 @@ export default function App() {
   const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
   const [crimeState, setCrimeState] = useState(INITIAL_CRIME_STATE);
   const [crimePostcodeState, setCrimePostcodeState] = useState({ status: 'idle', data: null, error: '' });
+  const [crimeSelectedMonth, setCrimeSelectedMonth] = useState('');
+  const [crimeTrendActiveCategories, setCrimeTrendActiveCategories] = useState({});
   const [urlSyncReady, setUrlSyncReady] = useState(false);
   const urlSyncLastValueRef = useRef('');
 
@@ -5047,6 +5107,7 @@ export default function App() {
         let summaryBoundsHint = geocodeBounds || null;
         let finalCrimeData = null;
         let finalError = null;
+        let lastSuccessfulParams = null;
 
         const attemptFetch = async (params, { boundsHint } = {}) => {
           try {
@@ -5055,6 +5116,7 @@ export default function App() {
               if (boundsHint) {
                 summaryBoundsHint = boundsHint;
               }
+              lastSuccessfulParams = new URLSearchParams(params);
               return data;
             }
             return null;
@@ -5132,21 +5194,174 @@ export default function App() {
           throw new Error(fallbackErrorMessage);
         }
 
-        const month = normalizeCrimeMonth(
+        const defaultMonth = normalizeCrimeMonth(
           lastUpdatedMonth || (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '')
         );
-        const summary = summarizeCrimeData(finalCrimeData, {
+        const fallbackLocationName = geocodeLocationSummary || geocodeDisplayName || propertyAddress;
+        const normalizedLastUpdated = normalizeCrimeMonth(lastUpdatedDate) || lastUpdatedDate;
+        const mapCenterOverride = hasUsableCoordinates(crimeLat, crimeLon)
+          ? { lat: crimeLat, lon: crimeLon }
+          : null;
+        const mapBoundsOverride = summaryBoundsHint ?? geocodeBounds;
+
+        const primarySummary = summarizeCrimeData(finalCrimeData, {
           lat: crimeLat,
           lon: crimeLon,
-          month,
-          lastUpdated: normalizeCrimeMonth(lastUpdatedDate) || lastUpdatedDate,
-          fallbackLocationName: geocodeLocationSummary || geocodeDisplayName || propertyAddress,
-          mapBoundsOverride: summaryBoundsHint ?? geocodeBounds,
-          mapCenterOverride:
-            hasUsableCoordinates(crimeLat, crimeLon) ? { lat: crimeLat, lon: crimeLon } : null,
+          month: defaultMonth,
+          lastUpdated: normalizedLastUpdated,
+          fallbackLocationName,
+          mapBoundsOverride,
+          mapCenterOverride,
         });
+
+        const monthCandidates = buildCrimeMonthRange(defaultMonth || lastUpdatedMonth || '');
+        if (defaultMonth && !monthCandidates.includes(defaultMonth)) {
+          monthCandidates.unshift(defaultMonth);
+        }
+        const availableMonthValues = monthCandidates.length > 0 ? monthCandidates : defaultMonth ? [defaultMonth] : [];
+
+        const monthlySummaryMap = new Map();
+        const categoryTotals = new Map();
+        const combinedCrimes = [];
+
+        const applyCategoryTotals = (breakdown) => {
+          if (!Array.isArray(breakdown)) return;
+          breakdown.forEach(({ label, count }) => {
+            if (typeof label !== 'string' || label === '') return;
+            const numericCount = Number(count) || 0;
+            categoryTotals.set(label, (categoryTotals.get(label) ?? 0) + numericCount);
+          });
+        };
+
+        const registerMonthSummary = (monthValue, crimes, summaryValue) => {
+          if (typeof monthValue === 'string' && monthValue !== '') {
+            monthlySummaryMap.set(monthValue, summaryValue);
+          }
+          if (Array.isArray(crimes) && crimes.length > 0) {
+            combinedCrimes.push(...crimes);
+          }
+          applyCategoryTotals(summaryValue?.categoryBreakdown);
+        };
+
+        registerMonthSummary(defaultMonth || '', finalCrimeData, primarySummary);
+
+        const paramsTemplateString = (lastSuccessfulParams || baseParams).toString();
+
+        for (const monthValue of availableMonthValues) {
+          if (!monthValue || monthValue === defaultMonth) {
+            continue;
+          }
+          let monthCrimes = [];
+          try {
+            const monthParams = new URLSearchParams(paramsTemplateString);
+            monthParams.set('date', monthValue);
+            monthCrimes = await fetchCrimesWithParams(monthParams);
+          } catch (monthError) {
+            if (monthError?.name === 'AbortError') {
+              throw monthError;
+            }
+            if (monthError?.status && monthError.status !== 404) {
+              console.warn('Unable to fetch crime statistics for month', monthValue, monthError);
+            }
+            monthCrimes = [];
+          }
+          const monthSummary = summarizeCrimeData(monthCrimes, {
+            lat: crimeLat,
+            lon: crimeLon,
+            month: monthValue,
+            lastUpdated: normalizedLastUpdated,
+            fallbackLocationName,
+            mapBoundsOverride,
+            mapCenterOverride,
+          });
+          registerMonthSummary(monthValue, monthCrimes, monthSummary);
+        }
+
+        const chronologicalMonths = [...monthlySummaryMap.keys()].sort(compareCrimeMonths);
+        const chartData = chronologicalMonths.map((monthValue) => {
+          const summaryValue = monthlySummaryMap.get(monthValue);
+          const entry = {
+            month: monthValue,
+            label: formatCrimeMonth(monthValue),
+            total: summaryValue?.totalIncidents ?? 0,
+          };
+          if (Array.isArray(summaryValue?.categoryBreakdown)) {
+            summaryValue.categoryBreakdown.forEach(({ label, count }) => {
+              if (typeof label === 'string' && label !== '') {
+                entry[label] = count ?? 0;
+              }
+            });
+          }
+          return entry;
+        });
+
+        const sortedCategories = Array.from(categoryTotals.entries())
+          .sort((a, b) => b[1] - a[1])
+          .map(([label]) => label);
+
+        const aggregatedSummary = summarizeCrimeData(combinedCrimes, {
+          lat: crimeLat,
+          lon: crimeLon,
+          month: '',
+          lastUpdated: normalizedLastUpdated,
+          fallbackLocationName,
+          mapBoundsOverride,
+          mapCenterOverride,
+        });
+        aggregatedSummary.month = 'all';
+        const monthsCount = chronologicalMonths.length;
+        if (monthsCount > 1) {
+          const oldestLabel = formatCrimeMonth(chronologicalMonths[0]);
+          const newestLabel = formatCrimeMonth(chronologicalMonths[monthsCount - 1]);
+          if (oldestLabel && newestLabel) {
+            aggregatedSummary.monthLabel = oldestLabel === newestLabel ? newestLabel : `${oldestLabel} – ${newestLabel}`;
+          } else {
+            aggregatedSummary.monthLabel = 'All months';
+          }
+          aggregatedSummary.rangeDescription = `Past ${monthsCount} months`;
+        } else if (monthsCount === 1) {
+          aggregatedSummary.monthLabel = formatCrimeMonth(chronologicalMonths[0]) || 'All months';
+          aggregatedSummary.rangeDescription = aggregatedSummary.monthLabel;
+        } else {
+          aggregatedSummary.monthLabel = 'All months';
+          aggregatedSummary.rangeDescription = 'All months';
+        }
+
+        const monthOptions = availableMonthValues
+          .filter((value) => typeof value === 'string' && value !== '')
+          .map((value) => ({
+            value,
+            label: formatCrimeMonth(value) || value,
+          }));
+        const availableMonths = monthOptions.length > 0
+          ? [{ value: 'all', label: 'All months' }, ...monthOptions]
+          : [{ value: 'all', label: 'All months' }];
+
+        const monthlySummariesObject = {};
+        monthlySummaryMap.forEach((value, key) => {
+          if (typeof key === 'string' && key !== '') {
+            monthlySummariesObject[key] = value;
+          }
+        });
+
+        const trendData = {
+          data: chartData,
+          categories: sortedCategories,
+        };
+
         if (!controller.signal.aborted) {
-          setCrimeState({ status: 'success', data: summary, error: '' });
+          setCrimeState({
+            status: 'success',
+            data: {
+              ...primarySummary,
+              availableMonths,
+              monthlySummaries: monthlySummariesObject,
+              aggregatedSummary,
+              trendData,
+              defaultMonth: defaultMonth && monthlySummariesObject[defaultMonth] ? defaultMonth : '',
+            },
+            error: '',
+          });
         }
       } catch (error) {
         if (error.name === 'AbortError') {
@@ -5966,30 +6181,118 @@ export default function App() {
 
   const waitingForGeocode = hasPropertyAddress && geocodeState.status === 'loading';
   const crimeSummary = crimeState.data;
-  const hasCrimeIncidents = crimeState.status === 'success' && Boolean(crimeSummary);
+  const crimeAvailableMonths = Array.isArray(crimeSummary?.availableMonths)
+    ? crimeSummary.availableMonths
+    : [];
+  const crimeMonthlySummaries =
+    crimeSummary?.monthlySummaries && typeof crimeSummary.monthlySummaries === 'object'
+      ? crimeSummary.monthlySummaries
+      : {};
+  const crimeAggregatedSummary =
+    crimeSummary?.aggregatedSummary && typeof crimeSummary.aggregatedSummary === 'object'
+      ? crimeSummary.aggregatedSummary
+      : null;
+  const crimeTrendData =
+    crimeSummary?.trendData && typeof crimeSummary.trendData === 'object' ? crimeSummary.trendData : null;
+  const crimeDefaultMonth = typeof crimeSummary?.defaultMonth === 'string' ? crimeSummary.defaultMonth : '';
+
+  useEffect(() => {
+    if (crimeState.status !== 'success' || !crimeSummary) {
+      setCrimeSelectedMonth('');
+      return;
+    }
+    const monthValues = crimeAvailableMonths.map((option) => option.value);
+    if (monthValues.length === 0) {
+      setCrimeSelectedMonth('');
+      return;
+    }
+    const preferredMonth =
+      (crimeDefaultMonth && monthValues.includes(crimeDefaultMonth) && crimeDefaultMonth) ||
+      monthValues.find((value) => value !== 'all') ||
+      monthValues[0];
+    setCrimeSelectedMonth((prev) => (monthValues.includes(prev) ? prev : preferredMonth));
+  }, [crimeState.status, crimeSummary, crimeAvailableMonths, crimeDefaultMonth]);
+
+  useEffect(() => {
+    if (!crimeTrendData || !Array.isArray(crimeTrendData.categories) || crimeTrendData.categories.length === 0) {
+      setCrimeTrendActiveCategories({});
+      return;
+    }
+    setCrimeTrendActiveCategories((prev) => {
+      const next = {};
+      crimeTrendData.categories.forEach((category, index) => {
+        if (typeof category !== 'string' || category === '') {
+          return;
+        }
+        if (Object.prototype.hasOwnProperty.call(prev, category)) {
+          next[category] = prev[category];
+        } else {
+          next[category] = index < 4;
+        }
+      });
+      return next;
+    });
+  }, [crimeTrendData]);
+
+  const crimeTrendCategoryColors = useMemo(() => {
+    if (!crimeTrendData || !Array.isArray(crimeTrendData.categories)) {
+      return {};
+    }
+    const colors = {};
+    crimeTrendData.categories.forEach((category, index) => {
+      if (typeof category === 'string' && category !== '') {
+        colors[category] = CRIME_CATEGORY_PALETTE[index % CRIME_CATEGORY_PALETTE.length];
+      }
+    });
+    return colors;
+  }, [crimeTrendData]);
+
+  const displayedCrimeSummary = useMemo(() => {
+    if (!crimeSummary) {
+      return null;
+    }
+    if (crimeSelectedMonth === 'all') {
+      return crimeAggregatedSummary ?? crimeSummary;
+    }
+    if (crimeSelectedMonth && crimeMonthlySummaries[crimeSelectedMonth]) {
+      return crimeMonthlySummaries[crimeSelectedMonth];
+    }
+    if (crimeSummary.month && crimeMonthlySummaries[crimeSummary.month]) {
+      return crimeMonthlySummaries[crimeSummary.month];
+    }
+    return crimeSummary;
+  }, [crimeAggregatedSummary, crimeMonthlySummaries, crimeSelectedMonth, crimeSummary]);
+
+  const hasCrimeIncidents = crimeState.status === 'success' && Boolean(displayedCrimeSummary);
   const crimeLoading = crimeState.status === 'loading';
   const crimeError = crimeState.status === 'error' ? crimeState.error : '';
-  const crimeMonthLabel = crimeSummary?.monthLabel ?? '';
-  const crimeIncidentsCount = crimeSummary?.totalIncidents ?? 0;
+  const crimeMonthLabel = displayedCrimeSummary?.monthLabel ?? '';
+  const crimePeriodDescription =
+    crimeSelectedMonth === 'all'
+      ? crimeAggregatedSummary?.rangeDescription ?? crimeMonthLabel
+      : crimeMonthLabel;
+  const crimeIncidentsCount = displayedCrimeSummary?.totalIncidents ?? 0;
   const crimeHasRecordedIncidents = crimeIncidentsCount > 0;
   const crimeMapCenter = useMemo(() => {
     const fallbackCoordinates = hasUsableCoordinates(crimeLat, crimeLon)
       ? { lat: crimeLat, lon: crimeLon }
       : null;
-    const lat = Number.isFinite(crimeSummary?.mapCenter?.lat)
-      ? crimeSummary.mapCenter.lat
+    const lat = Number.isFinite(displayedCrimeSummary?.mapCenter?.lat)
+      ? displayedCrimeSummary.mapCenter.lat
       : fallbackCoordinates?.lat ?? null;
-    const lon = Number.isFinite(crimeSummary?.mapCenter?.lon)
-      ? crimeSummary.mapCenter.lon
+    const lon = Number.isFinite(displayedCrimeSummary?.mapCenter?.lon)
+      ? displayedCrimeSummary.mapCenter.lon
       : fallbackCoordinates?.lon ?? null;
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || !hasUsableCoordinates(lat, lon)) {
       return null;
     }
-    const zoom = Number.isFinite(crimeSummary?.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14;
+    const zoom = Number.isFinite(displayedCrimeSummary?.mapCenter?.zoom)
+      ? displayedCrimeSummary.mapCenter.zoom
+      : 14;
     return { lat, lon, zoom };
-  }, [crimeSummary, crimeLat, crimeLon]);
+  }, [crimeLat, crimeLon, displayedCrimeSummary]);
   const crimeMapBounds = useMemo(() => {
-    const rawBounds = crimeSummary?.mapBounds;
+    const rawBounds = displayedCrimeSummary?.mapBounds;
     if (
       !Array.isArray(rawBounds) ||
       rawBounds.length !== 2 ||
@@ -6024,13 +6327,13 @@ export default function App() {
       [minLat, minLon],
       [maxLat, maxLon],
     ];
-  }, [crimeSummary]);
+  }, [displayedCrimeSummary]);
 
   const crimeMapMarkers = useMemo(() => {
-    if (!crimeSummary?.mapCrimes) {
+    if (!displayedCrimeSummary?.mapCrimes) {
       return [];
     }
-    return crimeSummary.mapCrimes
+    return displayedCrimeSummary.mapCrimes
       .map((incident) => {
         const lat = Number(incident?.lat);
         const lon = Number(incident?.lon);
@@ -6048,9 +6351,9 @@ export default function App() {
         };
       })
       .filter(Boolean);
-  }, [crimeSummary]);
+  }, [displayedCrimeSummary]);
 
-  const crimeMapKey = crimeSummary?.mapKey ?? '';
+  const crimeMapKey = displayedCrimeSummary?.mapKey ?? '';
 
   const crimeMapExternalUrl = useMemo(() => {
     if (!crimeMapCenter) {
@@ -6062,6 +6365,21 @@ export default function App() {
       6
     )}#map=${mapZoom}/${lat.toFixed(6)}/${lon.toFixed(6)}`;
   }, [crimeMapCenter]);
+
+  const crimeTrendActiveKeys = useMemo(() => {
+    if (!crimeTrendData || !Array.isArray(crimeTrendData.categories)) {
+      return [];
+    }
+    return crimeTrendData.categories.filter((category) => crimeTrendActiveCategories[category] !== false);
+  }, [crimeTrendActiveCategories, crimeTrendData]);
+
+  const crimeTrendChartData = Array.isArray(crimeTrendData?.data) ? crimeTrendData.data : [];
+  const crimeFallbackMonthOption =
+    crimeAvailableMonths.find((option) => option.value === crimeDefaultMonth) ??
+    crimeAvailableMonths.find((option) => option.value !== 'all') ??
+    crimeAvailableMonths[0] ??
+    null;
+  const crimeSelectValue = crimeSelectedMonth || crimeFallbackMonthOption?.value || '';
 
   const leverageChartData = useMemo(() => {
     const price = Number(inputs.purchasePrice) || 0;
@@ -10364,7 +10682,7 @@ export default function App() {
                   }`}
                 >
                   <div
-                    className={`flex items-center justify-between gap-3 ${
+                    className={`flex flex-wrap items-center justify-between gap-3 ${
                       collapsedSections.crime ? '' : 'mb-2'
                     }`}
                   >
@@ -10384,11 +10702,33 @@ export default function App() {
                         className="text-sm font-semibold text-slate-700"
                       />
                     </div>
-                    {crimeLoading ? (
-                      <span className="text-[11px] text-slate-500">Loading…</span>
-                    ) : crimeMonthLabel ? (
-                      <span className="text-[11px] text-slate-500">Data: {crimeMonthLabel}</span>
-                    ) : null}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {crimeAvailableMonths.length > 0 ? (
+                        <label
+                          htmlFor="crime-month-select"
+                          className="flex items-center gap-2 text-[11px] text-slate-500"
+                        >
+                          <span>Reporting period</span>
+                          <select
+                            id="crime-month-select"
+                            value={crimeSelectValue}
+                            onChange={(event) => setCrimeSelectedMonth(event.target.value)}
+                            className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                          >
+                            {crimeAvailableMonths.map((option) => (
+                              <option key={`crime-month-${option.value}`} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      {crimeLoading ? (
+                        <span className="text-[11px] text-slate-500">Loading…</span>
+                      ) : crimePeriodDescription ? (
+                        <span className="text-[11px] text-slate-500">Period: {crimePeriodDescription}</span>
+                      ) : null}
+                    </div>
                   </div>
                   {!collapsedSections.crime ? (
                     <div className="space-y-4">
@@ -10409,13 +10749,13 @@ export default function App() {
                           <div className="text-[11px] text-slate-500">
                             {crimeHasRecordedIncidents ? (
                               <>
-                                Latest month{crimeMonthLabel ? `: ${crimeMonthLabel}` : ''}.
-                                {crimeSummary?.locationSummary ? (
+                                Selected period{crimePeriodDescription ? `: ${crimePeriodDescription}` : ''}.
+                                {displayedCrimeSummary?.locationSummary ? (
                                   <>
                                     {' '}
                                     Most reports near{' '}
                                     <span className="font-semibold text-slate-700">
-                                      {crimeSummary.locationSummary}
+                                      {displayedCrimeSummary.locationSummary}
                                     </span>
                                     .
                                   </>
@@ -10423,14 +10763,14 @@ export default function App() {
                               </>
                             ) : (
                               <>
-                                No recorded crimes for the latest reporting month
-                                {crimeMonthLabel ? ` (${crimeMonthLabel})` : ''}.
-                                {crimeSummary?.locationSummary ? (
+                                No recorded crimes for the selected period
+                                {crimePeriodDescription ? ` (${crimePeriodDescription})` : ''}.
+                                {displayedCrimeSummary?.locationSummary ? (
                                   <>
                                     {' '}
                                     Monitoring area near{' '}
                                     <span className="font-semibold text-slate-700">
-                                      {crimeSummary.locationSummary}
+                                      {displayedCrimeSummary.locationSummary}
                                     </span>
                                     .
                                   </>
@@ -10442,29 +10782,29 @@ export default function App() {
                             <div className="rounded-lg bg-slate-50 px-3 py-2">
                               <div className="text-[11px] text-slate-500">Total incidents</div>
                               <div className="text-lg font-semibold text-slate-800">
-                                {crimeSummary.totalIncidents.toLocaleString()}
+                                {displayedCrimeSummary.totalIncidents.toLocaleString()}
                               </div>
                             </div>
                             <div className="rounded-lg bg-slate-50 px-3 py-2">
                               <div className="text-[11px] text-slate-500">Most common category</div>
                               <div className="text-sm font-semibold text-slate-800">
-                                {crimeSummary.topCategories[0]?.label ?? '—'}
+                                {displayedCrimeSummary.topCategories[0]?.label ?? '—'}
                               </div>
-                              {crimeSummary.topCategories[0] ? (
+                              {displayedCrimeSummary.topCategories[0] ? (
                                 <div className="text-[11px] text-slate-500">
-                                  {crimeSummary.topCategories[0].count.toLocaleString()} (
-                                  {formatPercent(crimeSummary.topCategories[0].share)})
+                                  {displayedCrimeSummary.topCategories[0].count.toLocaleString()} (
+                                  {formatPercent(displayedCrimeSummary.topCategories[0].share)})
                                 </div>
                               ) : null}
                             </div>
                             <div className="rounded-lg bg-slate-50 px-3 py-2">
                               <div className="text-[11px] text-slate-500">Most common outcome</div>
                               <div className="text-sm font-semibold text-slate-800">
-                                {crimeSummary.topOutcomes[0]?.label ?? 'Outcome pending'}
+                                {displayedCrimeSummary.topOutcomes[0]?.label ?? 'Outcome pending'}
                               </div>
-                              {crimeSummary.topOutcomes[0] ? (
+                              {displayedCrimeSummary.topOutcomes[0] ? (
                                 <div className="text-[11px] text-slate-500">
-                                  {crimeSummary.topOutcomes[0].count.toLocaleString()} reports
+                                  {displayedCrimeSummary.topOutcomes[0].count.toLocaleString()} reports
                                 </div>
                               ) : null}
                             </div>
@@ -10473,8 +10813,8 @@ export default function App() {
                             <div>
                               <h4 className="mb-2 text-xs font-semibold text-slate-700">Category breakdown</h4>
                               <ul className="space-y-1 text-[11px] text-slate-600">
-                                {crimeSummary.topCategories.length > 0 ? (
-                                  crimeSummary.topCategories.map((category) => (
+                                {displayedCrimeSummary.topCategories.length > 0 ? (
+                                  displayedCrimeSummary.topCategories.map((category) => (
                                     <li
                                       key={category.label}
                                       className="flex items-center justify-between gap-2"
@@ -10494,8 +10834,8 @@ export default function App() {
                             <div>
                               <h4 className="mb-2 text-xs font-semibold text-slate-700">Outcome snapshot</h4>
                               <ul className="space-y-1 text-[11px] text-slate-600">
-                                {crimeSummary.topOutcomes.length > 0 ? (
-                                  crimeSummary.topOutcomes.map((outcome) => (
+                                {displayedCrimeSummary.topOutcomes.length > 0 ? (
+                                  displayedCrimeSummary.topOutcomes.map((outcome) => (
                                     <li
                                       key={outcome.label}
                                       className="flex items-center justify-between gap-2"
@@ -10512,6 +10852,99 @@ export default function App() {
                               </ul>
                             </div>
                           </div>
+                          {crimeSelectedMonth === 'all' && crimeTrendChartData.length > 0 ? (
+                            <div className="space-y-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <h4 className="text-xs font-semibold text-slate-700">Monthly crime trend</h4>
+                                <p className="text-[11px] text-slate-500">
+                                  Toggle crime types to focus the chart on specific categories.
+                                </p>
+                              </div>
+                              {crimeTrendData?.categories?.length ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {crimeTrendData.categories.map((category) => {
+                                    if (typeof category !== 'string' || category === '') {
+                                      return null;
+                                    }
+                                    const active = crimeTrendActiveCategories[category] !== false;
+                                    const color = crimeTrendCategoryColors[category] ?? '#1e293b';
+                                    const background = active && color.startsWith('#') && color.length === 7
+                                      ? `${color}1a`
+                                      : active
+                                      ? 'rgba(30,41,59,0.1)'
+                                      : 'transparent';
+                                    return (
+                                      <button
+                                        type="button"
+                                        key={`crime-trend-toggle-${category}`}
+                                        onClick={() =>
+                                          setCrimeTrendActiveCategories((prev) => ({
+                                            ...prev,
+                                            [category]: prev[category] === false,
+                                          }))
+                                        }
+                                        className="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition hover:bg-slate-100"
+                                        style={{
+                                          borderColor: color,
+                                          backgroundColor: background,
+                                          color: active ? color : '#475569',
+                                        }}
+                                      >
+                                        <span
+                                          className="h-2.5 w-2.5 rounded-full"
+                                          style={{ backgroundColor: color }}
+                                        />
+                                        <span>{category}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+                              <div className="h-64 w-full">
+                                {crimeTrendData?.categories?.length ? (
+                                  crimeTrendActiveKeys.length > 0 ? (
+                                    <ResponsiveContainer>
+                                      <LineChart data={crimeTrendChartData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
+                                        <CartesianGrid strokeDasharray="3 3" />
+                                        <XAxis
+                                          dataKey="label"
+                                          tick={{ fontSize: 10, fill: '#475569' }}
+                                          interval={0}
+                                          angle={-30}
+                                          textAnchor="end"
+                                        />
+                                        <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#475569' }} />
+                                        <Tooltip
+                                          formatter={(value, name) => [Number(value).toLocaleString(), name]}
+                                          labelFormatter={(label) => label}
+                                        />
+                                        {crimeTrendActiveKeys.map((category) => (
+                                          <RechartsLine
+                                            key={`crime-trend-line-${category}`}
+                                            type="monotone"
+                                            dataKey={category}
+                                            name={category}
+                                            stroke={crimeTrendCategoryColors[category] ?? '#1e293b'}
+                                            strokeWidth={2}
+                                            dot={false}
+                                            isAnimationActive={false}
+                                          />
+                                        ))}
+                                      </LineChart>
+                                    </ResponsiveContainer>
+                                  ) : (
+                                    <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                                      Select at least one category to display the trend.
+                                    </div>
+                                  )
+                                ) : (
+                                  <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                                    Monthly category breakdown isn’t available for this area yet.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
                           <div className="h-72 w-full overflow-hidden rounded-xl border border-slate-200">
                             {crimeMapMarkers.length > 0 && crimeMapCenter ? (
                               <CrimeMap
@@ -10521,7 +10954,7 @@ export default function App() {
                                 bounds={crimeMapBounds}
                                 markers={crimeMapMarkers}
                                 title={`Map preview for ${
-                                  crimeSummary.locationSummary || propertyAddress || 'selected area'
+                                  displayedCrimeSummary?.locationSummary || propertyAddress || 'selected area'
                                 }`}
                               />
                             ) : (
@@ -10554,9 +10987,9 @@ export default function App() {
                             </div>
                           ) : null}
                           <div className="space-y-1 text-[10px] text-slate-500">
-                            {crimeSummary.mapLimited ? (
+                            {displayedCrimeSummary?.mapLimited ? (
                               <p>
-                                Showing {crimeSummary.incidentsOnMap.toLocaleString()} of{' '}
+                                Showing {displayedCrimeSummary.incidentsOnMap.toLocaleString()} of{' '}
                                 {crimeIncidentsCount.toLocaleString()} incidents on the map.
                               </p>
                             ) : null}
