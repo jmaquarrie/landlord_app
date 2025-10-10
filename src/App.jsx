@@ -256,6 +256,11 @@ const LEVERAGE_LTV_OPTIONS = Array.from({ length: 18 }, (_, index) =>
 const LEVERAGE_SAFE_MAX_LTV = 0.75;
 const LEVERAGE_MAX_LTV = LEVERAGE_LTV_OPTIONS[LEVERAGE_LTV_OPTIONS.length - 1];
 const CRIME_SERIES_LIMIT = 400;
+const CASHFLOW_VIEW_OPTIONS = [
+  { value: 'all', label: 'All cash flow' },
+  { value: 'positive', label: 'Positive after-tax cash flow' },
+  { value: 'negative', label: 'Negative after-tax cash flow' },
+];
 const NPV_BAR_KEYS = ['operatingCash', 'saleProceeds'];
 const NPV_LINE_KEYS = [
   'totalCash',
@@ -1240,7 +1245,7 @@ const CrimeMap = ({ center, bounds, markers, className, title }) => {
 
   const mapTitle = title || 'Police-reported crime map';
 
-  const srcDoc = useMemo(() => {
+  const mapDocument = useMemo(() => {
     const encodedCenter = encodeForSrcdoc(normalizedCenter);
     const encodedBounds = normalizedBounds ? encodeForSrcdoc(normalizedBounds) : '';
     const encodedMarkers = encodeForSrcdoc(normalizedMarkers);
@@ -1325,10 +1330,34 @@ const CrimeMap = ({ center, bounds, markers, className, title }) => {
 </html>`;
   }, [mapTitle, normalizedBounds, normalizedCenter, normalizedMarkers]);
 
+  const iframeRef = useRef(null);
+  const canUseObjectUrl =
+    typeof window !== 'undefined' &&
+    typeof window.URL !== 'undefined' &&
+    typeof window.URL.createObjectURL === 'function';
+
+  useEffect(() => {
+    if (!canUseObjectUrl || !iframeRef.current) {
+      return undefined;
+    }
+    const blob = new Blob([mapDocument], { type: 'text/html' });
+    const url = window.URL.createObjectURL(blob);
+    iframeRef.current.src = url;
+    return () => {
+      if (iframeRef.current && iframeRef.current.src === url) {
+        iframeRef.current.src = 'about:blank';
+      }
+      window.URL.revokeObjectURL(url);
+    };
+  }, [canUseObjectUrl, mapDocument]);
+
+  const iframeProps = canUseObjectUrl ? { src: 'about:blank' } : { srcDoc: mapDocument };
+
   return (
     <iframe
+      ref={iframeRef}
       title={mapTitle}
-      srcDoc={srcDoc}
+      {...iframeProps}
       className={['h-full w-full border-0', className].filter(Boolean).join(' ')}
       loading="lazy"
       sandbox="allow-scripts allow-same-origin"
@@ -3803,6 +3832,22 @@ export default function App() {
     efficiency: true,
     irrHurdle: true,
   });
+  const [leverageOptionsOpen, setLeverageOptionsOpen] = useState(false);
+  const [interestSplitOptionsOpen, setInterestSplitOptionsOpen] = useState(false);
+  const [cashflowDetailOptionsOpen, setCashflowDetailOptionsOpen] = useState(false);
+  const [leverageRange, setLeverageRange] = useState(() => ({
+    min: LEVERAGE_LTV_OPTIONS[0],
+    max: LEVERAGE_MAX_LTV,
+  }));
+  const [interestSplitRange, setInterestSplitRange] = useState(() => ({
+    start: 1,
+    end: Math.max(1, Number(DEFAULT_INPUTS.exitYear) || 1),
+  }));
+  const [cashflowDetailRange, setCashflowDetailRange] = useState(() => ({
+    start: 1,
+    end: Math.max(1, Number(DEFAULT_INPUTS.exitYear) || 1),
+  }));
+  const [cashflowDetailView, setCashflowDetailView] = useState('all');
   const [npvSeriesActive, setNpvSeriesActive] = useState(() =>
     NPV_SERIES_KEYS.reduce((acc, key) => {
       acc[key] = true;
@@ -3859,6 +3904,24 @@ export default function App() {
       setShowInvestmentProfileDetails(false);
     }
   }, [collapsedSections.investmentProfile]);
+
+  useEffect(() => {
+    if (collapsedSections.leverage) {
+      setLeverageOptionsOpen(false);
+    }
+  }, [collapsedSections.leverage]);
+
+  useEffect(() => {
+    if (collapsedSections.interestSplit) {
+      setInterestSplitOptionsOpen(false);
+    }
+  }, [collapsedSections.interestSplit]);
+
+  useEffect(() => {
+    if (collapsedSections.cashflowDetail) {
+      setCashflowDetailOptionsOpen(false);
+    }
+  }, [collapsedSections.cashflowDetail]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5693,6 +5756,39 @@ export default function App() {
     });
   }, [equity.annualDebtService, equity.annualInterest, equity.annualPrincipal, exitYearCount]);
 
+  const interestSplitYearOptions = useMemo(() => {
+    const years = interestSplitChartData
+      .map((point) => Number(point?.year) || 0)
+      .filter((year) => year > 0);
+    const uniqueYears = Array.from(new Set(years)).sort((a, b) => a - b);
+    return uniqueYears.length > 0 ? uniqueYears : [1];
+  }, [interestSplitChartData]);
+
+  useEffect(() => {
+    if (!interestSplitYearOptions.length) {
+      return;
+    }
+    const minYear = interestSplitYearOptions[0];
+    const maxYear = interestSplitYearOptions[interestSplitYearOptions.length - 1];
+    setInterestSplitRange((prev) => {
+      const nextStart = clamp(Number(prev.start) || minYear, minYear, maxYear);
+      const nextEnd = clamp(Number(prev.end) || maxYear, nextStart, maxYear);
+      if (nextStart === prev.start && nextEnd === prev.end) {
+        return prev;
+      }
+      return { start: nextStart, end: nextEnd };
+    });
+  }, [interestSplitYearOptions]);
+
+  const interestSplitDisplayData = useMemo(() => {
+    const startYear = Number(interestSplitRange.start) || interestSplitYearOptions[0] || 1;
+    const endYear = Number(interestSplitRange.end) || startYear;
+    return interestSplitChartData.filter((point) => {
+      const year = Number(point?.year);
+      return Number.isFinite(year) && year >= startYear && year <= endYear;
+    });
+  }, [interestSplitChartData, interestSplitRange, interestSplitYearOptions]);
+
   const equityGrowthChartData = useMemo(() => {
     if (!Array.isArray(equity.chart)) {
       return [];
@@ -5981,11 +6077,42 @@ export default function App() {
     });
   }, [inputs]);
 
-  const hasInterestSplitData = interestSplitChartData.some(
+  const leverageDisplayData = useMemo(() => {
+    const minLtv = Number(leverageRange.min) || LEVERAGE_LTV_OPTIONS[0];
+    const maxLtv = Number(leverageRange.max) || LEVERAGE_MAX_LTV;
+    const lowerBound = Math.min(minLtv, maxLtv);
+    const upperBound = Math.max(minLtv, maxLtv);
+    return leverageChartData.filter(
+      (point) => point.ltv >= lowerBound - 1e-6 && point.ltv <= upperBound + 1e-6
+    );
+  }, [leverageChartData, leverageRange]);
+
+  const leverageDisplayTicks = useMemo(() => {
+    const minLtv = Number(leverageRange.min) || LEVERAGE_LTV_OPTIONS[0];
+    const maxLtv = Number(leverageRange.max) || LEVERAGE_MAX_LTV;
+    const lowerBound = Math.min(minLtv, maxLtv);
+    const upperBound = Math.max(minLtv, maxLtv);
+    return LEVERAGE_LTV_OPTIONS.filter(
+      (ltv) => ltv >= lowerBound - 1e-6 && ltv <= upperBound + 1e-6
+    );
+  }, [leverageRange]);
+
+  const hasInterestSplitData = interestSplitDisplayData.some(
     (point) => Math.abs(point.interestPaid) > 1e-2 || Math.abs(point.principalPaid) > 1e-2
   );
-  const hasLeverageData = leverageChartData.some(
+  const hasLeverageData = leverageDisplayData.some(
     (point) => Number.isFinite(point.irr) || Number.isFinite(point.roi)
+  );
+
+  const leverageMetricOptions = useMemo(
+    () => [
+      { key: 'irr', label: 'IRR' },
+      { key: 'roi', label: 'Total ROI' },
+      { key: 'propertyNetAfterTax', label: propertyNetAfterTaxLabel },
+      { key: 'efficiency', label: 'IRR × net wealth' },
+      { key: 'irrHurdle', label: 'IRR hurdle' },
+    ],
+    [propertyNetAfterTaxLabel]
   );
 
   useEffect(() => {
@@ -7373,6 +7500,49 @@ export default function App() {
     return rows;
   }, [equity, exitYearCount]);
 
+  const cashflowYearOptions = useMemo(() => {
+    const years = cashflowTableRows
+      .map((row) => Number(row?.year) || 0)
+      .filter((year) => year > 0);
+    const uniqueYears = Array.from(new Set(years)).sort((a, b) => a - b);
+    return uniqueYears.length > 0 ? uniqueYears : [1];
+  }, [cashflowTableRows]);
+
+  useEffect(() => {
+    if (!cashflowYearOptions.length) {
+      return;
+    }
+    const minYear = cashflowYearOptions[0];
+    const maxYear = cashflowYearOptions[cashflowYearOptions.length - 1];
+    setCashflowDetailRange((prev) => {
+      const nextStart = clamp(Number(prev.start) || minYear, minYear, maxYear);
+      const nextEnd = clamp(Number(prev.end) || maxYear, nextStart, maxYear);
+      if (nextStart === prev.start && nextEnd === prev.end) {
+        return prev;
+      }
+      return { start: nextStart, end: nextEnd };
+    });
+  }, [cashflowYearOptions]);
+
+  const cashflowFilteredRows = useMemo(() => {
+    const startYear = Number(cashflowDetailRange.start) || cashflowYearOptions[0] || 1;
+    const endYear = Number(cashflowDetailRange.end) || startYear;
+    return cashflowTableRows.filter((row) => {
+      const year = Number(row?.year);
+      if (!Number.isFinite(year) || year < startYear || year > endYear) {
+        return false;
+      }
+      const afterTax = Number(row?.cashAfterTax) || 0;
+      if (cashflowDetailView === 'positive') {
+        return afterTax > 0;
+      }
+      if (cashflowDetailView === 'negative') {
+        return afterTax < 0;
+      }
+      return true;
+    });
+  }, [cashflowDetailRange, cashflowDetailView, cashflowTableRows, cashflowYearOptions]);
+
   const handlePrint = () => {
     if (typeof window === 'undefined') return;
     setShowLoadPanel(false);
@@ -7898,6 +8068,97 @@ export default function App() {
       ...prev,
       [key]: !(prev[key] !== false),
     }));
+  };
+
+  const handleLeverageRangeChange = (key, rawValue) => {
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue)) {
+      return;
+    }
+    setLeverageRange((prev) => {
+      const minBound = LEVERAGE_LTV_OPTIONS[0];
+      const maxBound = LEVERAGE_MAX_LTV;
+      if (key === 'min') {
+        const nextMin = clamp(numericValue, minBound, maxBound);
+        const nextMax = clamp(Number(prev.max) || maxBound, nextMin, maxBound);
+        if (nextMin === prev.min && nextMax === prev.max) {
+          return prev;
+        }
+        return { min: nextMin, max: nextMax };
+      }
+      if (key === 'max') {
+        const nextMax = clamp(numericValue, minBound, maxBound);
+        const nextMin = clamp(Number(prev.min) || minBound, minBound, nextMax);
+        if (nextMin === prev.min && nextMax === prev.max) {
+          return prev;
+        }
+        return { min: nextMin, max: nextMax };
+      }
+      return prev;
+    });
+  };
+
+  const handleInterestSplitRangeChange = (key, rawValue) => {
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue) || !interestSplitYearOptions.length) {
+      return;
+    }
+    const minYear = interestSplitYearOptions[0];
+    const maxYear = interestSplitYearOptions[interestSplitYearOptions.length - 1];
+    setInterestSplitRange((prev) => {
+      if (key === 'start') {
+        const nextStart = clamp(numericValue, minYear, maxYear);
+        const nextEnd = clamp(Number(prev.end) || nextStart, nextStart, maxYear);
+        if (nextStart === prev.start && nextEnd === prev.end) {
+          return prev;
+        }
+        return { start: nextStart, end: nextEnd };
+      }
+      if (key === 'end') {
+        const nextEnd = clamp(numericValue, minYear, maxYear);
+        const nextStart = clamp(Number(prev.start) || minYear, minYear, nextEnd);
+        if (nextStart === prev.start && nextEnd === prev.end) {
+          return prev;
+        }
+        return { start: nextStart, end: nextEnd };
+      }
+      return prev;
+    });
+  };
+
+  const handleCashflowRangeChange = (key, rawValue) => {
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue) || !cashflowYearOptions.length) {
+      return;
+    }
+    const minYear = cashflowYearOptions[0];
+    const maxYear = cashflowYearOptions[cashflowYearOptions.length - 1];
+    setCashflowDetailRange((prev) => {
+      if (key === 'start') {
+        const nextStart = clamp(numericValue, minYear, maxYear);
+        const nextEnd = clamp(Number(prev.end) || nextStart, nextStart, maxYear);
+        if (nextStart === prev.start && nextEnd === prev.end) {
+          return prev;
+        }
+        return { start: nextStart, end: nextEnd };
+      }
+      if (key === 'end') {
+        const nextEnd = clamp(numericValue, minYear, maxYear);
+        const nextStart = clamp(Number(prev.start) || minYear, minYear, nextEnd);
+        if (nextStart === prev.start && nextEnd === prev.end) {
+          return prev;
+        }
+        return { start: nextStart, end: nextEnd };
+      }
+      return prev;
+    });
+  };
+
+  const handleCashflowViewChange = (value) => {
+    if (typeof value !== 'string') {
+      return;
+    }
+    setCashflowDetailView((prev) => (prev === value ? prev : value));
   };
 
   const handleScenarioSort = (key) => {
@@ -10053,7 +10314,7 @@ export default function App() {
                   collapsedSections.interestSplit ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -10071,12 +10332,76 @@ export default function App() {
                       knowledgeKey="interestSplit"
                     />
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setInterestSplitOptionsOpen((prev) => !prev)}
+                    aria-expanded={interestSplitOptionsOpen}
+                    aria-controls="interest-split-options"
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    title={interestSplitOptionsOpen ? 'Hide interest split filters' : 'Show interest split filters'}
+                  >
+                    <span>Filters</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      className={`h-3 w-3 transition-transform ${interestSplitOptionsOpen ? 'rotate-180' : ''}`}
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5.5 7.5 10 12l4.5-4.5" />
+                    </svg>
+                  </button>
                 </div>
+                {interestSplitOptionsOpen ? (
+                  <div
+                    id="interest-split-options"
+                    className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600"
+                  >
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                      Filter repayment timeline
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] font-semibold text-slate-700">Start year</span>
+                        <select
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                          value={String(interestSplitRange.start)}
+                          onChange={(event) => handleInterestSplitRangeChange('start', event.target.value)}
+                        >
+                          {interestSplitYearOptions.map((year) => (
+                            <option key={`interest-start-${year}`} value={year}>
+                              Year {year}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] font-semibold text-slate-700">End year</span>
+                        <select
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                          value={String(interestSplitRange.end)}
+                          onChange={(event) => handleInterestSplitRangeChange('end', event.target.value)}
+                        >
+                          {interestSplitYearOptions.map((year) => (
+                            <option key={`interest-end-${year}`} value={year}>
+                              Year {year}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="self-end text-[11px] text-slate-500">
+                        Narrow the chart to inspect where interest flips to principal during the hold period.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
                 {!collapsedSections.interestSplit ? (
                   <div className="h-72 w-full">
                     {hasInterestSplitData ? (
                       <ResponsiveContainer>
-                        <AreaChart data={interestSplitChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                        <AreaChart data={interestSplitDisplayData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
                           <YAxis tickFormatter={(value) => currencyNoPence(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
@@ -10106,7 +10431,7 @@ export default function App() {
                       </ResponsiveContainer>
                     ) : (
                       <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
-                        Adjust the mortgage assumptions to model interest and principal payments.
+                        Adjust the mortgage assumptions or update the filters to model interest and principal payments.
                       </div>
                     )}
                   </div>
@@ -10117,7 +10442,7 @@ export default function App() {
                   collapsedSections.leverage ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -10135,7 +10460,94 @@ export default function App() {
                       knowledgeKey="leverage"
                     />
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setLeverageOptionsOpen((prev) => !prev)}
+                    aria-expanded={leverageOptionsOpen}
+                    aria-controls="leverage-options"
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    title={leverageOptionsOpen ? 'Hide leverage filters' : 'Show leverage filters'}
+                  >
+                    <span>Filters</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      className={`h-3 w-3 transition-transform ${leverageOptionsOpen ? 'rotate-180' : ''}`}
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5.5 7.5 10 12l4.5-4.5" />
+                    </svg>
+                  </button>
                 </div>
+                {leverageOptionsOpen ? (
+                  <div
+                    id="leverage-options"
+                    className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600"
+                  >
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                      Customise leverage sweep
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] font-semibold text-slate-700">Minimum LTV</span>
+                        <select
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                          value={String(leverageRange.min)}
+                          onChange={(event) => handleLeverageRangeChange('min', event.target.value)}
+                        >
+                          {LEVERAGE_LTV_OPTIONS.map((ltv) => (
+                            <option key={`leverage-min-${ltv}`} value={ltv}>
+                              {formatPercent(ltv, 0)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] font-semibold text-slate-700">Maximum LTV</span>
+                        <select
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                          value={String(leverageRange.max)}
+                          onChange={(event) => handleLeverageRangeChange('max', event.target.value)}
+                        >
+                          {LEVERAGE_LTV_OPTIONS.map((ltv) => (
+                            <option key={`leverage-max-${ltv}`} value={ltv}>
+                              {formatPercent(ltv, 0)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="flex flex-col gap-1 md:col-span-1">
+                        <span className="text-[11px] font-semibold text-slate-700">Show metrics</span>
+                        <div className="flex flex-wrap gap-2">
+                          {leverageMetricOptions.map((option) => (
+                            <label
+                              key={`leverage-series-${option.key}`}
+                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 ${
+                                leverageSeriesActive[option.key] === false
+                                  ? 'border-slate-200 text-slate-400'
+                                  : 'border-slate-300 text-slate-600'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-3 w-3 accent-slate-600"
+                                checked={leverageSeriesActive[option.key] !== false}
+                                onChange={() => toggleLeverageSeries(option.key)}
+                              />
+                              <span>{option.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="md:col-span-3 text-[11px] text-slate-500">
+                        Focus the leverage curve on the loan-to-value band you care about and hide any performance metrics that aren’t relevant to your investment criteria.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
                 {!collapsedSections.leverage ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -10145,7 +10557,7 @@ export default function App() {
                       {hasLeverageData ? (
                         <>
                           <ResponsiveContainer>
-                            <LineChart data={leverageChartData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
+                            <LineChart data={leverageDisplayData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
                               <CartesianGrid strokeDasharray="3 3" />
                               <XAxis
                                 dataKey="ltv"
@@ -10153,7 +10565,7 @@ export default function App() {
                                 tick={{ fontSize: 11, fill: '#475569' }}
                                 domain={[0.1, 0.95]}
                                 type="number"
-                                ticks={LEVERAGE_LTV_OPTIONS}
+                                ticks={leverageDisplayTicks}
                               />
                               <YAxis
                                 yAxisId="left"
@@ -10247,7 +10659,7 @@ export default function App() {
                               <RechartsLine
                                 type="monotone"
                                 dataKey="efficiency"
-                                name="IRR × Profit"
+                                name="IRR × net wealth"
                                 yAxisId="right"
                                 stroke="#8b5cf6"
                                 strokeWidth={2}
@@ -10261,7 +10673,7 @@ export default function App() {
                         </>
                       ) : (
                         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
-                          Enter a purchase price and rent to explore leverage outcomes.
+                          Adjust the purchase inputs or expand the filters to explore leverage outcomes.
                         </div>
                       )}
                     </div>
@@ -10376,11 +10788,7 @@ export default function App() {
                   collapsedSections.cashflowDetail ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div
-                  className={`flex items-center justify-between gap-3 ${
-                    collapsedSections.cashflowDetail ? '' : 'mb-2'
-                  }`}
-                >
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -10393,18 +10801,103 @@ export default function App() {
                     </button>
                     <SectionTitle label="Annual cash flow detail" className="text-sm font-semibold text-slate-700" />
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setCashflowDetailOptionsOpen((prev) => !prev)}
+                    aria-expanded={cashflowDetailOptionsOpen}
+                    aria-controls="cashflow-detail-options"
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    title={cashflowDetailOptionsOpen ? 'Hide cash flow filters' : 'Show cash flow filters'}
+                  >
+                    <span>Filters</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      className={`h-3 w-3 transition-transform ${cashflowDetailOptionsOpen ? 'rotate-180' : ''}`}
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5.5 7.5 10 12l4.5-4.5" />
+                    </svg>
+                  </button>
                 </div>
+                {cashflowDetailOptionsOpen ? (
+                  <div
+                    id="cashflow-detail-options"
+                    className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600"
+                  >
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                      Focus the annual cash flows
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] font-semibold text-slate-700">Start year</span>
+                        <select
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                          value={String(cashflowDetailRange.start)}
+                          onChange={(event) => handleCashflowRangeChange('start', event.target.value)}
+                        >
+                          {cashflowYearOptions.map((year) => (
+                            <option key={`cashflow-start-${year}`} value={year}>
+                              Year {year}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] font-semibold text-slate-700">End year</span>
+                        <select
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                          value={String(cashflowDetailRange.end)}
+                          onChange={(event) => handleCashflowRangeChange('end', event.target.value)}
+                        >
+                          {cashflowYearOptions.map((year) => (
+                            <option key={`cashflow-end-${year}`} value={year}>
+                              Year {year}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1 lg:col-span-2">
+                        <span className="text-[11px] font-semibold text-slate-700">Cash flow filter</span>
+                        <select
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                          value={cashflowDetailView}
+                          onChange={(event) => handleCashflowViewChange(event.target.value)}
+                        >
+                          {CASHFLOW_VIEW_OPTIONS.map((option) => (
+                            <option key={`cashflow-view-${option.value}`} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="lg:col-span-4 text-[11px] text-slate-500">
+                        Zero in on the holding period that matters most or isolate positive and negative cash flow years.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
                 {!collapsedSections.cashflowDetail ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-                    <CashflowTable
-                      rows={cashflowTableRows}
-                      columns={selectedCashflowColumns}
-                      hiddenColumns={hiddenCashflowColumns}
-                      onRemoveColumn={handleRemoveCashflowColumn}
-                      onAddColumn={handleAddCashflowColumn}
-                      onExport={handleExportCashflowCsv}
-                    />
+                    {cashflowTableRows.length === 0 ? (
+                      <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-center text-[11px] text-slate-500">
+                        Cash flow data becomes available once a hold period is defined.
+                      </p>
+                    ) : (
+                      <CashflowTable
+                        rows={cashflowFilteredRows}
+                        columns={selectedCashflowColumns}
+                        hiddenColumns={hiddenCashflowColumns}
+                        onRemoveColumn={handleRemoveCashflowColumn}
+                        onAddColumn={handleAddCashflowColumn}
+                        onExport={handleExportCashflowCsv}
+                        emptyMessage="No rows match the current filters. Adjust the year range or cash flow view to see results."
+                      />
+                    )}
                   </>
                 ) : null}
               </div>
@@ -12116,11 +12609,16 @@ function CashflowTable({
   onAddColumn,
   hiddenColumns = [],
   onExport,
+  emptyMessage,
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
   if (!rows || rows.length === 0) {
-    return <p className="text-xs text-slate-600">Cash flow data becomes available once a hold period is defined.</p>;
+    return (
+      <p className="text-[11px] text-slate-600">
+        {emptyMessage || 'Cash flow data becomes available once a hold period is defined.'}
+      </p>
+    );
   }
 
   const handleAdd = (key) => {
