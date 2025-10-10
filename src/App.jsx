@@ -45,6 +45,27 @@ const currencyThousands = (value) => {
   });
   return `${negative ? '−' : ''}£${formatted}k`;
 };
+
+const escapeHtml = (value) => {
+  if (typeof value !== 'string' || value === '') {
+    return '';
+  }
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+const encodeForSrcdoc = (value) => {
+  try {
+    return encodeURIComponent(JSON.stringify(value ?? null));
+  } catch (error) {
+    console.warn('Unable to encode map payload for srcdoc:', error);
+    return encodeURIComponent('null');
+  }
+};
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
@@ -1141,6 +1162,180 @@ const formatPercent = (value, decimals = 2) => {
 };
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const CrimeMap = ({ center, bounds, markers, className, title }) => {
+  const normalizedCenter = useMemo(() => {
+    const lat = Number(center?.lat);
+    const lon = Number(center?.lon);
+    const zoom = Number(center?.zoom);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return { lat: 54.0, lon: -2.0, zoom: 6 };
+    }
+    return {
+      lat,
+      lon,
+      zoom: Number.isFinite(zoom) ? clamp(zoom, 3, 18) : 14,
+    };
+  }, [center]);
+
+  const normalizedBounds = useMemo(() => {
+    if (
+      !Array.isArray(bounds) ||
+      bounds.length !== 2 ||
+      !Array.isArray(bounds[0]) ||
+      !Array.isArray(bounds[1])
+    ) {
+      return null;
+    }
+    const southLat = Number(bounds[0][0]);
+    const southLon = Number(bounds[0][1]);
+    const northLat = Number(bounds[1][0]);
+    const northLon = Number(bounds[1][1]);
+    if (
+      !Number.isFinite(southLat) ||
+      !Number.isFinite(southLon) ||
+      !Number.isFinite(northLat) ||
+      !Number.isFinite(northLon)
+    ) {
+      return null;
+    }
+    const minLat = Math.min(southLat, northLat);
+    const maxLat = Math.max(southLat, northLat);
+    const minLon = Math.min(southLon, northLon);
+    const maxLon = Math.max(southLon, northLon);
+    if (minLat === maxLat && minLon === maxLon) {
+      return [
+        [minLat - 0.0005, minLon - 0.0005],
+        [maxLat + 0.0005, maxLon + 0.0005],
+      ];
+    }
+    return [
+      [minLat, minLon],
+      [maxLat, maxLon],
+    ];
+  }, [bounds]);
+
+  const normalizedMarkers = useMemo(() => {
+    if (!Array.isArray(markers)) {
+      return [];
+    }
+    return markers
+      .map((marker) => {
+        const lat = Number(marker?.lat);
+        const lon = Number(marker?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          return null;
+        }
+        return {
+          lat,
+          lon,
+          category: typeof marker?.category === 'string' ? marker.category : '',
+          street: typeof marker?.street === 'string' ? marker.street : '',
+          outcome: typeof marker?.outcome === 'string' ? marker.outcome : '',
+          month: typeof marker?.month === 'string' ? marker.month : '',
+        };
+      })
+      .filter(Boolean);
+  }, [markers]);
+
+  const mapTitle = title || 'Police-reported crime map';
+
+  const srcDoc = useMemo(() => {
+    const encodedCenter = encodeForSrcdoc(normalizedCenter);
+    const encodedBounds = normalizedBounds ? encodeForSrcdoc(normalizedBounds) : '';
+    const encodedMarkers = encodeForSrcdoc(normalizedMarkers);
+    const ariaLabel = escapeHtml(mapTitle);
+    return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-oQZmQ6ZjN7FXiZx0drXr4IjuvyWsye++H5cS0M9wkwk="
+      crossorigin="anonymous"
+    />
+    <style>
+      html, body, #map { height: 100%; margin: 0; }
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .leaflet-popup-content { font-size: 12px; line-height: 1.4; }
+    </style>
+  </head>
+  <body>
+    <div id="map" role="img" aria-label="${ariaLabel}"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o2EiOBIXP8Ij2BXexdFv+Frq4eF3Jr0Xvu0wQek8Wpg=" crossorigin="anonymous"></script>
+    <script>
+      (function() {
+        const decode = (value) => JSON.parse(decodeURIComponent(value));
+        const center = decode('${encodedCenter}');
+        const bounds = ${normalizedBounds ? `decode('${encodedBounds}')` : 'null'};
+        const markers = decode('${encodedMarkers}');
+        const map = L.map('map', { zoomControl: true, scrollWheelZoom: false, attributionControl: true });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        if (Array.isArray(bounds) && bounds.length === 2) {
+          const sw = bounds[0];
+          const ne = bounds[1];
+          if (
+            Array.isArray(sw) &&
+            Array.isArray(ne) &&
+            sw.length === 2 &&
+            ne.length === 2
+          ) {
+            const latLngBounds = L.latLngBounds([sw[0], sw[1]], [ne[0], ne[1]]);
+            map.fitBounds(latLngBounds, { padding: [24, 24], maxZoom: 17 });
+          }
+        } else if (center && Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
+          map.setView([center.lat, center.lon], center.zoom || 14);
+        }
+        const escapeHtml = (value) => String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+        markers.forEach((marker) => {
+          if (!marker || !Number.isFinite(marker.lat) || !Number.isFinite(marker.lon)) {
+            return;
+          }
+          const circle = L.circleMarker([marker.lat, marker.lon], {
+            radius: 6,
+            color: '#1d4ed8',
+            weight: 1,
+            opacity: 0.9,
+            fillColor: '#3b82f6',
+            fillOpacity: 0.7
+          });
+          const parts = [];
+          if (marker.category) parts.push('<strong>' + escapeHtml(marker.category) + '</strong>');
+          if (marker.street) parts.push(escapeHtml(marker.street));
+          if (marker.outcome) parts.push(escapeHtml(marker.outcome));
+          if (marker.month) parts.push(escapeHtml(marker.month));
+          if (parts.length > 0) {
+            circle.bindPopup(parts.join('<br/>'), { closeButton: false });
+          }
+          circle.addTo(map);
+        });
+      })();
+    </script>
+  </body>
+</html>`;
+  }, [mapTitle, normalizedBounds, normalizedCenter, normalizedMarkers]);
+
+  return (
+    <iframe
+      title={mapTitle}
+      srcDoc={srcDoc}
+      className={['h-full w-full border-0', className].filter(Boolean).join(' ')}
+      loading="lazy"
+      sandbox="allow-scripts allow-same-origin"
+      referrerPolicy="no-referrer-when-downgrade"
+    />
+  );
+};
 
 const mixColorChannel = (start, end, t) => Math.round(start + (end - start) * t);
 
@@ -5678,27 +5873,69 @@ export default function App() {
     const zoom = Number.isFinite(crimeSummary?.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14;
     return { lat, lon, zoom };
   }, [crimeSummary, crimeLat, crimeLon]);
-
-  const crimeMapEmbedUrl = useMemo(() => {
-    if (!crimeMapCenter) {
-      return '';
+  const crimeMapBounds = useMemo(() => {
+    const rawBounds = crimeSummary?.mapBounds;
+    if (
+      !Array.isArray(rawBounds) ||
+      rawBounds.length !== 2 ||
+      !Array.isArray(rawBounds[0]) ||
+      !Array.isArray(rawBounds[1])
+    ) {
+      return null;
     }
-    const { lat, lon, zoom } = crimeMapCenter;
-    const latFixed = Number(lat.toFixed(6));
-    const lonFixed = Number(lon.toFixed(6));
-    const clampedZoom = Number.isFinite(zoom) ? clamp(zoom, 3, 18) : 14;
-    const latDelta = 0.005 * Math.pow(2, 14 - clampedZoom);
-    const lonDelta = 0.009 * Math.pow(2, 14 - clampedZoom);
-    const south = Math.max(-90, latFixed - latDelta);
-    const north = Math.min(90, latFixed + latDelta);
-    const west = Math.max(-180, lonFixed - lonDelta);
-    const east = Math.min(180, lonFixed + lonDelta);
-    const bbox = `${west.toFixed(6)},${south.toFixed(6)},${east.toFixed(6)},${north.toFixed(6)}`;
-    const marker = `${latFixed.toFixed(6)},${lonFixed.toFixed(6)}`;
-    return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(
-      bbox
-    )}&layer=mapnik&marker=${encodeURIComponent(marker)}`;
-  }, [crimeMapCenter]);
+    const southLat = Number(rawBounds[0][0]);
+    const southLon = Number(rawBounds[0][1]);
+    const northLat = Number(rawBounds[1][0]);
+    const northLon = Number(rawBounds[1][1]);
+    if (
+      !Number.isFinite(southLat) ||
+      !Number.isFinite(southLon) ||
+      !Number.isFinite(northLat) ||
+      !Number.isFinite(northLon)
+    ) {
+      return null;
+    }
+    const minLat = Math.min(southLat, northLat);
+    const maxLat = Math.max(southLat, northLat);
+    const minLon = Math.min(southLon, northLon);
+    const maxLon = Math.max(southLon, northLon);
+    if (minLat === maxLat && minLon === maxLon) {
+      return [
+        [minLat - 0.0005, minLon - 0.0005],
+        [maxLat + 0.0005, maxLon + 0.0005],
+      ];
+    }
+    return [
+      [minLat, minLon],
+      [maxLat, maxLon],
+    ];
+  }, [crimeSummary]);
+
+  const crimeMapMarkers = useMemo(() => {
+    if (!crimeSummary?.mapCrimes) {
+      return [];
+    }
+    return crimeSummary.mapCrimes
+      .map((incident) => {
+        const lat = Number(incident?.lat);
+        const lon = Number(incident?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          return null;
+        }
+        return {
+          id: incident?.id ?? `${lat},${lon}`,
+          lat,
+          lon,
+          category: typeof incident?.category === 'string' ? incident.category : '',
+          street: typeof incident?.street === 'string' ? incident.street : '',
+          outcome: typeof incident?.outcome === 'string' ? incident.outcome : '',
+          month: typeof incident?.month === 'string' ? formatCrimeMonth(incident.month) : '',
+        };
+      })
+      .filter(Boolean);
+  }, [crimeSummary]);
+
+  const crimeMapKey = crimeSummary?.mapKey ?? '';
 
   const crimeMapExternalUrl = useMemo(() => {
     if (!crimeMapCenter) {
@@ -9752,17 +9989,16 @@ export default function App() {
                             </div>
                           </div>
                           <div className="h-72 w-full overflow-hidden rounded-xl border border-slate-200">
-                            {crimeMapEmbedUrl ? (
-                              <iframe
-                                key={crimeSummary.mapKey}
+                            {crimeMapMarkers.length > 0 && crimeMapCenter ? (
+                              <CrimeMap
+                                key={crimeMapKey || 'crime-map'}
+                                className="h-full w-full"
+                                center={crimeMapCenter}
+                                bounds={crimeMapBounds}
+                                markers={crimeMapMarkers}
                                 title={`Map preview for ${
                                   crimeSummary.locationSummary || propertyAddress || 'selected area'
                                 }`}
-                                src={crimeMapEmbedUrl}
-                                className="h-full w-full"
-                                loading="lazy"
-                                referrerPolicy="no-referrer-when-downgrade"
-                                allowFullScreen
                               />
                             ) : (
                               <div className="flex h-full items-center justify-center bg-slate-50 text-[11px] text-slate-500">
