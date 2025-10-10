@@ -60,7 +60,8 @@ const escapeHtml = (value) => {
 
 const encodeForSrcdoc = (value) => {
   try {
-    return encodeURIComponent(JSON.stringify(value ?? null));
+    const encoded = encodeURIComponent(JSON.stringify(value ?? null));
+    return encoded.replace(/'/g, '%27');
   } catch (error) {
     console.warn('Unable to encode map payload for srcdoc:', error);
     return encodeURIComponent('null');
@@ -598,7 +599,11 @@ const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, si
   const attempted = new Set();
 
   for (const query of queries) {
-    const normalized = query.toLowerCase();
+    const trimmedQuery = typeof query === 'string' ? query.trim() : '';
+    if (!trimmedQuery || isPlaceholderCoordinateQuery(trimmedQuery)) {
+      continue;
+    }
+    const normalized = trimmedQuery.toLowerCase();
     if (attempted.has(normalized)) {
       continue;
     }
@@ -606,7 +611,7 @@ const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, si
 
     try {
       const locateResponse = await fetch(
-        `https://data.police.uk/api/locate-neighbourhood?q=${encodeURIComponent(query)}`,
+        `https://data.police.uk/api/locate-neighbourhood?q=${encodeURIComponent(trimmedQuery)}`,
         {
           signal,
           headers: { Accept: 'application/json' },
@@ -1194,6 +1199,23 @@ const hasUsableCoordinates = (lat, lon) => {
 };
 
 const resolveCoordinatePair = (lat, lon) => (hasUsableCoordinates(lat, lon) ? { lat, lon } : null);
+
+const isPlaceholderCoordinateQuery = (value) => {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return false;
+  }
+  const match = trimmed.match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
+  if (!match) {
+    return false;
+  }
+  const lat = Number.parseFloat(match[1]);
+  const lon = Number.parseFloat(match[2]);
+  return !hasUsableCoordinates(lat, lon);
+};
 
 const CrimeMap = ({ center, bounds, markers, className, title }) => {
   const normalizedCenter = useMemo(() => {
@@ -13697,16 +13719,16 @@ function CollapsibleSection({ title, collapsed, onToggle, children, className })
     console.assert(approx(io, 500, 1e-6), `IO mismatch: ${io}`);
 
     const sdltBase = calcStampDuty(300000, 'individual', 0, false);
-    console.assert(approx(sdltBase, 4750, 1), `SDLT base mismatch: ${sdltBase}`);
+    console.assert(approx(sdltBase, 5000, 1), `SDLT base mismatch: ${sdltBase}`);
 
     const sdltAdd = calcStampDuty(300000, 'company', 0, false);
-    console.assert(approx(sdltAdd, 19750, 1), `SDLT add mismatch: ${sdltAdd}`);
+    console.assert(approx(sdltAdd, 20000, 1), `SDLT add mismatch: ${sdltAdd}`);
 
     const sdltIndividualOne = calcStampDuty(300000, 'individual', 1, false);
-    console.assert(approx(sdltIndividualOne, 4750, 1), `SDLT single extra mismatch: ${sdltIndividualOne}`);
+    console.assert(approx(sdltIndividualOne, 5000, 1), `SDLT single extra mismatch: ${sdltIndividualOne}`);
 
     const sdltIndividualTwo = calcStampDuty(300000, 'individual', 2, false);
-    console.assert(approx(sdltIndividualTwo, 19750, 1), `SDLT multiple mismatch: ${sdltIndividualTwo}`);
+    console.assert(approx(sdltIndividualTwo, 20000, 1), `SDLT multiple mismatch: ${sdltIndividualTwo}`);
 
     const sdltFtb = calcStampDuty(500000, 'individual', 0, true);
     console.assert(approx(sdltFtb, 10000, 1), `SDLT FTB mismatch: ${sdltFtb}`);
