@@ -9805,30 +9805,28 @@ export default function App() {
                     knowledgeKey="wealthTrajectory"
                   />
                 </div>
-                {!collapsedSections.wealthTrajectory ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowChartModal(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Expand wealth trajectory analysis"
+                <button
+                  type="button"
+                  onClick={() => setShowChartModal(true)}
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                  title="Expand wealth trajectory analysis"
+                >
+                  <span>Expand</span>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    className="h-3 w-3"
+                    aria-hidden="true"
                   >
-                    <span>Expand</span>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      className="h-3 w-3"
-                      aria-hidden="true"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                    </svg>
-                  </button>
-                ) : null}
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                  </svg>
+                </button>
               </div>
               {!collapsedSections.wealthTrajectory ? (
                 <>
@@ -9962,32 +9960,30 @@ export default function App() {
                       knowledgeKey="rateTrends"
                     />
                   </div>
-                  {!collapsedSections.rateTrends ? (
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setShowRatesModal(true)}
-                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                        title="Expand return ratio analysis"
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowRatesModal(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand return ratio analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
                       >
-                        <span>Expand</span>
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 20 20"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          className="h-3 w-3"
-                          aria-hidden="true"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                        </svg>
-                      </button>
-                    </div>
-                  ) : null}
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
                 {!collapsedSections.rateTrends ? (
                   <>
@@ -10121,32 +10117,30 @@ export default function App() {
                       knowledgeKey="npv"
                     />
                   </div>
-                  {!collapsedSections.npvTimeline ? (
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setShowNpvModal(true)}
-                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                        title="Expand NPV analysis"
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowNpvModal(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand NPV analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
                       >
-                        <span>Expand</span>
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 20 20"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          className="h-3 w-3"
-                          aria-hidden="true"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                        </svg>
-                      </button>
-                    </div>
-                  ) : null}
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
                 {!collapsedSections.npvTimeline ? (
                   <>
