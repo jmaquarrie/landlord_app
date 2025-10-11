@@ -46,6 +46,70 @@ const currencyThousands = (value) => {
   return `${negative ? '−' : ''}£${formatted}k`;
 };
 
+const clamp = (value, min, max) => {
+  if (!Number.isFinite(value)) {
+    return Number.isFinite(min) ? min : value;
+  }
+  if (Number.isFinite(min) && value < min) {
+    return min;
+  }
+  if (Number.isFinite(max) && value > max) {
+    return max;
+  }
+  return value;
+};
+
+const roundToNearest = (value, step = 1) => {
+  if (!Number.isFinite(value) || !Number.isFinite(step) || step === 0) {
+    return value;
+  }
+  return Math.round(value / step) * step;
+};
+
+const sumArray = (values) => {
+  if (!Array.isArray(values)) {
+    return 0;
+  }
+  return values.reduce((total, current) => {
+    if (!Number.isFinite(current)) {
+      return total;
+    }
+    return total + current;
+  }, 0);
+};
+
+const formatDecimal = (value, decimals = 2) => {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return value.toFixed(decimals);
+};
+
+const formatCurrencyDelta = (delta) => {
+  if (!Number.isFinite(delta)) {
+    return '—';
+  }
+  if (Math.abs(delta) < 0.5) {
+    return 'No change';
+  }
+  const absolute = Math.abs(delta).toLocaleString(undefined, {
+    style: 'currency',
+    currency: 'GBP',
+  });
+  return `${delta >= 0 ? '+' : '−'}${absolute}`;
+};
+
+const formatPercentDelta = (delta, decimals = 2) => {
+  if (!Number.isFinite(delta)) {
+    return '—';
+  }
+  if (Math.abs(delta) < 0.0005) {
+    return 'No change';
+  }
+  const absolute = (Math.abs(delta) * 100).toFixed(decimals);
+  return `${delta >= 0 ? '+' : '−'}${absolute} pp`;
+};
+
 const escapeHtml = (value) => {
   if (typeof value !== 'string' || value === '') {
     return '';
@@ -1260,7 +1324,272 @@ const formatPercent = (value, decimals = 2) => {
   return `${roundTo(value * 100, safeDecimals).toFixed(safeDecimals)}%`;
 };
 
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const describeOverrides = (base, overrides = {}, scenario = null) => {
+  if (!base || typeof base !== 'object' || !overrides || typeof overrides !== 'object') {
+    return [];
+  }
+  const details = [];
+  const addLine = (line) => {
+    if (typeof line === 'string' && line.trim() !== '') {
+      details.push(line.trim());
+    }
+  };
+
+  Object.entries(overrides).forEach(([key, value]) => {
+    const previous = base[key];
+    if (previous === value) {
+      return;
+    }
+    if (Number.isFinite(previous) && Number.isFinite(value) && Math.abs(previous - value) < 1e-6) {
+      return;
+    }
+
+    switch (key) {
+      case 'monthlyRent': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatCurrencyDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta} per month)` : '';
+        addLine(`Monthly rent → ${currency(value)}${suffix}`);
+        break;
+      }
+      case 'rentGrowth': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Annual rent growth → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'vacancyPct': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Vacancy allowance → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'mgmtPct': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Management allowance → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'repairsPct': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Repairs allowance → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'depositPct': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Deposit → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'purchasePrice': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatCurrencyDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Purchase price → ${currency(value)}${suffix}`);
+        break;
+      }
+      case 'exitYear': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? value - previous : 0;
+        const suffix = Number.isFinite(delta) && delta !== 0 ? ` (${delta > 0 ? '+' : '−'}${Math.abs(delta)} yrs)` : '';
+        addLine(`Hold period → ${value} years${suffix}`);
+        break;
+      }
+      case 'mortgageYears': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? value - previous : 0;
+        const suffix = Number.isFinite(delta) && delta !== 0 ? ` (${delta > 0 ? '+' : '−'}${Math.abs(delta)} yrs)` : '';
+        addLine(`Mortgage amortisation → ${value} years${suffix}`);
+        break;
+      }
+      case 'loanType': {
+        if (value === previous) break;
+        const label = value === 'interest_only' ? 'Interest only mortgage' : 'Repayment mortgage';
+        addLine(label);
+        break;
+      }
+      case 'buyerType': {
+        if (value === previous) break;
+        const label = value === 'company' ? 'Acquire through a company structure' : 'Acquire as an individual';
+        addLine(label);
+        break;
+      }
+      case 'deductOperatingExpenses': {
+        if (value === previous) break;
+        addLine(value ? 'Treat operating expenses as tax deductible.' : 'Exclude operating expenses from tax calculations.');
+        break;
+      }
+      case 'ownershipShare1': {
+        if (!Number.isFinite(value)) break;
+        addLine(`Owner A share → ${formatPercent(value, 1)}`);
+        break;
+      }
+      case 'ownershipShare2': {
+        if (!Number.isFinite(value)) break;
+        addLine(`Owner B share → ${formatPercent(value, 1)}`);
+        break;
+      }
+      default: {
+        if (typeof value === 'boolean' && value !== previous) {
+          addLine(`${key} → ${value ? 'Enabled' : 'Disabled'}`);
+        } else if (Number.isFinite(value)) {
+          const previousValue = Number.isFinite(previous) ? previous : null;
+          const delta = previousValue !== null ? value - previousValue : null;
+          if (delta !== null && Math.abs(delta) >= 0.5) {
+            addLine(`${key} → ${value.toLocaleString()} (${delta >= 0 ? '+' : '−'}${Math.abs(delta).toLocaleString()})`);
+          }
+        }
+      }
+    }
+  });
+
+  if (details.length === 0) {
+    details.push('No changes to your current inputs.');
+  }
+
+  return details;
+};
+
+const OPTIMIZATION_GOAL_SEQUENCE = [
+  'max_income',
+  'min_taxes',
+  'max_irr',
+  'max_purchase_price',
+  'min_rent',
+  'max_coc',
+];
+
+const OPTIMIZATION_GOAL_CONFIG = {
+  max_income: {
+    key: 'max_income',
+    label: 'Maximum Income over the term',
+    metricLabel: 'Total after-tax cash flow',
+    direction: 'max',
+    summary:
+      'Evaluates strategies that increase cumulative after-tax cash collected across the hold period without ignoring financing or expense drag.',
+    formatValue: (value) => currency(value),
+    formatDelta: (delta) => formatCurrencyDelta(delta),
+    metricGetter: (metrics) => {
+      if (!metrics) {
+        return NaN;
+      }
+      if (Number.isFinite(metrics.exitCumCashAfterTax)) {
+        return metrics.exitCumCashAfterTax;
+      }
+      if (Array.isArray(metrics.annualCashflowsAfterTax)) {
+        return sumArray(metrics.annualCashflowsAfterTax);
+      }
+      return NaN;
+    },
+    buildCandidates: (base, metrics) => buildIncomeCandidates(base, metrics),
+    unavailableMessage: 'Provide rent, vacancy, expense, and financing assumptions to project cash flow.',
+    improvementThreshold: 50,
+  },
+  min_taxes: {
+    key: 'min_taxes',
+    label: 'Minimum Taxes over the term',
+    metricLabel: 'Total property taxes',
+    direction: 'min',
+    summary: 'Looks for ownership structures and deductions that lower cumulative property taxation over the modelled hold.',
+    formatValue: (value) => currency(value),
+    formatDelta: (delta) => formatCurrencyDelta(delta),
+    metricGetter: (metrics) => {
+      if (!metrics) {
+        return NaN;
+      }
+      if (Number.isFinite(metrics.totalPropertyTax)) {
+        return metrics.totalPropertyTax;
+      }
+      if (Array.isArray(metrics.propertyTaxes)) {
+        return sumArray(metrics.propertyTaxes);
+      }
+      return NaN;
+    },
+    buildCandidates: (base, metrics) => buildTaxCandidates(base, metrics),
+    unavailableMessage: 'Enter buyer type, ownership shares, and tax assumptions to evaluate long-run taxes.',
+    improvementThreshold: 100,
+  },
+  max_irr: {
+    key: 'max_irr',
+    label: 'Maximum IRR over the term',
+    metricLabel: 'Internal rate of return',
+    direction: 'max',
+    summary: 'Tests leverage, pricing, and hold-period adjustments that accelerate the internal rate of return.',
+    formatValue: (value) => formatPercent(value),
+    formatDelta: (delta) => formatPercentDelta(delta),
+    metricGetter: (metrics) => (metrics && Number.isFinite(metrics.irr) ? metrics.irr : NaN),
+    buildCandidates: (base, metrics) => buildIrrCandidates(base, metrics),
+    unavailableMessage: 'Add purchase, rent, and exit assumptions to calculate IRR.',
+    improvementThreshold: 0.0005,
+  },
+  max_purchase_price: {
+    key: 'max_purchase_price',
+    label: 'Maximum Purchase Price Recommended',
+    metricLabel: 'Purchase price',
+    direction: 'max',
+    summary:
+      'Identifies the highest price that still satisfies lender coverage and maintains non-negative year-one cash flow under current assumptions.',
+    formatValue: (value) => currency(value),
+    formatDelta: (delta) => formatCurrencyDelta(delta),
+    metricGetter: (_metrics, scenario) => {
+      if (!scenario) {
+        return NaN;
+      }
+      const price = Number(scenario.purchasePrice);
+      return Number.isFinite(price) ? price : NaN;
+    },
+    buildCandidates: null,
+    unavailableMessage: 'Provide a purchase price and financing assumptions to model the recommended ceiling.',
+    improvementThreshold: 1000,
+  },
+  min_rent: {
+    key: 'min_rent',
+    label: 'Minimum Rent Recommended',
+    metricLabel: 'Monthly rent',
+    direction: 'min',
+    summary:
+      'Back-solves the lowest sustainable rent while preserving coverage ratios and non-negative cash flow.',
+    formatValue: (value) => currency(value),
+    formatDelta: (delta) => formatCurrencyDelta(delta),
+    metricGetter: (_metrics, scenario) => {
+      if (!scenario) {
+        return NaN;
+      }
+      const rent = Number(scenario.monthlyRent);
+      return Number.isFinite(rent) ? rent : NaN;
+    },
+    buildCandidates: null,
+    unavailableMessage: 'Enter rent, expense, and financing assumptions to stress-test minimum viable rent.',
+    improvementThreshold: 25,
+  },
+  max_coc: {
+    key: 'max_coc',
+    label: 'Maximum Cash on Cash return',
+    metricLabel: 'Cash-on-cash (year one)',
+    direction: 'max',
+    summary: 'Focuses on strategies that lift first-year cash-on-cash returns by balancing leverage, rent, and expenses.',
+    formatValue: (value) => formatPercent(value),
+    formatDelta: (delta) => formatPercentDelta(delta),
+    metricGetter: (metrics) => (metrics && Number.isFinite(metrics.coc) ? metrics.coc : NaN),
+    buildCandidates: (base, metrics) => buildCashOnCashCandidates(base, metrics),
+    unavailableMessage: 'Provide cash flow assumptions to evaluate cash-on-cash returns.',
+    improvementThreshold: 0.0005,
+  },
+};
+
+const OPTIMIZATION_GOAL_OPTIONS = OPTIMIZATION_GOAL_SEQUENCE.map((key) => {
+  const config = OPTIMIZATION_GOAL_CONFIG[key];
+  return {
+    value: key,
+    label: config?.label ?? key,
+  };
+}).filter((option) => option.label);
 
 const hasUsableCoordinates = (lat, lon) => {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -3842,6 +4171,685 @@ function calculateEquity(rawInputs) {
   };
 }
 
+function buildIncomeCandidates(base) {
+  const monthlyRent = Number(base.monthlyRent) || 0;
+  const vacancyPct = clamp(Number(base.vacancyPct) || 0, 0, 0.5);
+  const rentGrowth = Number(base.rentGrowth) || 0;
+  const mgmtPct = clamp(Number(base.mgmtPct) || 0, 0, 0.25);
+  const repairsPct = clamp(Number(base.repairsPct) || 0, 0, 0.25);
+
+  const candidates = [
+    {
+      id: 'baseline',
+      label: 'Keep current rent strategy',
+      description: 'Retain existing rent, vacancy, and expense assumptions.',
+      apply: () => ({}),
+    },
+    {
+      id: 'rent_plus_8',
+      label: 'Lift asking rent by 8% and trim vacancy by 1%',
+      description:
+        'Invest in presentation and tenant retention to justify a modest premium and reduce downtime.',
+      apply: () => ({
+        monthlyRent: roundToNearest(monthlyRent * 1.08, 1),
+        vacancyPct: clamp(vacancyPct - 0.01, 0, 0.25),
+      }),
+    },
+    {
+      id: 'rent_growth_plus',
+      label: 'Bake in annual rent reviews (+1 pp)',
+      description: 'Add rent review clauses to capture inflationary growth over the hold period.',
+      apply: () => ({
+        rentGrowth: clamp(rentGrowth + 0.01, 0, 0.1),
+      }),
+    },
+    {
+      id: 'expense_trim',
+      label: 'Lean management and maintenance procurement',
+      description: 'Rebid contracts to reduce management and repairs allowances by 1 pp each.',
+      apply: () => ({
+        mgmtPct: clamp(mgmtPct - 0.01, 0, 0.2),
+        repairsPct: clamp(repairsPct - 0.01, 0, 0.2),
+      }),
+    },
+  ];
+
+  if (base.loanType !== 'interest_only') {
+    candidates.push({
+      id: 'interest_only_cashflow',
+      label: 'Switch to an interest-only mortgage',
+      description: 'Use an interest-only period to reduce scheduled debt service and lift cash flow.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  return candidates;
+}
+
+function buildTaxCandidates(base) {
+  const candidates = [
+    {
+      id: 'baseline',
+      label: 'Maintain current tax posture',
+      description: 'Keep the existing ownership and deduction settings.',
+      apply: () => ({}),
+    },
+  ];
+
+  if (base.deductOperatingExpenses !== true) {
+    candidates.push({
+      id: 'enable_expense_deduction',
+      label: 'Treat operating expenses as tax deductible',
+      description: 'Ensure property running costs are deducted before calculating tax.',
+      apply: () => ({ deductOperatingExpenses: true }),
+    });
+  }
+
+  if (base.buyerType !== 'company') {
+    candidates.push({
+      id: 'company_structure',
+      label: 'Acquire through a company',
+      description: 'Shift ownership into a company to apply corporation tax instead of personal rates.',
+      apply: () => ({ buyerType: 'company' }),
+    });
+  }
+
+  if (base.loanType !== 'interest_only') {
+    candidates.push({
+      id: 'interest_only_tax',
+      label: 'Use an interest-only mortgage for deductible interest',
+      description: 'Maximise deductible interest by keeping repayments interest-only during the hold.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  const income1 = Number(base.incomePerson1);
+  const income2 = Number(base.incomePerson2);
+  if (
+    base.buyerType !== 'company' &&
+    Number.isFinite(income1) &&
+    Number.isFinite(income2) &&
+    income1 !== income2
+  ) {
+    const share1 = Number.isFinite(base.ownershipShare1) ? base.ownershipShare1 : 0.5;
+    const share2 = Number.isFinite(base.ownershipShare2) ? base.ownershipShare2 : 0.5;
+    const total = share1 + share2;
+    const normalized1 = total > 0 ? share1 / total : 0.5;
+    const lowerIncomeIsPerson1 = income1 < income2;
+    const targetShare1 = clamp(
+      lowerIncomeIsPerson1 ? normalized1 + 0.1 : normalized1 - 0.1,
+      0.1,
+      0.9
+    );
+    const targetShare2 = clamp(1 - targetShare1, 0.1, 0.9);
+    if (Math.abs(targetShare1 - normalized1) > 0.01) {
+      candidates.push({
+        id: 'rebalance_shares',
+        label: 'Shift ownership toward the lower-tax partner',
+        description: 'Assign more rent to the lower marginal tax rate partner to reduce the blended bill.',
+        apply: () => ({
+          ownershipShare1: roundTo(targetShare1, 3),
+          ownershipShare2: roundTo(targetShare2, 3),
+        }),
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function buildIrrCandidates(base) {
+  const purchasePrice = Number(base.purchasePrice) || 0;
+  const depositPct = Number(base.depositPct) || 0.25;
+  const exitYear = Math.max(1, Number(base.exitYear) || DEFAULT_INPUTS.exitYear);
+  const monthlyRent = Number(base.monthlyRent) || 0;
+  const vacancyPct = clamp(Number(base.vacancyPct) || 0, 0, 0.5);
+  const rentGrowth = Number(base.rentGrowth) || 0;
+  const candidates = [
+    {
+      id: 'baseline',
+      label: 'Keep the current IRR profile',
+      description: 'Retain existing pricing, leverage, and hold assumptions.',
+      apply: () => ({}),
+    },
+    {
+      id: 'rent_plus_8',
+      label: 'Command an 8% rent premium with 1% lower vacancy',
+      description: 'Upgrade fit-out and marketing to justify higher rent and reduce downtime.',
+      apply: () => ({
+        monthlyRent: roundToNearest(monthlyRent * 1.08, 1),
+        vacancyPct: clamp(vacancyPct - 0.01, 0, 0.25),
+      }),
+    },
+    {
+      id: 'negotiate_discount',
+      label: 'Negotiate a 3% purchase discount',
+      description: 'Target vendor contributions or price reductions to de-risk the acquisition.',
+      apply: () => ({
+        purchasePrice: roundToNearest(purchasePrice * 0.97, 1000),
+      }),
+    },
+    {
+      id: 'shorter_hold',
+      label: 'Plan an earlier exit (−2 years)',
+      description: 'Test a shorter hold period to realise gains sooner and boost annualised returns.',
+      apply: () => ({
+        exitYear: Math.max(3, exitYear - 2),
+      }),
+    },
+  ];
+
+  if (rentGrowth < 0.08) {
+    candidates.push({
+      id: 'rent_growth_plus',
+      label: 'Increase rent growth assumptions by 1 pp',
+      description: 'Document annual reviews tied to market comparables to lift rent escalations.',
+      apply: () => ({
+        rentGrowth: clamp(rentGrowth + 0.01, 0, 0.12),
+      }),
+    });
+  }
+
+  if (depositPct > 0.15) {
+    candidates.push({
+      id: 'increase_leverage',
+      label: 'Increase leverage by reducing deposit 5 pp',
+      description: 'Deploy less equity to amplify returns while monitoring coverage.',
+      apply: () => ({
+        depositPct: clamp(depositPct - 0.05, 0.1, 0.6),
+      }),
+    });
+  }
+
+  if (base.loanType !== 'interest_only') {
+    candidates.push({
+      id: 'interest_only_irr',
+      label: 'Adopt an interest-only mortgage',
+      description: 'Reduce amortisation drag to accelerate IRR during the hold.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  return candidates;
+}
+
+function buildCashOnCashCandidates(base) {
+  const monthlyRent = Number(base.monthlyRent) || 0;
+  const vacancyPct = clamp(Number(base.vacancyPct) || 0, 0, 0.5);
+  const mgmtPct = clamp(Number(base.mgmtPct) || 0, 0, 0.25);
+  const repairsPct = clamp(Number(base.repairsPct) || 0, 0, 0.25);
+  const purchasePrice = Number(base.purchasePrice) || 0;
+  const depositPct = Number(base.depositPct) || 0.25;
+
+  const candidates = [
+    {
+      id: 'baseline',
+      label: 'Keep current cash-on-cash performance',
+      description: 'Maintain the existing leverage and rent assumptions.',
+      apply: () => ({}),
+    },
+    {
+      id: 'rent_plus_8',
+      label: 'Increase rent by 8% and cut vacancy by 1%',
+      description: 'Improve marketing and tenant retention to grow year-one cash flow.',
+      apply: () => ({
+        monthlyRent: roundToNearest(monthlyRent * 1.08, 1),
+        vacancyPct: clamp(vacancyPct - 0.01, 0, 0.25),
+      }),
+    },
+    {
+      id: 'expense_trim',
+      label: 'Trim management and repairs allowances',
+      description: 'Introduce service efficiencies to reduce opex by 1 pp each.',
+      apply: () => ({
+        mgmtPct: clamp(mgmtPct - 0.01, 0, 0.2),
+        repairsPct: clamp(repairsPct - 0.01, 0, 0.2),
+      }),
+    },
+    {
+      id: 'negotiate_price',
+      label: 'Negotiate a 3% lower purchase price',
+      description: 'Reduce equity outlay and upfront costs to improve cash-on-cash returns.',
+      apply: () => ({
+        purchasePrice: roundToNearest(purchasePrice * 0.97, 1000),
+      }),
+    },
+  ];
+
+  if (depositPct > 0.15) {
+    candidates.push({
+      id: 'higher_leverage',
+      label: 'Reduce deposit by 5 pp to increase leverage',
+      description: 'Deploy less equity while monitoring coverage metrics.',
+      apply: () => ({
+        depositPct: clamp(depositPct - 0.05, 0.1, 0.6),
+      }),
+    });
+  }
+
+  if (base.loanType !== 'interest_only') {
+    candidates.push({
+      id: 'interest_only_coc',
+      label: 'Switch to interest-only payments',
+      description: 'Lower scheduled debt service to boost year-one cash yield.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  return candidates;
+}
+
+function buildCandidateOptimization(goalKey, baseInputs, baselineMetrics) {
+  const config = OPTIMIZATION_GOAL_CONFIG[goalKey];
+  if (!config) {
+    return { status: 'unavailable', message: 'Unsupported optimisation goal.' };
+  }
+  if (!baselineMetrics) {
+    return { status: 'unavailable', message: config.unavailableMessage };
+  }
+  const baselineValue = config.metricGetter(baselineMetrics, baseInputs, baseInputs);
+  if (!Number.isFinite(baselineValue)) {
+    return { status: 'unavailable', message: config.unavailableMessage };
+  }
+
+  const base = { ...baseInputs };
+  const candidateDefs = typeof config.buildCandidates === 'function' ? config.buildCandidates(base, baselineMetrics) : [];
+  if (!candidateDefs.some((candidate) => candidate?.id === 'baseline')) {
+    candidateDefs.unshift({
+      id: 'baseline',
+      label: 'Maintain current configuration',
+      description: 'Keep your existing assumptions in place.',
+      apply: () => ({}),
+    });
+  }
+
+  const results = [];
+  candidateDefs.forEach((candidate) => {
+    if (!candidate || typeof candidate.apply !== 'function') {
+      return;
+    }
+    const overrides = candidate.apply(base, baselineMetrics);
+    if (!overrides || typeof overrides !== 'object') {
+      return;
+    }
+    const scenarioInputs = { ...base, ...overrides };
+    const isBaseline = Object.keys(overrides).length === 0;
+    const metrics = isBaseline ? baselineMetrics : calculateEquity(scenarioInputs);
+    const value = config.metricGetter(metrics, scenarioInputs, base, baselineMetrics);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    const delta = value - baselineValue;
+    const adjustments = candidate.effects
+      ? candidate.effects(base, scenarioInputs, overrides, metrics)
+      : describeOverrides(base, overrides, scenarioInputs);
+    const feasible = typeof candidate.feasible === 'function'
+      ? candidate.feasible(metrics, scenarioInputs, base, baselineMetrics)
+      : true;
+    const note = typeof candidate.notes === 'function'
+      ? candidate.notes(metrics, scenarioInputs, base, baselineMetrics)
+      : '';
+
+    results.push({
+      id: candidate.id,
+      label: candidate.label ?? candidate.id,
+      description: candidate.description ?? '',
+      value,
+      delta,
+      formattedValue: config.formatValue(value),
+      formattedDelta: config.formatDelta(delta),
+      adjustments,
+      feasible,
+      note,
+    });
+  });
+
+  if (results.length === 0) {
+    return { status: 'unavailable', message: 'Unable to evaluate strategies for this goal.' };
+  }
+
+  const sortComparator = config.direction === 'max' ? (a, b) => b.value - a.value : (a, b) => a.value - b.value;
+  results.sort(sortComparator);
+
+  const threshold = Number.isFinite(config.improvementThreshold) ? config.improvementThreshold : 0;
+  const isImprovement = (result) => {
+    if (!result.feasible) {
+      return false;
+    }
+    if (config.direction === 'max') {
+      return result.delta > threshold;
+    }
+    return result.delta < -threshold;
+  };
+
+  let recommendation = results.find((result) => isImprovement(result));
+  if (!recommendation) {
+    recommendation = results.find((result) => result.feasible) || results[0];
+  }
+  const improvementAchieved = recommendation ? isImprovement(recommendation) : false;
+
+  const positiveAlternatives = results
+    .filter((result) => result !== recommendation && isImprovement(result))
+    .slice(0, 3);
+
+  const additional = positiveAlternatives.length > 0
+    ? positiveAlternatives
+    : results.filter((result) => result !== recommendation).slice(0, 3);
+
+  return {
+    status: 'ready',
+    goal: config,
+    baseline: {
+      value: baselineValue,
+      formatted: config.formatValue(baselineValue),
+    },
+    recommendation: recommendation
+      ? {
+          id: recommendation.id,
+          label: recommendation.label,
+          description: recommendation.description,
+          value: recommendation.value,
+          formattedValue: recommendation.formattedValue,
+          delta: recommendation.delta,
+          formattedDelta: recommendation.formattedDelta,
+          adjustments: recommendation.adjustments,
+          note: recommendation.note,
+          feasible: recommendation.feasible,
+          improvement: improvementAchieved,
+        }
+      : null,
+    additional: additional.map((item) => ({
+      id: item.id,
+      label: item.label,
+      description: item.description,
+      value: item.value,
+      formattedValue: item.formattedValue,
+      delta: item.delta,
+      formattedDelta: item.formattedDelta,
+      adjustments: item.adjustments,
+      note: item.note,
+      feasible: item.feasible,
+      improvement: isImprovement(item),
+    })),
+    analysisNote: improvementAchieved
+      ? ''
+      : 'Current inputs already perform strongly for this objective. The options below highlight other levers to consider.',
+  };
+}
+
+function buildPurchasePriceOptimization(baseInputs, baselineMetrics) {
+  const config = OPTIMIZATION_GOAL_CONFIG.max_purchase_price;
+  const basePrice = Number(baseInputs?.purchasePrice);
+  if (!config) {
+    return { status: 'unavailable', message: 'Unsupported optimisation goal.' };
+  }
+  if (!Number.isFinite(basePrice) || basePrice <= 0 || !baselineMetrics) {
+    return { status: 'unavailable', message: config.unavailableMessage };
+  }
+
+  const base = { ...baseInputs };
+  const multipliers = [0.6, 0.7, 0.8, 0.9, 1, 1.05, 1.1, 1.15, 1.2];
+  const MIN_DSCR = 1.1;
+  const MIN_CASHFLOW = 0;
+
+  const results = multipliers.map((multiplier) => {
+    const targetPrice = roundToNearest(basePrice * multiplier, 1000);
+    const overrides = multiplier === 1 ? {} : { purchasePrice: targetPrice };
+    const scenarioInputs = { ...base, ...overrides };
+    const isBaseline = multiplier === 1;
+    const metrics = isBaseline ? baselineMetrics : calculateEquity(scenarioInputs);
+    const dscr = Number(metrics?.dscr);
+    const cashflow = Number.isFinite(metrics?.cashflowYear1AfterTax)
+      ? metrics.cashflowYear1AfterTax
+      : Number.isFinite(metrics?.cashflowYear1)
+        ? metrics.cashflowYear1
+        : NaN;
+    const feasible = Number.isFinite(dscr) && dscr >= MIN_DSCR && Number.isFinite(cashflow) && cashflow >= MIN_CASHFLOW;
+    const note = Number.isFinite(dscr) && Number.isFinite(cashflow)
+      ? `DSCR ${formatDecimal(dscr, 2)}, year-one after-tax cash ${currency(cashflow)}`
+      : 'Insufficient data to evaluate coverage.';
+    const label = multiplier >= 1
+      ? `Stretch to ${currency(targetPrice)}`
+      : `Cap at ${currency(targetPrice)}`;
+
+    return {
+      id: `purchase_${targetPrice}`,
+      label,
+      description: feasible
+        ? 'Maintains lender coverage and non-negative cash flow at this price point.'
+        : 'Fails coverage or cash flow tests without further adjustments.',
+      value: targetPrice,
+      delta: targetPrice - basePrice,
+      formattedValue: config.formatValue(targetPrice),
+      formattedDelta: config.formatDelta(targetPrice - basePrice),
+      adjustments: describeOverrides(base, overrides, scenarioInputs),
+      feasible,
+      note,
+    };
+  });
+
+  results.sort((a, b) => b.value - a.value);
+  const feasibleResults = results.filter((result) => result.feasible);
+  const recommendation = feasibleResults[0] || null;
+
+  if (!recommendation) {
+    return {
+      status: 'unavailable',
+      message: 'No tested price level meets coverage with current assumptions. Increase income or reduce costs to unlock headroom.',
+    };
+  }
+
+  const additional = feasibleResults.slice(1, 4);
+  const supplemental = additional.length > 0
+    ? additional
+    : results.filter((result) => !result.feasible).slice(0, 3);
+
+  return {
+    status: 'ready',
+    goal: config,
+    baseline: {
+      value: basePrice,
+      formatted: config.formatValue(basePrice),
+    },
+    recommendation: {
+      id: recommendation.id,
+      label: recommendation.label,
+      description: recommendation.description,
+      value: recommendation.value,
+      formattedValue: recommendation.formattedValue,
+      delta: recommendation.delta,
+      formattedDelta: recommendation.formattedDelta,
+      adjustments: recommendation.adjustments,
+      note: recommendation.note,
+      feasible: true,
+      improvement: recommendation.value !== basePrice,
+    },
+    additional: supplemental.map((item) => ({
+      id: item.id,
+      label: item.label,
+      description: item.description,
+      value: item.value,
+      formattedValue: item.formattedValue,
+      delta: item.delta,
+      formattedDelta: item.formattedDelta,
+      adjustments: item.adjustments,
+      note: item.note,
+      feasible: item.feasible,
+      improvement: item.value > basePrice,
+    })),
+    analysisNote:
+      recommendation.value === basePrice
+        ? 'Your current purchase price already sits at the recommended ceiling. Explore the alternatives below to unlock more headroom.'
+        : '',
+  };
+}
+
+function buildRentOptimization(baseInputs, baselineMetrics) {
+  const config = OPTIMIZATION_GOAL_CONFIG.min_rent;
+  const baseRent = Number(baseInputs?.monthlyRent);
+  if (!config) {
+    return { status: 'unavailable', message: 'Unsupported optimisation goal.' };
+  }
+  if (!Number.isFinite(baseRent) || baseRent <= 0 || !baselineMetrics) {
+    return { status: 'unavailable', message: config.unavailableMessage };
+  }
+
+  const base = { ...baseInputs };
+  const rentMultipliers = [1.1, 1.05, 1, 0.95, 0.9, 0.85, 0.8, 0.75];
+  const strategies = [
+    {
+      id: 'baseline',
+      label: 'Baseline operating assumptions',
+      description: 'Keep existing expense and financing settings.',
+      apply: () => ({}),
+    },
+    {
+      id: 'lean_ops',
+      label: 'Lean operating plan',
+      description: 'Reduce management and repairs allowances by 1 pp each.',
+      apply: () => ({
+        mgmtPct: clamp(Number(base.mgmtPct) - 0.01 || 0, 0, 0.2),
+        repairsPct: clamp(Number(base.repairsPct) - 0.01 || 0, 0, 0.2),
+      }),
+    },
+  ];
+
+  if (base.loanType !== 'interest_only') {
+    strategies.push({
+      id: 'interest_only',
+      label: 'Interest-only financing',
+      description: 'Switch to interest-only payments to reduce annual debt service.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  const MIN_DSCR = 1.05;
+  const MIN_CASHFLOW = 0;
+  const seen = new Set();
+  const results = [];
+
+  strategies.forEach((strategy) => {
+    rentMultipliers.forEach((multiplier) => {
+      const rentValue = roundToNearest(baseRent * multiplier, 1);
+      const overrides = {
+        monthlyRent: rentValue,
+        ...strategy.apply(base, baselineMetrics),
+      };
+      const key = JSON.stringify({
+        rent: rentValue,
+        loanType: overrides.loanType ?? base.loanType,
+        mgmtPct: overrides.mgmtPct ?? base.mgmtPct,
+        repairsPct: overrides.repairsPct ?? base.repairsPct,
+      });
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+
+      const scenarioInputs = { ...base, ...overrides };
+      const isBaseline = rentValue === baseRent && strategy.id === 'baseline';
+      const metrics = isBaseline ? baselineMetrics : calculateEquity(scenarioInputs);
+      const dscr = Number(metrics?.dscr);
+      const cashflow = Number.isFinite(metrics?.cashflowYear1AfterTax)
+        ? metrics.cashflowYear1AfterTax
+        : Number.isFinite(metrics?.cashflowYear1)
+          ? metrics.cashflowYear1
+          : NaN;
+      const feasible = Number.isFinite(dscr) && dscr >= MIN_DSCR && Number.isFinite(cashflow) && cashflow >= MIN_CASHFLOW;
+      const note = Number.isFinite(dscr) && Number.isFinite(cashflow)
+        ? `DSCR ${formatDecimal(dscr, 2)}, year-one after-tax cash ${currency(cashflow)}`
+        : 'Insufficient data to evaluate coverage.';
+      const description = strategy.description;
+
+      results.push({
+        id: `${strategy.id}_${rentValue}`,
+        label: `${strategy.label} at ${currency(rentValue)}`,
+        description,
+        value: rentValue,
+        delta: rentValue - baseRent,
+        formattedValue: config.formatValue(rentValue),
+        formattedDelta: config.formatDelta(rentValue - baseRent),
+        adjustments: describeOverrides(base, overrides, scenarioInputs),
+        feasible,
+        note,
+      });
+    });
+  });
+
+  if (results.length === 0) {
+    return { status: 'unavailable', message: 'Unable to evaluate rent stress tests for this goal.' };
+  }
+
+  results.sort((a, b) => a.value - b.value);
+  const recommendation = results.find((result) => result.feasible) || null;
+
+  if (!recommendation) {
+    return {
+      status: 'unavailable',
+      message: 'No tested rent level maintains coverage with current assumptions. Strengthen income or cut costs before reducing rent.',
+    };
+  }
+
+  const additional = results
+    .filter((result) => result !== recommendation && result.feasible)
+    .slice(0, 3);
+  const supplemental = additional.length > 0
+    ? additional
+    : results.filter((result) => result !== recommendation).slice(0, 3);
+
+  return {
+    status: 'ready',
+    goal: config,
+    baseline: {
+      value: baseRent,
+      formatted: config.formatValue(baseRent),
+    },
+    recommendation: {
+      id: recommendation.id,
+      label: recommendation.label,
+      description: recommendation.description,
+      value: recommendation.value,
+      formattedValue: recommendation.formattedValue,
+      delta: recommendation.delta,
+      formattedDelta: recommendation.formattedDelta,
+      adjustments: recommendation.adjustments,
+      note: recommendation.note,
+      feasible: true,
+      improvement: recommendation.value < baseRent,
+    },
+    additional: supplemental.map((item) => ({
+      id: item.id,
+      label: item.label,
+      description: item.description,
+      value: item.value,
+      formattedValue: item.formattedValue,
+      delta: item.delta,
+      formattedDelta: item.formattedDelta,
+      adjustments: item.adjustments,
+      note: item.note,
+      feasible: item.feasible,
+      improvement: item.value < baseRent,
+    })),
+    analysisNote:
+      recommendation.value === baseRent
+        ? 'Your current rent is already the lowest sustainable level without changing operations.'
+        : '',
+  };
+}
+
+function buildOptimizationModel(goalKey, baseInputs, baselineMetrics) {
+  if (!goalKey) {
+    return { status: 'unavailable', message: 'Select an optimisation goal to begin.' };
+  }
+  if (goalKey === 'max_purchase_price') {
+    return buildPurchasePriceOptimization(baseInputs, baselineMetrics);
+  }
+  if (goalKey === 'min_rent') {
+    return buildRentOptimization(baseInputs, baselineMetrics);
+  }
+  return buildCandidateOptimization(goalKey, baseInputs, baselineMetrics);
+}
+
 export default function App() {
   const [extraSettings, setExtraSettings] = useState(() => loadStoredExtraSettings());
   const [pendingExtraSettings, setPendingExtraSettings] = useState(() => ({
@@ -3853,6 +4861,10 @@ export default function App() {
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
+  const [showOptimizationModal, setShowOptimizationModal] = useState(false);
+  const [optimizationGoal, setOptimizationGoal] = useState(
+    OPTIMIZATION_GOAL_OPTIONS[0]?.value ?? 'max_income'
+  );
   const [scenarioScatterXAxis, setScenarioScatterXAxis] = useState(
     () => SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'cap'
   );
@@ -4070,6 +5082,7 @@ export default function App() {
   useOverlayEscape(interestSplitExpanded, closeInterestSplitOverlay);
   useOverlayEscape(leverageExpanded, closeLeverageOverlay);
   useOverlayEscape(cashflowDetailExpanded, closeCashflowDetailOverlay);
+  useOverlayEscape(showOptimizationModal, () => setShowOptimizationModal(false));
 
   useEffect(() => {
     let cancelled = false;
@@ -5725,6 +6738,10 @@ export default function App() {
     });
     return rows;
   }, [scenarioTableData, scenarioSort]);
+  const optimizationModel = useMemo(
+    () => buildOptimizationModel(optimizationGoal, equityInputs, equity),
+    [optimizationGoal, equityInputs, equity]
+  );
   const scenarioScatterData = useMemo(() => {
     if (scenarioTableData.length === 0) {
       return [];
@@ -11630,6 +12647,13 @@ export default function App() {
               >
                 Comparison
               </button>
+              <button
+                type="button"
+                onClick={() => setShowOptimizationModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-500"
+              >
+                Optimise this investment
+              </button>
             </div>
             {showLoadPanel ? (
               <div className="mt-3 space-y-3">
@@ -12599,6 +13623,147 @@ export default function App() {
             >
               Open full map
             </a>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showOptimizationModal && (
+      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+        <div className="max-h-[85vh] w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-xl">
+          <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+            <div>
+              <h2 className="text-base font-semibold text-slate-800">Optimise this investment</h2>
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                Model alternative strategies using your current deal inputs, local market data, and lender coverage guardrails.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowOptimizationModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="max-h-[70vh] overflow-auto px-5 py-4">
+            <div className="space-y-5">
+              <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+                <span>Optimise for</span>
+                <select
+                  value={optimizationGoal}
+                  onChange={(event) => setOptimizationGoal(event.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                >
+                  {OPTIMIZATION_GOAL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {optimizationModel?.status === 'ready' ? (
+                <div className="space-y-5 text-sm">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <h3 className="text-sm font-semibold text-slate-700">{optimizationModel.goal?.label}</h3>
+                    {optimizationModel.goal?.summary ? (
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                        {optimizationModel.goal.summary}
+                      </p>
+                    ) : null}
+                    <p className="mt-3 text-xs text-slate-500">
+                      Baseline {optimizationModel.goal?.metricLabel ?? 'metric'}:{' '}
+                      <span className="font-semibold text-slate-800">{optimizationModel.baseline?.formatted ?? '—'}</span>
+                    </p>
+                  </div>
+                  <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-800">Recommended optimisation</h3>
+                        {optimizationModel.recommendation?.description ? (
+                          <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                            {optimizationModel.recommendation.description}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="text-right text-xs text-slate-500">
+                        <div className="font-semibold">{optimizationModel.goal?.metricLabel}</div>
+                        <div className="text-base font-semibold text-emerald-600">
+                          {optimizationModel.recommendation?.formattedValue ?? '—'}
+                        </div>
+                        <div>{optimizationModel.recommendation?.formattedDelta ?? ''}</div>
+                      </div>
+                    </div>
+                    <ul className="list-disc space-y-1 pl-5 text-[11px] text-slate-600">
+                      {optimizationModel.recommendation?.adjustments?.map((line) => (
+                        <li key={line}>{line}</li>
+                      )) ?? <li>No changes to your current inputs.</li>}
+                    </ul>
+                    {optimizationModel.recommendation?.note ? (
+                      <p className="text-[11px] text-slate-500">{optimizationModel.recommendation.note}</p>
+                    ) : null}
+                    {optimizationModel.analysisNote ? (
+                      <p className="text-[11px] text-amber-600">{optimizationModel.analysisNote}</p>
+                    ) : null}
+                  </div>
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-800">Other opportunities</h3>
+                    {optimizationModel.additional && optimizationModel.additional.length > 0 ? (
+                      optimizationModel.additional.map((item) => (
+                        <div
+                          key={item.id}
+                          className="rounded-lg border border-slate-200 bg-white p-4"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                {item.label}
+                              </div>
+                              {item.description ? (
+                                <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                                  {item.description}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="text-right text-[11px] text-slate-500">
+                              <div className="font-semibold">{optimizationModel.goal?.metricLabel}</div>
+                              <div className="text-sm font-semibold text-slate-700">
+                                {item.formattedValue}
+                              </div>
+                              <div>{item.formattedDelta}</div>
+                            </div>
+                          </div>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-slate-600">
+                            {item.adjustments?.map((line) => (
+                              <li key={line}>{line}</li>
+                            )) ?? <li>No changes to your current inputs.</li>}
+                          </ul>
+                          {item.note ? (
+                            <p className="mt-2 text-[11px] text-slate-500">{item.note}</p>
+                          ) : null}
+                          {!item.feasible ? (
+                            <p className="mt-2 text-[11px] text-amber-600">
+                              Requires additional adjustments to satisfy lender or tax constraints.
+                            </p>
+                          ) : null}
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-[11px] text-slate-500">
+                        No additional opportunities identified beyond the recommended plan.
+                      </p>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Calculations reuse your scenario assumptions, regional appreciation data, and crime density scoring to stay aligned with the rest of the dashboard.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-[11px] text-slate-500">
+                  {optimizationModel?.message ?? 'Provide purchase price, rent, and financing inputs to generate optimisation ideas.'}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
