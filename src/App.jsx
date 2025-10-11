@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
+import propertyPriceDataUrl from '../Average-prices-Property-Type-2025-07.csv?url';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const currencyNoPence = (value) =>
@@ -43,6 +44,109 @@ const currencyThousands = (value) => {
     maximumFractionDigits: 0,
   });
   return `${negative ? '−' : ''}£${formatted}k`;
+};
+
+const clamp = (value, min, max) => {
+  if (!Number.isFinite(value)) {
+    return Number.isFinite(min) ? min : value;
+  }
+  if (Number.isFinite(min) && value < min) {
+    return min;
+  }
+  if (Number.isFinite(max) && value > max) {
+    return max;
+  }
+  return value;
+};
+
+const roundToNearest = (value, step = 1) => {
+  if (!Number.isFinite(value) || !Number.isFinite(step) || step === 0) {
+    return value;
+  }
+  return Math.round(value / step) * step;
+};
+
+const sumArray = (values) => {
+  if (!Array.isArray(values)) {
+    return 0;
+  }
+  return values.reduce((total, current) => {
+    if (!Number.isFinite(current)) {
+      return total;
+    }
+    return total + current;
+  }, 0);
+};
+
+const formatDecimal = (value, decimals = 2) => {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return value.toFixed(decimals);
+};
+
+const formatCurrencyDelta = (delta) => {
+  if (!Number.isFinite(delta)) {
+    return '—';
+  }
+  if (Math.abs(delta) < 0.5) {
+    return 'No change';
+  }
+  const absolute = Math.abs(delta).toLocaleString(undefined, {
+    style: 'currency',
+    currency: 'GBP',
+  });
+  return `${delta >= 0 ? '+' : '−'}${absolute}`;
+};
+
+const formatPercentDelta = (delta, decimals = 2) => {
+  if (!Number.isFinite(delta)) {
+    return '—';
+  }
+  if (Math.abs(delta) < 0.0005) {
+    return 'No change';
+  }
+  const absolute = (Math.abs(delta) * 100).toFixed(decimals);
+  return `${delta >= 0 ? '+' : '−'}${absolute} pp`;
+};
+
+const escapeHtml = (value) => {
+  if (typeof value !== 'string' || value === '') {
+    return '';
+  }
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+const encodeForSrcdoc = (value) => {
+  try {
+    const encoded = encodeURIComponent(JSON.stringify(value ?? null));
+    return encoded.replace(/'/g, '%27');
+  } catch (error) {
+    console.warn('Unable to encode map payload for srcdoc:', error);
+    return encodeURIComponent('null');
+  }
+};
+
+const useOverlayEscape = (open, onClose) => {
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open, onClose]);
 };
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
@@ -146,6 +250,90 @@ const CASHFLOW_BAR_COLORS = {
   netCashflow: '#10b981',
 };
 
+const PROPERTY_TYPE_OPTIONS = [
+  { value: 'detached', label: 'Detached house', column: 'Detached_Average_Price' },
+  { value: 'semi_detached', label: 'Semi-detached house', column: 'Semi_Detached_Average_Price' },
+  { value: 'terraced', label: 'Terraced house', column: 'Terraced_Average_Price' },
+  { value: 'flat_maisonette', label: 'Flats / maisonette', column: 'Flat_Average_Price' },
+];
+
+const PROPERTY_TYPE_COLUMN_LOOKUP = PROPERTY_TYPE_OPTIONS.reduce((acc, option) => {
+  acc[option.value] = option.column;
+  return acc;
+}, {});
+
+const COUNTRY_REGION_SYNONYMS = {
+  uk: 'united kingdom',
+  'u.k.': 'united kingdom',
+  gb: 'united kingdom',
+  'great britain': 'united kingdom',
+  britain: 'united kingdom',
+  'united kingdom of great britain and northern ireland': 'united kingdom',
+  'gb-eng': 'england',
+  'gb-wls': 'wales',
+  'gb-sct': 'scotland',
+  'gb-nir': 'northern ireland',
+};
+
+const isUkCountryCode = (code) => {
+  if (typeof code !== 'string') {
+    return false;
+  }
+  const normalized = code.trim().toLowerCase();
+  if (normalized === '') {
+    return false;
+  }
+  return (
+    normalized === 'uk' ||
+    normalized === 'gb' ||
+    normalized === 'gbr' ||
+    normalized === 'great britain' ||
+    normalized === 'united kingdom'
+  );
+};
+
+const normalizePostcode = (postcode) => {
+  if (typeof postcode !== 'string') {
+    return '';
+  }
+  const trimmed = postcode.trim();
+  if (trimmed === '') {
+    return '';
+  }
+  return trimmed.replace(/\s+/g, '').toUpperCase();
+};
+
+const formatCrimePostcodeParam = (postcode) => {
+  if (typeof postcode !== 'string') {
+    return '';
+  }
+  const trimmed = postcode.trim();
+  if (trimmed === '') {
+    return '';
+  }
+  const compact = trimmed.replace(/\s+/g, '').toUpperCase();
+  if (compact.length <= 3) {
+    return compact;
+  }
+  const outward = compact.slice(0, compact.length - 3);
+  const inward = compact.slice(-3);
+  return `${outward} ${inward}`;
+};
+
+const PROPERTY_APPRECIATION_WINDOWS = [1, 5, 10, 20];
+const DEFAULT_APPRECIATION_WINDOW = 5;
+const CRIME_SEARCH_RADIUS_KM = 1.60934;
+const CRIME_SEARCH_AREA_KM2 = Math.PI * CRIME_SEARCH_RADIUS_KM * CRIME_SEARCH_RADIUS_KM;
+const CRIME_DENSITY_CLASSIFICATIONS = [
+  { max: 0.25, label: 'minimal', multiplier: 1, tone: 'positive' },
+  { max: 0.75, label: 'very low', multiplier: 0.9, tone: 'positive' },
+  { max: 1.5, label: 'low', multiplier: 0.75, tone: 'positive' },
+  { max: 3, label: 'moderate', multiplier: 0.55, tone: 'neutral' },
+  { max: 5, label: 'elevated', multiplier: 0.35, tone: 'warning' },
+  { max: 8, label: 'high', multiplier: 0.2, tone: 'warning' },
+  { max: Infinity, label: 'severe', multiplier: 0, tone: 'negative' },
+];
+
 const ROI_HEATMAP_OFFSETS = [-0.02, -0.01, 0, 0.01, 0.02];
 const HEATMAP_COLOR_START = [248, 113, 113];
 const HEATMAP_COLOR_END = [34, 197, 94];
@@ -156,6 +344,26 @@ const LEVERAGE_LTV_OPTIONS = Array.from({ length: 18 }, (_, index) =>
 const LEVERAGE_SAFE_MAX_LTV = 0.75;
 const LEVERAGE_MAX_LTV = LEVERAGE_LTV_OPTIONS[LEVERAGE_LTV_OPTIONS.length - 1];
 const CRIME_SERIES_LIMIT = 400;
+const CRIME_TREND_MAX_MONTHS = 12;
+const CRIME_CATEGORY_PALETTE = [
+  '#ef4444',
+  '#f97316',
+  '#facc15',
+  '#22c55e',
+  '#3b82f6',
+  '#a855f7',
+  '#ec4899',
+  '#14b8a6',
+  '#0ea5e9',
+  '#6366f1',
+  '#8b5cf6',
+  '#f472b6',
+];
+const CASHFLOW_VIEW_OPTIONS = [
+  { value: 'all', label: 'All cash flow' },
+  { value: 'positive', label: 'Positive after-tax cash flow' },
+  { value: 'negative', label: 'Negative after-tax cash flow' },
+];
 const NPV_BAR_KEYS = ['operatingCash', 'saleProceeds'];
 const NPV_LINE_KEYS = [
   'totalCash',
@@ -174,6 +382,47 @@ const formatCrimeCategory = (value) => {
     .split('-')
     .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
     .join(' ');
+};
+
+const buildCrimeMonthRange = (latestMonth, limit = CRIME_TREND_MAX_MONTHS) => {
+  const normalized = normalizeCrimeMonth(latestMonth);
+  if (!normalized) {
+    return [];
+  }
+  const [yearString, monthString] = normalized.split('-');
+  let year = Number(yearString);
+  let monthIndex = Number(monthString) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) {
+    return [];
+  }
+  const months = [];
+  for (let offset = 0; offset < limit; offset += 1) {
+    const date = new Date(year, monthIndex - offset, 1);
+    if (Number.isNaN(date.getTime())) {
+      break;
+    }
+    const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    if (!months.includes(iso)) {
+      months.push(iso);
+    }
+  }
+  return months;
+};
+
+const compareCrimeMonths = (a, b) => {
+  const normalizedA = normalizeCrimeMonth(a);
+  const normalizedB = normalizeCrimeMonth(b);
+  if (!normalizedA && !normalizedB) return 0;
+  if (!normalizedA) return 1;
+  if (!normalizedB) return -1;
+  const [yearA, monthA] = normalizedA.split('-').map((value) => Number(value));
+  const [yearB, monthB] = normalizedB.split('-').map((value) => Number(value));
+  if (!Number.isFinite(yearA) || !Number.isFinite(monthA)) return 1;
+  if (!Number.isFinite(yearB) || !Number.isFinite(monthB)) return -1;
+  if (yearA === yearB) {
+    return monthA - monthB;
+  }
+  return yearA - yearB;
 };
 
 const formatCrimeMonth = (value) => {
@@ -400,6 +649,7 @@ const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
   const state = getAddressComponent(address, ['state']);
   const postcode = getAddressComponent(address, ['postcode']);
   const country = getAddressComponent(address, ['country']);
+  const countryCode = getAddressComponent(address, ['country_code']);
 
   const propertyLine = [building, road].filter(Boolean).join(' ').trim();
   const localityLine = locality ? locality : '';
@@ -447,12 +697,22 @@ const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
   const summary = summaryParts.length > 0 ? summaryParts.join(', ') : summaryFallback;
   const query = queryParts.length > 0 ? queryParts.join(', ') : summary || summaryFallback;
 
-  return { summary, query, bounds, postcode, city, county };
+  return {
+    summary,
+    query,
+    bounds,
+    postcode,
+    city,
+    county,
+    state,
+    country,
+    countryCode,
+  };
 };
 
 const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, signal }) => {
   const queries = [];
-  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+  if (hasUsableCoordinates(lat, lon)) {
     queries.push(`${lat},${lon}`);
   }
   if (typeof postcode === 'string' && postcode.trim() !== '') {
@@ -465,7 +725,11 @@ const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, si
   const attempted = new Set();
 
   for (const query of queries) {
-    const normalized = query.toLowerCase();
+    const trimmedQuery = typeof query === 'string' ? query.trim() : '';
+    if (!trimmedQuery || isPlaceholderCoordinateQuery(trimmedQuery)) {
+      continue;
+    }
+    const normalized = trimmedQuery.toLowerCase();
     if (attempted.has(normalized)) {
       continue;
     }
@@ -473,7 +737,7 @@ const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, si
 
     try {
       const locateResponse = await fetch(
-        `https://data.police.uk/api/locate-neighbourhood?q=${encodeURIComponent(query)}`,
+        `https://data.police.uk/api/locate-neighbourhood?q=${encodeURIComponent(trimmedQuery)}`,
         {
           signal,
           headers: { Accept: 'application/json' },
@@ -580,6 +844,10 @@ const summarizeCrimeData = (
   { lat, lon, month, lastUpdated, fallbackLocationName, mapBoundsOverride, mapCenterOverride }
 ) => {
   const totalIncidents = Array.isArray(crimes) ? crimes.length : 0;
+  const incidentsPerSqKm =
+    Number.isFinite(totalIncidents) && CRIME_SEARCH_AREA_KM2 > 0
+      ? totalIncidents / CRIME_SEARCH_AREA_KM2
+      : null;
   const safeLat = Number.isFinite(lat) ? lat : 0;
   const safeLon = Number.isFinite(lon) ? lon : 0;
   const categoryCounts = new Map();
@@ -633,14 +901,15 @@ const summarizeCrimeData = (
     });
   }
 
-  const topCategories = Array.from(categoryCounts.entries())
+  const categoryBreakdown = Array.from(categoryCounts.entries())
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
     .map(([label, count]) => ({
       label,
       count,
       share: totalIncidents > 0 ? count / totalIncidents : 0,
     }));
+
+  const topCategories = categoryBreakdown.slice(0, 3);
 
   const topOutcomes = Array.from(outcomeCounts.entries())
     .sort((a, b) => b[1] - a[1])
@@ -738,6 +1007,11 @@ const summarizeCrimeData = (
     monthLabel: month ? formatCrimeMonth(month) : '',
     lastUpdated,
     totalIncidents,
+    averageMonthlyIncidents: Number.isFinite(totalIncidents) ? totalIncidents : null,
+    incidentDensityPerSqKm: Number.isFinite(incidentsPerSqKm) ? incidentsPerSqKm : null,
+    averageMonthlyIncidentDensity: Number.isFinite(incidentsPerSqKm) ? incidentsPerSqKm : null,
+    searchAreaSqKm: CRIME_SEARCH_AREA_KM2,
+    categoryBreakdown,
     topCategories,
     topOutcomes,
     locationSummary: mostCommonStreet || fallbackLocationName || '',
@@ -941,12 +1215,14 @@ const DEFAULT_INPUTS = {
   propertyLatitude: null,
   propertyLongitude: null,
   propertyDisplayName: '',
+  propertyType: PROPERTY_TYPE_OPTIONS[0].value,
   bedrooms: 3,
   bathrooms: 1,
   purchasePrice: 70000,
   depositPct: 0.25,
   closingCostsPct: 0.01,
   renovationCost: 0,
+  mortgagePackageFee: 0,
   interestRate: 0.055,
   mortgageYears: 30,
   loanType: 'repayment',
@@ -960,6 +1236,8 @@ const DEFAULT_INPUTS = {
   insurancePerYear: 500,
   otherOpexPerYear: 300,
   annualAppreciation: 0.03,
+  useHistoricalAppreciation: false,
+  historicalAppreciationWindow: DEFAULT_APPRECIATION_WINDOW,
   rentGrowth: 0.02,
   exitYear: 20,
   sellingCostsPct: 0.02,
@@ -975,18 +1253,22 @@ const DEFAULT_INPUTS = {
   ownershipShare2: 0.5,
   reinvestIncome: false,
   reinvestPct: 0.5,
+  deductOperatingExpenses: true,
 };
 
-const EXTRA_SETTING_KEYS = ['discountRate', 'irrHurdle'];
+const EXTRA_SETTINGS_DEFAULTS = {
+  discountRate: Number.isFinite(DEFAULT_INPUTS.discountRate) ? Number(DEFAULT_INPUTS.discountRate) : 0,
+  irrHurdle: Number.isFinite(DEFAULT_INPUTS.irrHurdle) ? Number(DEFAULT_INPUTS.irrHurdle) : 0,
+  indexFundGrowth: Number.isFinite(DEFAULT_INPUTS.indexFundGrowth)
+    ? Number(DEFAULT_INPUTS.indexFundGrowth)
+    : DEFAULT_INDEX_GROWTH,
+  deductOperatingExpenses: true,
+};
+
+const EXTRA_SETTING_KEYS = Object.keys(EXTRA_SETTINGS_DEFAULTS);
 const EXTRA_SETTINGS_STORAGE_KEY = 'landlord-extra-settings-v1';
 
-const getDefaultExtraSettings = () => {
-  const defaults = {};
-  EXTRA_SETTING_KEYS.forEach((key) => {
-    defaults[key] = Number.isFinite(DEFAULT_INPUTS[key]) ? Number(DEFAULT_INPUTS[key]) : 0;
-  });
-  return defaults;
-};
+const getDefaultExtraSettings = () => ({ ...EXTRA_SETTINGS_DEFAULTS });
 
 const loadStoredExtraSettings = () => {
   const defaults = getDefaultExtraSettings();
@@ -1001,8 +1283,25 @@ const loadStoredExtraSettings = () => {
     const parsed = JSON.parse(raw);
     const next = { ...defaults };
     EXTRA_SETTING_KEYS.forEach((key) => {
-      const value = Number(parsed?.[key]);
-      next[key] = Number.isFinite(value) ? value : defaults[key];
+      const defaultValue = defaults[key];
+      const storedValue = parsed?.[key];
+      if (typeof defaultValue === 'boolean') {
+        if (typeof storedValue === 'boolean') {
+          next[key] = storedValue;
+        } else if (typeof storedValue === 'string') {
+          const lowered = storedValue.toLowerCase();
+          if (lowered === 'true') {
+            next[key] = true;
+          } else if (lowered === 'false') {
+            next[key] = false;
+          }
+        } else if (storedValue === 1 || storedValue === 0) {
+          next[key] = Boolean(storedValue);
+        }
+      } else {
+        const value = Number(storedValue);
+        next[key] = Number.isFinite(value) ? value : defaultValue;
+      }
     });
     return next;
   } catch (error) {
@@ -1025,7 +1324,468 @@ const formatPercent = (value, decimals = 2) => {
   return `${roundTo(value * 100, safeDecimals).toFixed(safeDecimals)}%`;
 };
 
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const describeOverrides = (base, overrides = {}, scenario = null) => {
+  if (!base || typeof base !== 'object' || !overrides || typeof overrides !== 'object') {
+    return [];
+  }
+  const details = [];
+  const addLine = (line) => {
+    if (typeof line === 'string' && line.trim() !== '') {
+      details.push(line.trim());
+    }
+  };
+
+  Object.entries(overrides).forEach(([key, value]) => {
+    const previous = base[key];
+    if (previous === value) {
+      return;
+    }
+    if (Number.isFinite(previous) && Number.isFinite(value) && Math.abs(previous - value) < 1e-6) {
+      return;
+    }
+
+    switch (key) {
+      case 'monthlyRent': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatCurrencyDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta} per month)` : '';
+        addLine(`Monthly rent → ${currency(value)}${suffix}`);
+        break;
+      }
+      case 'rentGrowth': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Annual rent growth → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'vacancyPct': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Vacancy allowance → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'mgmtPct': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Management allowance → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'repairsPct': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Repairs allowance → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'depositPct': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatPercentDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Deposit → ${formatPercent(value)}${suffix}`);
+        break;
+      }
+      case 'purchasePrice': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? formatCurrencyDelta(value - previous) : '';
+        const suffix = delta && delta !== 'No change' ? ` (${delta})` : '';
+        addLine(`Purchase price → ${currency(value)}${suffix}`);
+        break;
+      }
+      case 'exitYear': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? value - previous : 0;
+        const suffix = Number.isFinite(delta) && delta !== 0 ? ` (${delta > 0 ? '+' : '−'}${Math.abs(delta)} yrs)` : '';
+        addLine(`Hold period → ${value} years${suffix}`);
+        break;
+      }
+      case 'mortgageYears': {
+        if (!Number.isFinite(value)) break;
+        const delta = Number.isFinite(previous) ? value - previous : 0;
+        const suffix = Number.isFinite(delta) && delta !== 0 ? ` (${delta > 0 ? '+' : '−'}${Math.abs(delta)} yrs)` : '';
+        addLine(`Mortgage amortisation → ${value} years${suffix}`);
+        break;
+      }
+      case 'loanType': {
+        if (value === previous) break;
+        const label = value === 'interest_only' ? 'Interest only mortgage' : 'Repayment mortgage';
+        addLine(label);
+        break;
+      }
+      case 'buyerType': {
+        if (value === previous) break;
+        const label = value === 'company' ? 'Acquire through a company structure' : 'Acquire as an individual';
+        addLine(label);
+        break;
+      }
+      case 'deductOperatingExpenses': {
+        if (value === previous) break;
+        addLine(value ? 'Treat operating expenses as tax deductible.' : 'Exclude operating expenses from tax calculations.');
+        break;
+      }
+      case 'ownershipShare1': {
+        if (!Number.isFinite(value)) break;
+        addLine(`Owner A share → ${formatPercent(value, 1)}`);
+        break;
+      }
+      case 'ownershipShare2': {
+        if (!Number.isFinite(value)) break;
+        addLine(`Owner B share → ${formatPercent(value, 1)}`);
+        break;
+      }
+      default: {
+        if (typeof value === 'boolean' && value !== previous) {
+          addLine(`${key} → ${value ? 'Enabled' : 'Disabled'}`);
+        } else if (Number.isFinite(value)) {
+          const previousValue = Number.isFinite(previous) ? previous : null;
+          const delta = previousValue !== null ? value - previousValue : null;
+          if (delta !== null && Math.abs(delta) >= 0.5) {
+            addLine(`${key} → ${value.toLocaleString()} (${delta >= 0 ? '+' : '−'}${Math.abs(delta).toLocaleString()})`);
+          }
+        }
+      }
+    }
+  });
+
+  if (details.length === 0) {
+    details.push('No changes to your current inputs.');
+  }
+
+  return details;
+};
+
+const OPTIMIZATION_GOAL_SEQUENCE = [
+  'max_income',
+  'min_taxes',
+  'max_irr',
+  'max_purchase_price',
+  'min_rent',
+  'max_coc',
+];
+
+const OPTIMIZATION_GOAL_CONFIG = {
+  max_income: {
+    key: 'max_income',
+    label: 'Maximum Income over the term',
+    metricLabel: 'Total after-tax cash flow',
+    direction: 'max',
+    summary:
+      'Evaluates strategies that increase cumulative after-tax cash collected across the hold period without ignoring financing or expense drag.',
+    formatValue: (value) => currency(value),
+    formatDelta: (delta) => formatCurrencyDelta(delta),
+    metricGetter: (metrics) => {
+      if (!metrics) {
+        return NaN;
+      }
+      if (Number.isFinite(metrics.exitCumCashAfterTax)) {
+        return metrics.exitCumCashAfterTax;
+      }
+      if (Array.isArray(metrics.annualCashflowsAfterTax)) {
+        return sumArray(metrics.annualCashflowsAfterTax);
+      }
+      return NaN;
+    },
+    buildCandidates: (base, metrics) => buildIncomeCandidates(base, metrics),
+    unavailableMessage: 'Provide rent, vacancy, expense, and financing assumptions to project cash flow.',
+    improvementThreshold: 50,
+  },
+  min_taxes: {
+    key: 'min_taxes',
+    label: 'Minimum Taxes over the term',
+    metricLabel: 'Total property taxes',
+    direction: 'min',
+    summary: 'Looks for ownership structures and deductions that lower cumulative property taxation over the modelled hold.',
+    formatValue: (value) => currency(value),
+    formatDelta: (delta) => formatCurrencyDelta(delta),
+    metricGetter: (metrics) => {
+      if (!metrics) {
+        return NaN;
+      }
+      if (Number.isFinite(metrics.totalPropertyTax)) {
+        return metrics.totalPropertyTax;
+      }
+      if (Array.isArray(metrics.propertyTaxes)) {
+        return sumArray(metrics.propertyTaxes);
+      }
+      return NaN;
+    },
+    buildCandidates: (base, metrics) => buildTaxCandidates(base, metrics),
+    unavailableMessage: 'Enter buyer type, ownership shares, and tax assumptions to evaluate long-run taxes.',
+    improvementThreshold: 100,
+  },
+  max_irr: {
+    key: 'max_irr',
+    label: 'Maximum IRR over the term',
+    metricLabel: 'Internal rate of return',
+    direction: 'max',
+    summary: 'Tests leverage, pricing, and hold-period adjustments that accelerate the internal rate of return.',
+    formatValue: (value) => formatPercent(value),
+    formatDelta: (delta) => formatPercentDelta(delta),
+    metricGetter: (metrics) => (metrics && Number.isFinite(metrics.irr) ? metrics.irr : NaN),
+    buildCandidates: (base, metrics) => buildIrrCandidates(base, metrics),
+    unavailableMessage: 'Add purchase, rent, and exit assumptions to calculate IRR.',
+    improvementThreshold: 0.0005,
+  },
+  max_purchase_price: {
+    key: 'max_purchase_price',
+    label: 'Maximum Purchase Price Recommended',
+    metricLabel: 'Purchase price',
+    direction: 'max',
+    summary:
+      'Identifies the highest price that still satisfies lender coverage and maintains non-negative year-one cash flow under current assumptions.',
+    formatValue: (value) => currency(value),
+    formatDelta: (delta) => formatCurrencyDelta(delta),
+    metricGetter: (_metrics, scenario) => {
+      if (!scenario) {
+        return NaN;
+      }
+      const price = Number(scenario.purchasePrice);
+      return Number.isFinite(price) ? price : NaN;
+    },
+    buildCandidates: null,
+    unavailableMessage: 'Provide a purchase price and financing assumptions to model the recommended ceiling.',
+    improvementThreshold: 1000,
+  },
+  min_rent: {
+    key: 'min_rent',
+    label: 'Minimum Rent Recommended',
+    metricLabel: 'Monthly rent',
+    direction: 'min',
+    summary:
+      'Back-solves the lowest sustainable rent while preserving coverage ratios and non-negative cash flow.',
+    formatValue: (value) => currency(value),
+    formatDelta: (delta) => formatCurrencyDelta(delta),
+    metricGetter: (_metrics, scenario) => {
+      if (!scenario) {
+        return NaN;
+      }
+      const rent = Number(scenario.monthlyRent);
+      return Number.isFinite(rent) ? rent : NaN;
+    },
+    buildCandidates: null,
+    unavailableMessage: 'Enter rent, expense, and financing assumptions to stress-test minimum viable rent.',
+    improvementThreshold: 25,
+  },
+  max_coc: {
+    key: 'max_coc',
+    label: 'Maximum Cash on Cash return',
+    metricLabel: 'Cash-on-cash (year one)',
+    direction: 'max',
+    summary: 'Focuses on strategies that lift first-year cash-on-cash returns by balancing leverage, rent, and expenses.',
+    formatValue: (value) => formatPercent(value),
+    formatDelta: (delta) => formatPercentDelta(delta),
+    metricGetter: (metrics) => (metrics && Number.isFinite(metrics.coc) ? metrics.coc : NaN),
+    buildCandidates: (base, metrics) => buildCashOnCashCandidates(base, metrics),
+    unavailableMessage: 'Provide cash flow assumptions to evaluate cash-on-cash returns.',
+    improvementThreshold: 0.0005,
+  },
+};
+
+const OPTIMIZATION_GOAL_OPTIONS = OPTIMIZATION_GOAL_SEQUENCE.map((key) => {
+  const config = OPTIMIZATION_GOAL_CONFIG[key];
+  return {
+    value: key,
+    label: config?.label ?? key,
+  };
+}).filter((option) => option.label);
+
+const hasUsableCoordinates = (lat, lon) => {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return false;
+  }
+  const magnitude = Math.abs(lat) + Math.abs(lon);
+  return magnitude > 0.0002;
+};
+
+const resolveCoordinatePair = (lat, lon) => (hasUsableCoordinates(lat, lon) ? { lat, lon } : null);
+
+const isPlaceholderCoordinateQuery = (value) => {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return false;
+  }
+  const match = trimmed.match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
+  if (!match) {
+    return false;
+  }
+  const lat = Number.parseFloat(match[1]);
+  const lon = Number.parseFloat(match[2]);
+  return !hasUsableCoordinates(lat, lon);
+};
+
+const CrimeMap = ({ center, bounds, markers, className, title }) => {
+  const normalizedCenter = useMemo(() => {
+    const lat = Number(center?.lat);
+    const lon = Number(center?.lon);
+    const zoom = Number(center?.zoom);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return { lat: 54.0, lon: -2.0, zoom: 6 };
+    }
+    return {
+      lat,
+      lon,
+      zoom: Number.isFinite(zoom) ? clamp(zoom, 3, 18) : 14,
+    };
+  }, [center]);
+
+  const normalizedBounds = useMemo(() => {
+    if (
+      !Array.isArray(bounds) ||
+      bounds.length !== 2 ||
+      !Array.isArray(bounds[0]) ||
+      !Array.isArray(bounds[1])
+    ) {
+      return null;
+    }
+    const southLat = Number(bounds[0][0]);
+    const southLon = Number(bounds[0][1]);
+    const northLat = Number(bounds[1][0]);
+    const northLon = Number(bounds[1][1]);
+    if (
+      !Number.isFinite(southLat) ||
+      !Number.isFinite(southLon) ||
+      !Number.isFinite(northLat) ||
+      !Number.isFinite(northLon)
+    ) {
+      return null;
+    }
+    const minLat = Math.min(southLat, northLat);
+    const maxLat = Math.max(southLat, northLat);
+    const minLon = Math.min(southLon, northLon);
+    const maxLon = Math.max(southLon, northLon);
+    if (minLat === maxLat && minLon === maxLon) {
+      return [
+        [minLat - 0.0005, minLon - 0.0005],
+        [maxLat + 0.0005, maxLon + 0.0005],
+      ];
+    }
+    return [
+      [minLat, minLon],
+      [maxLat, maxLon],
+    ];
+  }, [bounds]);
+
+  const normalizedMarkers = useMemo(() => {
+    if (!Array.isArray(markers)) {
+      return [];
+    }
+    return markers
+      .map((marker) => {
+        const lat = Number(marker?.lat);
+        const lon = Number(marker?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          return null;
+        }
+        return {
+          lat,
+          lon,
+          category: typeof marker?.category === 'string' ? marker.category : '',
+          street: typeof marker?.street === 'string' ? marker.street : '',
+          outcome: typeof marker?.outcome === 'string' ? marker.outcome : '',
+          month: typeof marker?.month === 'string' ? marker.month : '',
+        };
+      })
+      .filter(Boolean);
+  }, [markers]);
+
+  const mapTitle = title || 'Police-reported crime map';
+
+  const mapDocument = useMemo(() => {
+    const encodedCenter = encodeForSrcdoc(normalizedCenter);
+    const encodedBounds = normalizedBounds ? encodeForSrcdoc(normalizedBounds) : '';
+    const encodedMarkers = encodeForSrcdoc(normalizedMarkers);
+    const ariaLabel = escapeHtml(mapTitle);
+    return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous" />
+    <style>
+      html, body, #map { height: 100%; margin: 0; }
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .leaflet-popup-content { font-size: 12px; line-height: 1.4; }
+    </style>
+  </head>
+  <body>
+    <div id="map" role="img" aria-label="${ariaLabel}"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
+    <script>
+      (function() {
+        const decode = (value) => JSON.parse(decodeURIComponent(value));
+        const center = decode('${encodedCenter}');
+        const bounds = ${normalizedBounds ? `decode('${encodedBounds}')` : 'null'};
+        const markers = decode('${encodedMarkers}');
+        const map = L.map('map', { zoomControl: true, scrollWheelZoom: false, attributionControl: true });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        if (Array.isArray(bounds) && bounds.length === 2) {
+          const sw = bounds[0];
+          const ne = bounds[1];
+          if (
+            Array.isArray(sw) &&
+            Array.isArray(ne) &&
+            sw.length === 2 &&
+            ne.length === 2
+          ) {
+            const latLngBounds = L.latLngBounds([sw[0], sw[1]], [ne[0], ne[1]]);
+            map.fitBounds(latLngBounds, { padding: [24, 24], maxZoom: 17 });
+          }
+        } else if (center && Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
+          map.setView([center.lat, center.lon], center.zoom || 14);
+        }
+        const escapeHtml = (value) => String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+        markers.forEach((marker) => {
+          if (!marker || !Number.isFinite(marker.lat) || !Number.isFinite(marker.lon)) {
+            return;
+          }
+          const circle = L.circleMarker([marker.lat, marker.lon], {
+            radius: 6,
+            color: '#1d4ed8',
+            weight: 1,
+            opacity: 0.9,
+            fillColor: '#3b82f6',
+            fillOpacity: 0.7
+          });
+          const parts = [];
+          if (marker.category) parts.push('<strong>' + escapeHtml(marker.category) + '</strong>');
+          if (marker.street) parts.push(escapeHtml(marker.street));
+          if (marker.outcome) parts.push(escapeHtml(marker.outcome));
+          if (marker.month) parts.push(escapeHtml(marker.month));
+          if (parts.length > 0) {
+            circle.bindPopup(parts.join('<br/>'), { closeButton: false });
+          }
+          circle.addTo(map);
+        });
+      })();
+    </script>
+  </body>
+</html>`;
+  }, [mapTitle, normalizedBounds, normalizedCenter, normalizedMarkers]);
+
+  return (
+    <iframe
+      title={mapTitle}
+      srcDoc={mapDocument}
+      className={['h-full w-full border-0', className].filter(Boolean).join(' ')}
+      loading="lazy"
+      sandbox="allow-scripts allow-same-origin"
+      referrerPolicy="no-referrer-when-downgrade"
+    />
+  );
+};
 
 const mixColorChannel = (start, end, t) => Math.round(start + (end - start) * t);
 
@@ -1083,7 +1843,7 @@ const decodeSharePayload = (value) => {
 
 const SCORE_TOOLTIPS = {
   overall:
-    'Score blends IRR strength, performance versus your hurdle, cash-on-cash return, year-one after-tax cash flow, total cash invested, and discounted net present value into a 0-100 composite.',
+    'Score blends return strength (IRR, hurdle gap, cash-on-cash, year-one cash, invested capital, and discounted NPV) with resilience and location levers (cap rate, DSCR, long-run market growth, and police-reported crime density) into a 0-100 composite.',
   delta:
     'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
   deltaAfterTax:
@@ -1091,12 +1851,16 @@ const SCORE_TOOLTIPS = {
 };
 
 const SCORE_COMPONENT_CONFIG = {
-  irr: { label: 'IRR', maxPoints: 25 },
-  irrHurdle: { label: 'IRR hurdle', maxPoints: 15 },
-  cashOnCash: { label: 'Cash-on-cash', maxPoints: 20 },
-  cashflow: { label: 'Year 1 after-tax cash', maxPoints: 10 },
-  cashInvested: { label: 'Cash invested', maxPoints: 10 },
-  npv: { label: 'NPV', maxPoints: 20 },
+  irr: { label: 'IRR', maxPoints: 18 },
+  irrHurdle: { label: 'IRR hurdle', maxPoints: 10 },
+  cashOnCash: { label: 'Cash-on-cash', maxPoints: 14 },
+  cashflow: { label: 'Year 1 after-tax cash', maxPoints: 8 },
+  cashInvested: { label: 'Cash invested', maxPoints: 8 },
+  npv: { label: 'NPV', maxPoints: 12 },
+  capRate: { label: 'Cap rate strength', maxPoints: 8 },
+  dscr: { label: 'Debt coverage', maxPoints: 6 },
+  propertyGrowth: { label: 'Market growth tailwind', maxPoints: 10 },
+  crimeSafety: { label: 'Crime safety', maxPoints: 6 },
 };
 
 const TOTAL_SCORE_MAX = Object.values(SCORE_COMPONENT_CONFIG).reduce(
@@ -1148,7 +1912,7 @@ const INVESTMENT_PROFILE_BAR_TONES = {
 
 const SECTION_DESCRIPTIONS = {
   cashNeeded:
-    'Breaks down the upfront funds required to close the purchase, including deposit, stamp duty, closing costs, and renovation spend.',
+    'Breaks down the upfront funds required to close the purchase, including deposit, stamp duty, closing costs, lender package fees, and renovation spend.',
   performance:
     'Shows rent, operating expenses, debt service, taxes, and cash flow for the selected hold year so you can compare annual performance.',
   keyRatios:
@@ -1199,6 +1963,7 @@ const KNOWLEDGE_GROUPS = {
       'ltv',
       'stampDuty',
       'closingCosts',
+      'mortgagePackageFee',
       'renovationCost',
       'bridgingLoanAmount',
       'netCashIn',
@@ -1314,6 +2079,14 @@ const KNOWLEDGE_METRICS = {
     importance: 'Accounts for frictional costs that need to be funded alongside the deposit.',
     unit: 'currency',
   },
+  mortgagePackageFee: {
+    label: 'Mortgage fee',
+    groups: ['cashNeeded'],
+    description: 'Upfront lender or broker fee charged to arrange the mortgage.',
+    calculation: 'User-entered flat fee paid at completion.',
+    importance: 'Needs to be budgeted alongside closing costs because it increases cash required to draw the loan.',
+    unit: 'currency',
+  },
   renovationCost: {
     label: 'Renovation budget',
     groups: ['cashNeeded'],
@@ -1341,8 +2114,8 @@ const KNOWLEDGE_METRICS = {
   totalCashRequired: {
     label: 'Total cash required',
     groups: ['cashNeeded'],
-    description: 'Sum of deposit, stamp duty, closing costs, and renovation spend before financing.',
-    calculation: 'Deposit + stamp duty + other closing costs + renovation budget.',
+    description: 'Sum of deposit, stamp duty, closing costs, lender package fees, and renovation spend before financing.',
+    calculation: 'Deposit + stamp duty + other closing costs + mortgage package fee + renovation budget.',
     importance: 'Sets the total capital needed to complete the purchase and works.',
     unit: 'currency',
   },
@@ -1381,9 +2154,11 @@ const KNOWLEDGE_METRICS = {
   bridgingDebtService: {
     label: 'Debt service (bridging)',
     groups: ['performance', 'cashflowBars'],
-    description: 'Interest-only payments on the bridging loan prior to refinancing.',
-    calculation: 'Bridging balance × monthly bridge rate × term months within the year.',
-    importance: 'Temporary cost that can erode early-year cash flow until permanent financing begins.',
+    description:
+      'Interest and principal paid on the bridging facility before it is refinanced into long-term debt or cash.',
+    calculation: 'Bridge interest each month plus the outstanding balance when the bridge is repaid.',
+    importance:
+      'Captures the total cash needed to service and retire the bridge before permanent financing resumes.',
     unit: 'currency',
   },
   cashflowPreTax: {
@@ -1944,6 +2719,34 @@ const shortenUrlWithShortIo = async (originalUrl) => {
   }
 };
 
+const classifyCrimeDensity = (density) => {
+  if (!Number.isFinite(density) || density < 0) {
+    return null;
+  }
+  for (const bucket of CRIME_DENSITY_CLASSIFICATIONS) {
+    if (density <= bucket.max) {
+      return bucket;
+    }
+  }
+  return CRIME_DENSITY_CLASSIFICATIONS[CRIME_DENSITY_CLASSIFICATIONS.length - 1] ?? null;
+};
+
+const formatCrimeDensityValue = (density) => {
+  if (!Number.isFinite(density)) {
+    return '';
+  }
+  if (density >= 10) {
+    return density.toFixed(0);
+  }
+  if (density >= 1) {
+    return density.toFixed(1);
+  }
+  if (density === 0) {
+    return '0';
+  }
+  return density.toFixed(2);
+};
+
 function scoreDeal({
   irr,
   irrHurdle,
@@ -1952,6 +2755,16 @@ function scoreDeal({
   cashInvested,
   purchasePrice,
   npv,
+  capRate,
+  dscr,
+  propertyGrowth20Year,
+  propertyGrowthWindowRate,
+  propertyGrowthWindowYears,
+  propertyGrowthSource,
+  propertyTypeLabel,
+  localCrimeIncidentDensity,
+  crimeSearchAreaSqKm,
+  localCrimeMonthlyIncidents,
 }) {
   const components = {};
   let total = 0;
@@ -2176,6 +2989,154 @@ function scoreDeal({
     explanation: npvExplanation,
   });
 
+  const capRateConfig = SCORE_COMPONENT_CONFIG.capRate;
+  if (capRateConfig) {
+    let capPoints = 0;
+    let capExplanation = 'Cap rate not available.';
+    if (Number.isFinite(capRate)) {
+      const capValue = capRate;
+      if (capValue >= 0.07) {
+        capPoints = capRateConfig.maxPoints;
+      } else if (capValue >= 0.06) {
+        capPoints = capRateConfig.maxPoints * 0.85;
+      } else if (capValue >= 0.05) {
+        capPoints = capRateConfig.maxPoints * 0.65;
+      } else if (capValue >= 0.04) {
+        capPoints = capRateConfig.maxPoints * 0.45;
+      } else if (capValue > 0) {
+        capPoints = capRateConfig.maxPoints * 0.25;
+      }
+      capExplanation = `Year-one cap rate of ${formatPercent(capValue)} benchmarks income strength versus purchase price.`;
+    }
+    addComponent('capRate', {
+      points: capPoints,
+      value: capRate,
+      displayValue: formatPercent(capRate),
+      explanation: capExplanation,
+    });
+  }
+
+  const dscrConfig = SCORE_COMPONENT_CONFIG.dscr;
+  if (dscrConfig) {
+    let dscrPoints = 0;
+    let dscrExplanation = 'DSCR not available.';
+    if (Number.isFinite(dscr) && dscr > 0) {
+      if (dscr >= 1.6) {
+        dscrPoints = dscrConfig.maxPoints;
+      } else if (dscr >= 1.4) {
+        dscrPoints = dscrConfig.maxPoints * 0.85;
+      } else if (dscr >= 1.25) {
+        dscrPoints = dscrConfig.maxPoints * 0.7;
+      } else if (dscr >= 1.15) {
+        dscrPoints = dscrConfig.maxPoints * 0.45;
+      } else if (dscr >= 1.0) {
+        dscrPoints = dscrConfig.maxPoints * 0.25;
+      } else {
+        dscrPoints = 0;
+      }
+      dscrExplanation = `Year-one DSCR of ${Number(dscr).toFixed(2)} captures income headroom after servicing debt.`;
+    }
+    addComponent('dscr', {
+      points: dscrPoints,
+      value: dscr,
+      displayValue: Number.isFinite(dscr) ? Number(dscr).toFixed(2) : '—',
+      explanation: dscrExplanation,
+    });
+  }
+
+  const growthConfig = SCORE_COMPONENT_CONFIG.propertyGrowth;
+  if (growthConfig) {
+    const longRunRate = Number.isFinite(propertyGrowth20Year) ? propertyGrowth20Year : null;
+    let growthPoints = 0;
+    let growthExplanation = 'Historical growth data unavailable.';
+    if (longRunRate !== null) {
+      if (longRunRate >= 0.04) {
+        growthPoints = growthConfig.maxPoints;
+      } else if (longRunRate >= 0.035) {
+        growthPoints = growthConfig.maxPoints * 0.85;
+      } else if (longRunRate >= 0.03) {
+        growthPoints = growthConfig.maxPoints * 0.7;
+      } else if (longRunRate >= 0.02) {
+        growthPoints = growthConfig.maxPoints * 0.45;
+      } else if (longRunRate > 0) {
+        growthPoints = growthConfig.maxPoints * 0.25;
+      }
+      const windowYears = Number.isFinite(propertyGrowthWindowYears)
+        ? propertyGrowthWindowYears
+        : DEFAULT_APPRECIATION_WINDOW;
+      const windowRate = Number.isFinite(propertyGrowthWindowRate) ? propertyGrowthWindowRate : null;
+      const windowPart =
+        windowRate !== null
+          ? ` Recent ${windowYears}-year CAGR sits at ${formatPercent(windowRate)}.`
+          : '';
+      const growthSource = propertyGrowthSource || 'Historical market data';
+      growthExplanation = `${growthSource} shows a ${formatPercent(longRunRate)} CAGR for ${
+        propertyTypeLabel || 'this property type'
+      } over the past 20 years.${windowPart}`;
+    }
+    addComponent('propertyGrowth', {
+      points: growthPoints,
+      value: longRunRate,
+      displayValue: formatPercent(longRunRate),
+      explanation: growthExplanation,
+    });
+  }
+
+  const crimeConfig = SCORE_COMPONENT_CONFIG.crimeSafety;
+  if (crimeConfig) {
+    const areaSqKm = Number.isFinite(crimeSearchAreaSqKm) && crimeSearchAreaSqKm > 0
+      ? crimeSearchAreaSqKm
+      : CRIME_SEARCH_AREA_KM2;
+    const localDensity = Number.isFinite(localCrimeIncidentDensity)
+      ? Math.max(0, localCrimeIncidentDensity)
+      : null;
+    const monthlyIncidents = Number.isFinite(localCrimeMonthlyIncidents)
+      ? Math.max(0, localCrimeMonthlyIncidents)
+      : localDensity !== null && Number.isFinite(areaSqKm)
+      ? Math.max(0, localDensity * areaSqKm)
+      : null;
+    let crimePoints = 0;
+    let crimeExplanation = 'Local crime benchmark unavailable.';
+    let crimeTone = undefined;
+    if (localDensity === 0) {
+      crimePoints = crimeConfig.maxPoints;
+      const areaLabel = Number.isFinite(areaSqKm)
+        ? areaSqKm > 10
+          ? areaSqKm.toFixed(0)
+          : areaSqKm.toFixed(1)
+        : '';
+      crimeExplanation = areaLabel
+        ? `Police API reported no incidents for the latest month across the ~${areaLabel} km² search area.`
+        : 'Police API reported no incidents for the latest month within the crime search area.';
+      crimeTone = 'positive';
+    } else if (localDensity !== null) {
+      const classification = classifyCrimeDensity(localDensity);
+      const multiplier = classification?.multiplier ?? 0;
+      crimePoints = crimeConfig.maxPoints * multiplier;
+      crimeTone = classification?.tone ?? 'neutral';
+      const densityLabel = formatCrimeDensityValue(localDensity);
+      const areaLabel = Number.isFinite(areaSqKm)
+        ? areaSqKm > 10
+          ? areaSqKm.toFixed(0)
+          : areaSqKm.toFixed(1)
+        : '';
+      const areaText = areaLabel ? ` across ~${areaLabel} km²` : '';
+      const incidentsLabel = Number.isFinite(monthlyIncidents)
+        ? `${monthlyIncidents.toFixed(monthlyIncidents >= 10 ? 0 : 1)} incidents`
+        : 'recorded incidents';
+      const levelLabel = classification?.label ?? 'typical';
+      crimeExplanation = `Police recorded roughly ${incidentsLabel} last month (~${densityLabel} per km²${areaText}), which we classify as ${levelLabel} crime density for scoring.`;
+    }
+    addComponent('crimeSafety', {
+      points: crimePoints,
+      value: localDensity,
+      displayValue:
+        localDensity === null ? '—' : `${formatCrimeDensityValue(localDensity)} /km²`,
+      explanation: crimeExplanation,
+      tone: crimeTone,
+    });
+  }
+
   return {
     total: clamp(total, 0, TOTAL_SCORE_MAX),
     max: TOTAL_SCORE_MAX,
@@ -2214,6 +3175,347 @@ function csvEscape(value) {
     return `"${stringValue.replace(/"/g, '""')}"`;
   }
   return stringValue;
+}
+
+const parseNumber = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const numeric = Number.parseFloat(String(value).replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+function parsePropertyPriceCsv(text) {
+  if (!text || typeof text !== 'string') {
+    return [];
+  }
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return [];
+  }
+  const lines = trimmed.split(/\r?\n/);
+  if (lines.length <= 1) {
+    return [];
+  }
+  const header = lines[0].split(',');
+  const dateIndex = header.indexOf('Date');
+  const regionIndex = header.indexOf('Region_Name');
+  const columnIndices = {
+    detached: header.indexOf(PROPERTY_TYPE_COLUMN_LOOKUP.detached),
+    semi_detached: header.indexOf(PROPERTY_TYPE_COLUMN_LOOKUP.semi_detached),
+    terraced: header.indexOf(PROPERTY_TYPE_COLUMN_LOOKUP.terraced),
+    flat_maisonette: header.indexOf(PROPERTY_TYPE_COLUMN_LOOKUP.flat_maisonette),
+  };
+  const rows = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line) continue;
+    const values = line.split(',');
+    if (
+      dateIndex === -1 ||
+      regionIndex === -1 ||
+      values.length < Math.max(...Object.values(columnIndices).filter((index) => index >= 0)) + 1
+    ) {
+      continue;
+    }
+    const dateString = values[dateIndex];
+    const region = values[regionIndex] ?? '';
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) {
+      continue;
+    }
+    const entry = {
+      date,
+      region,
+      values: {},
+    };
+    Object.entries(columnIndices).forEach(([key, index]) => {
+      if (index >= 0 && index < values.length) {
+        const price = parseNumber(values[index]);
+        if (price !== null && price > 0) {
+          entry.values[key] = price;
+        }
+      }
+    });
+    rows.push(entry);
+  }
+  return rows;
+}
+
+function calculatePropertyCagr(series, years) {
+  if (!Array.isArray(series) || series.length === 0) {
+    return null;
+  }
+  const latest = series[series.length - 1];
+  if (!latest || !Number.isFinite(latest.price) || latest.price <= 0) {
+    return null;
+  }
+  const target = new Date(latest.date.getTime());
+  target.setFullYear(target.getFullYear() - years);
+  let baseline = null;
+  for (let index = series.length - 1; index >= 0; index -= 1) {
+    const entry = series[index];
+    if (entry.date <= target) {
+      baseline = entry;
+      break;
+    }
+  }
+  if (!baseline) {
+    baseline = series[0];
+  }
+  if (!baseline || !Number.isFinite(baseline.price) || baseline.price <= 0) {
+    return null;
+  }
+  const yearSpan = (latest.date.getTime() - baseline.date.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+  if (!Number.isFinite(yearSpan) || yearSpan <= 0 || yearSpan < years * 0.6) {
+    return null;
+  }
+  const ratio = latest.price / baseline.price;
+  if (!Number.isFinite(ratio) || ratio <= 0) {
+    return null;
+  }
+  return Math.pow(ratio, 1 / yearSpan) - 1;
+}
+
+function normalizeRegionKey(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.trim().toLowerCase();
+}
+
+function canonicalizeRegionKey(value) {
+  const normalized = normalizeRegionKey(value);
+  if (!normalized) {
+    return '';
+  }
+  return COUNTRY_REGION_SYNONYMS[normalized] ?? normalized;
+}
+
+const REGION_ALIAS_LEADING_PATTERNS = [
+  /^city and county of\s+/,
+  /^city of\s+/,
+  /^county of\s+/,
+  /^county borough of\s+/,
+  /^royal borough of\s+/,
+  /^metropolitan borough of\s+/,
+  /^london borough of\s+/,
+  /^metropolitan county of\s+/,
+  /^metropolitan district of\s+/,
+];
+
+const REGION_ALIAS_TRAILING_PATTERNS = [
+  /\s+county council$/,
+  /\s+county$/,
+  /\s+city council$/,
+  /\s+city$/,
+  /\s+council area$/,
+  /\s+council$/,
+  /\s+district council$/,
+  /\s+district$/,
+  /\s+unitary authority$/,
+  /\s+metropolitan borough$/,
+  /\s+metropolitan county$/,
+  /\s+metropolitan district$/,
+  /\s+principal area$/,
+  /\s+borough$/,
+];
+
+const collapseWhitespace = (value) => value.replace(/\s+/g, ' ').trim();
+
+const stripNonAlphanumeric = (value) => value.replace(/[^a-z0-9]+/g, ' ');
+
+function buildRegionAliasKeys(value) {
+  const normalized = normalizeRegionKey(value);
+  if (!normalized) {
+    return [];
+  }
+  const aliasSet = new Set();
+  const addAlias = (candidate) => {
+    const canonical = normalizeRegionKey(candidate);
+    if (canonical) {
+      aliasSet.add(canonical);
+      const collapsed = canonical.replace(/[^a-z0-9]/g, '');
+      if (collapsed) {
+        aliasSet.add(collapsed);
+      }
+    }
+  };
+
+  const whitespaceNormalized = collapseWhitespace(normalized);
+  addAlias(normalized);
+  addAlias(whitespaceNormalized);
+  addAlias(collapseWhitespace(stripNonAlphanumeric(whitespaceNormalized)));
+
+  REGION_ALIAS_LEADING_PATTERNS.forEach((pattern) => {
+    if (pattern.test(whitespaceNormalized)) {
+      const stripped = whitespaceNormalized.replace(pattern, '');
+      if (stripped) {
+        addAlias(stripped);
+        addAlias(collapseWhitespace(stripNonAlphanumeric(stripped)));
+      }
+    }
+  });
+
+  REGION_ALIAS_TRAILING_PATTERNS.forEach((pattern) => {
+    if (pattern.test(whitespaceNormalized)) {
+      const stripped = whitespaceNormalized.replace(pattern, '');
+      if (stripped) {
+        addAlias(stripped);
+        addAlias(collapseWhitespace(stripNonAlphanumeric(stripped)));
+      }
+    }
+  });
+
+  whitespaceNormalized
+    .split(/[,/]/)
+    .map((part) => collapseWhitespace(part))
+    .filter(Boolean)
+    .forEach((part) => {
+      addAlias(part);
+      addAlias(collapseWhitespace(stripNonAlphanumeric(part)));
+    });
+
+  return Array.from(aliasSet).filter(Boolean);
+}
+
+function createEmptyPropertySeries() {
+  return PROPERTY_TYPE_OPTIONS.reduce((acc, option) => {
+    acc[option.value] = [];
+    return acc;
+  }, {});
+}
+
+function computePropertyStatsFromSeries(seriesByType) {
+  if (!seriesByType || typeof seriesByType !== 'object') {
+    return {};
+  }
+  const stats = {};
+  Object.entries(seriesByType).forEach(([key, rawSeries]) => {
+    if (!Array.isArray(rawSeries) || rawSeries.length === 0) {
+      return;
+    }
+    const sortedSeries = rawSeries
+      .filter((entry) => entry && entry.date instanceof Date && Number.isFinite(entry.price) && entry.price > 0)
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+    if (sortedSeries.length === 0) {
+      return;
+    }
+    const latest = sortedSeries[sortedSeries.length - 1];
+    const cagr = {};
+    PROPERTY_APPRECIATION_WINDOWS.forEach((years) => {
+      const rate = calculatePropertyCagr(sortedSeries, years);
+      if (rate !== null) {
+        cagr[years] = rate;
+      }
+    });
+    stats[key] = { series: sortedSeries, latest, cagr };
+  });
+  return stats;
+}
+
+function buildPropertyGrowthStatsIndex(records) {
+  if (!Array.isArray(records) || records.length === 0) {
+    return { regions: {}, global: { label: '', stats: {} } };
+  }
+
+  const regionSeriesMap = new Map();
+  const totalsByDate = new Map();
+
+  records.forEach((row) => {
+    if (!row || !(row.date instanceof Date)) {
+      return;
+    }
+    const regionKey = typeof row.region === 'string' ? row.region.trim() : '';
+    if (regionKey) {
+      const canonicalKey = canonicalizeRegionKey(regionKey);
+      if (canonicalKey) {
+        let seriesByType = regionSeriesMap.get(canonicalKey);
+        if (!seriesByType) {
+          seriesByType = { label: regionKey, series: createEmptyPropertySeries() };
+          regionSeriesMap.set(canonicalKey, seriesByType);
+        }
+        PROPERTY_TYPE_OPTIONS.forEach((option) => {
+          const price = row.values?.[option.value];
+          if (Number.isFinite(price) && price > 0) {
+            seriesByType.series[option.value].push({ date: row.date, price });
+          }
+        });
+      }
+    }
+
+    const dateKey = row.date.getTime();
+    let totals = totalsByDate.get(dateKey);
+    if (!totals) {
+      totals = {
+        date: row.date,
+        sums: {},
+        counts: {},
+      };
+      totalsByDate.set(dateKey, totals);
+    }
+    PROPERTY_TYPE_OPTIONS.forEach((option) => {
+      const price = row.values?.[option.value];
+      if (Number.isFinite(price) && price > 0) {
+        totals.sums[option.value] = (totals.sums[option.value] ?? 0) + price;
+        totals.counts[option.value] = (totals.counts[option.value] ?? 0) + 1;
+      }
+    });
+  });
+
+  const regionEntries = [];
+  regionSeriesMap.forEach((entry, canonicalKey) => {
+    const stats = computePropertyStatsFromSeries(entry.series);
+    if (Object.keys(stats).length > 0) {
+      const aliases = buildRegionAliasKeys(entry.label || canonicalKey);
+      if (!aliases.includes(canonicalKey)) {
+        aliases.push(canonicalKey);
+      }
+      regionEntries.push({ key: canonicalKey, label: entry.label, stats, aliases });
+    }
+  });
+
+  const regions = {};
+  const aliasLookup = {};
+  regionEntries.forEach(({ key, label, stats, aliases }) => {
+    regions[key] = { label, stats, aliases };
+    const aliasSet = new Set([key, ...aliases]);
+    aliasSet.forEach((alias) => {
+      if (!alias) {
+        return;
+      }
+      if (!aliasLookup[alias]) {
+        aliasLookup[alias] = [];
+      }
+      if (!aliasLookup[alias].includes(key)) {
+        aliasLookup[alias].push(key);
+      }
+    });
+  });
+
+  const averageSeries = createEmptyPropertySeries();
+  totalsByDate.forEach(({ date, sums, counts }) => {
+    PROPERTY_TYPE_OPTIONS.forEach((option) => {
+      const count = counts[option.value] ?? 0;
+      if (count > 0) {
+        averageSeries[option.value].push({
+          date,
+          price: sums[option.value] / count,
+        });
+      }
+    });
+  });
+
+  const globalStats = computePropertyStatsFromSeries(averageSeries);
+
+  return {
+    regions,
+    aliases: aliasLookup,
+    global: {
+      label: 'Dataset average',
+      stats: globalStats,
+    },
+  };
 }
 
 function getControlDisplayValue(node) {
@@ -2323,7 +3625,8 @@ function calculateEquity(rawInputs) {
   const isCompanyBuyer = inputs.buyerType === 'company';
   const deposit = inputs.purchasePrice * inputs.depositPct;
   const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
-  const closing = otherClosing + stampDuty;
+  const packageFees = Number(inputs.mortgagePackageFee ?? 0) || 0;
+  const closing = otherClosing + packageFees + stampDuty;
 
   const loan = inputs.purchasePrice - deposit;
   const irrHurdleValue = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
@@ -2357,6 +3660,7 @@ function calculateEquity(rawInputs) {
   const shareTotal = sharePct1 + sharePct2;
   const normalizedShare1 = shareTotal > 0 ? sharePct1 / shareTotal : 0.5;
   const normalizedShare2 = shareTotal > 0 ? sharePct2 / shareTotal : 0.5;
+  const deductOperatingExpensesForTax = inputs.deductOperatingExpenses !== false;
 
   const annualDebtService = Array.from({ length: inputs.exitYear }, () => 0);
   const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
@@ -2420,10 +3724,8 @@ function calculateEquity(rawInputs) {
         annualBridgingDebtService[yearIndex] += monthlyInterest;
       }
       if (month === monthsToModel) {
-        // The bridging principal is refinanced into the long-term mortgage at the
-        // end of the term, so it should not be treated as an investor cash
-        // outflow in the annual debt service totals. We still keep the
-        // interest for the term above but skip adding the principal here.
+        annualDebtService[yearIndex] += bridgingAmount;
+        annualPrincipal[yearIndex] += bridgingAmount;
       }
     }
   }
@@ -2570,7 +3872,8 @@ function calculateEquity(rawInputs) {
 
     const interestPaid = annualInterest[y - 1] ?? (inputs.loanType === 'interest_only' ? debtService : 0);
     const principalPaid = annualPrincipal[y - 1] ?? (inputs.loanType === 'interest_only' ? 0 : debtService - interestPaid);
-    const taxableProfit = noi - interestPaid;
+    const taxableBase = deductOperatingExpensesForTax ? noi : gross;
+    const taxableProfit = taxableBase - interestPaid;
     let propertyTax = 0;
     if (isCompanyBuyer) {
       propertyTax = roundTo(Math.max(0, taxableProfit) * 0.19, 2);
@@ -2743,6 +4046,30 @@ function calculateEquity(rawInputs) {
     cashInvested: cashIn,
     purchasePrice: inputs.purchasePrice,
     npv: npvValue,
+    capRate: cap,
+    dscr,
+    propertyGrowth20Year: Number.isFinite(inputs.propertyGrowth20Year)
+      ? inputs.propertyGrowth20Year
+      : null,
+    propertyGrowthWindowRate: Number.isFinite(inputs.propertyGrowthWindowRate)
+      ? inputs.propertyGrowthWindowRate
+      : null,
+    propertyGrowthWindowYears: Number.isFinite(inputs.propertyGrowthWindowYears)
+      ? inputs.propertyGrowthWindowYears
+      : null,
+    propertyGrowthSource:
+      typeof inputs.propertyGrowthSource === 'string' ? inputs.propertyGrowthSource : '',
+    propertyTypeLabel: typeof inputs.propertyTypeLabel === 'string' ? inputs.propertyTypeLabel : '',
+    localCrimeIncidentDensity: Number.isFinite(inputs.localCrimeIncidentDensity)
+      ? inputs.localCrimeIncidentDensity
+      : null,
+    crimeSearchAreaSqKm:
+      Number.isFinite(inputs.crimeSearchAreaSqKm) && inputs.crimeSearchAreaSqKm > 0
+        ? inputs.crimeSearchAreaSqKm
+        : CRIME_SEARCH_AREA_KM2,
+    localCrimeMonthlyIncidents: Number.isFinite(inputs.localCrimeMonthlyIncidents)
+      ? inputs.localCrimeMonthlyIncidents
+      : null,
   });
   const score = scoreResult.total;
 
@@ -2760,6 +4087,7 @@ function calculateEquity(rawInputs) {
     deposit,
     stampDuty,
     otherClosing,
+    packageFees,
     closing,
     loan,
     mortgage: mortgageMonthly,
@@ -2819,16 +4147,724 @@ function calculateEquity(rawInputs) {
     annualPrincipal,
     irr: irrValue,
     irrHurdle: irrHurdleValue,
+    propertyType: typeof inputs.propertyType === 'string' ? inputs.propertyType : PROPERTY_TYPE_OPTIONS[0].value,
+    propertyTypeLabel: typeof inputs.propertyTypeLabel === 'string' ? inputs.propertyTypeLabel : '',
+    propertyGrowthWindowYears: Number.isFinite(inputs.propertyGrowthWindowYears)
+      ? inputs.propertyGrowthWindowYears
+      : null,
+    propertyGrowthWindowRate: Number.isFinite(inputs.propertyGrowthWindowRate)
+      ? inputs.propertyGrowthWindowRate
+      : null,
+    propertyGrowth20Year: Number.isFinite(inputs.propertyGrowth20Year)
+      ? inputs.propertyGrowth20Year
+      : null,
+    localCrimeIncidentDensity: Number.isFinite(inputs.localCrimeIncidentDensity)
+      ? inputs.localCrimeIncidentDensity
+      : null,
+    crimeSearchAreaSqKm:
+      Number.isFinite(inputs.crimeSearchAreaSqKm) && inputs.crimeSearchAreaSqKm > 0
+        ? inputs.crimeSearchAreaSqKm
+        : CRIME_SEARCH_AREA_KM2,
+    localCrimeMonthlyIncidents: Number.isFinite(inputs.localCrimeMonthlyIncidents)
+      ? inputs.localCrimeMonthlyIncidents
+      : null,
   };
+}
+
+function buildIncomeCandidates(base) {
+  const monthlyRent = Number(base.monthlyRent) || 0;
+  const vacancyPct = clamp(Number(base.vacancyPct) || 0, 0, 0.5);
+  const rentGrowth = Number(base.rentGrowth) || 0;
+  const mgmtPct = clamp(Number(base.mgmtPct) || 0, 0, 0.25);
+  const repairsPct = clamp(Number(base.repairsPct) || 0, 0, 0.25);
+
+  const candidates = [
+    {
+      id: 'baseline',
+      label: 'Keep current rent strategy',
+      description: 'Retain existing rent, vacancy, and expense assumptions.',
+      apply: () => ({}),
+    },
+    {
+      id: 'rent_plus_8',
+      label: 'Lift asking rent by 8% and trim vacancy by 1%',
+      description:
+        'Invest in presentation and tenant retention to justify a modest premium and reduce downtime.',
+      apply: () => ({
+        monthlyRent: roundToNearest(monthlyRent * 1.08, 1),
+        vacancyPct: clamp(vacancyPct - 0.01, 0, 0.25),
+      }),
+    },
+    {
+      id: 'rent_growth_plus',
+      label: 'Bake in annual rent reviews (+1 pp)',
+      description: 'Add rent review clauses to capture inflationary growth over the hold period.',
+      apply: () => ({
+        rentGrowth: clamp(rentGrowth + 0.01, 0, 0.1),
+      }),
+    },
+    {
+      id: 'expense_trim',
+      label: 'Lean management and maintenance procurement',
+      description: 'Rebid contracts to reduce management and repairs allowances by 1 pp each.',
+      apply: () => ({
+        mgmtPct: clamp(mgmtPct - 0.01, 0, 0.2),
+        repairsPct: clamp(repairsPct - 0.01, 0, 0.2),
+      }),
+    },
+  ];
+
+  if (base.loanType !== 'interest_only') {
+    candidates.push({
+      id: 'interest_only_cashflow',
+      label: 'Switch to an interest-only mortgage',
+      description: 'Use an interest-only period to reduce scheduled debt service and lift cash flow.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  return candidates;
+}
+
+function buildTaxCandidates(base) {
+  const candidates = [
+    {
+      id: 'baseline',
+      label: 'Maintain current tax posture',
+      description: 'Keep the existing ownership and deduction settings.',
+      apply: () => ({}),
+    },
+  ];
+
+  if (base.deductOperatingExpenses !== true) {
+    candidates.push({
+      id: 'enable_expense_deduction',
+      label: 'Treat operating expenses as tax deductible',
+      description: 'Ensure property running costs are deducted before calculating tax.',
+      apply: () => ({ deductOperatingExpenses: true }),
+    });
+  }
+
+  if (base.buyerType !== 'company') {
+    candidates.push({
+      id: 'company_structure',
+      label: 'Acquire through a company',
+      description: 'Shift ownership into a company to apply corporation tax instead of personal rates.',
+      apply: () => ({ buyerType: 'company' }),
+    });
+  }
+
+  if (base.loanType !== 'interest_only') {
+    candidates.push({
+      id: 'interest_only_tax',
+      label: 'Use an interest-only mortgage for deductible interest',
+      description: 'Maximise deductible interest by keeping repayments interest-only during the hold.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  const income1 = Number(base.incomePerson1);
+  const income2 = Number(base.incomePerson2);
+  if (
+    base.buyerType !== 'company' &&
+    Number.isFinite(income1) &&
+    Number.isFinite(income2) &&
+    income1 !== income2
+  ) {
+    const share1 = Number.isFinite(base.ownershipShare1) ? base.ownershipShare1 : 0.5;
+    const share2 = Number.isFinite(base.ownershipShare2) ? base.ownershipShare2 : 0.5;
+    const total = share1 + share2;
+    const normalized1 = total > 0 ? share1 / total : 0.5;
+    const lowerIncomeIsPerson1 = income1 < income2;
+    const targetShare1 = clamp(
+      lowerIncomeIsPerson1 ? normalized1 + 0.1 : normalized1 - 0.1,
+      0.1,
+      0.9
+    );
+    const targetShare2 = clamp(1 - targetShare1, 0.1, 0.9);
+    if (Math.abs(targetShare1 - normalized1) > 0.01) {
+      candidates.push({
+        id: 'rebalance_shares',
+        label: 'Shift ownership toward the lower-tax partner',
+        description: 'Assign more rent to the lower marginal tax rate partner to reduce the blended bill.',
+        apply: () => ({
+          ownershipShare1: roundTo(targetShare1, 3),
+          ownershipShare2: roundTo(targetShare2, 3),
+        }),
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function buildIrrCandidates(base) {
+  const purchasePrice = Number(base.purchasePrice) || 0;
+  const depositPct = Number(base.depositPct) || 0.25;
+  const exitYear = Math.max(1, Number(base.exitYear) || DEFAULT_INPUTS.exitYear);
+  const monthlyRent = Number(base.monthlyRent) || 0;
+  const vacancyPct = clamp(Number(base.vacancyPct) || 0, 0, 0.5);
+  const rentGrowth = Number(base.rentGrowth) || 0;
+  const candidates = [
+    {
+      id: 'baseline',
+      label: 'Keep the current IRR profile',
+      description: 'Retain existing pricing, leverage, and hold assumptions.',
+      apply: () => ({}),
+    },
+    {
+      id: 'rent_plus_8',
+      label: 'Command an 8% rent premium with 1% lower vacancy',
+      description: 'Upgrade fit-out and marketing to justify higher rent and reduce downtime.',
+      apply: () => ({
+        monthlyRent: roundToNearest(monthlyRent * 1.08, 1),
+        vacancyPct: clamp(vacancyPct - 0.01, 0, 0.25),
+      }),
+    },
+    {
+      id: 'negotiate_discount',
+      label: 'Negotiate a 3% purchase discount',
+      description: 'Target vendor contributions or price reductions to de-risk the acquisition.',
+      apply: () => ({
+        purchasePrice: roundToNearest(purchasePrice * 0.97, 1000),
+      }),
+    },
+    {
+      id: 'shorter_hold',
+      label: 'Plan an earlier exit (−2 years)',
+      description: 'Test a shorter hold period to realise gains sooner and boost annualised returns.',
+      apply: () => ({
+        exitYear: Math.max(3, exitYear - 2),
+      }),
+    },
+  ];
+
+  if (rentGrowth < 0.08) {
+    candidates.push({
+      id: 'rent_growth_plus',
+      label: 'Increase rent growth assumptions by 1 pp',
+      description: 'Document annual reviews tied to market comparables to lift rent escalations.',
+      apply: () => ({
+        rentGrowth: clamp(rentGrowth + 0.01, 0, 0.12),
+      }),
+    });
+  }
+
+  if (depositPct > 0.15) {
+    candidates.push({
+      id: 'increase_leverage',
+      label: 'Increase leverage by reducing deposit 5 pp',
+      description: 'Deploy less equity to amplify returns while monitoring coverage.',
+      apply: () => ({
+        depositPct: clamp(depositPct - 0.05, 0.1, 0.6),
+      }),
+    });
+  }
+
+  if (base.loanType !== 'interest_only') {
+    candidates.push({
+      id: 'interest_only_irr',
+      label: 'Adopt an interest-only mortgage',
+      description: 'Reduce amortisation drag to accelerate IRR during the hold.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  return candidates;
+}
+
+function buildCashOnCashCandidates(base) {
+  const monthlyRent = Number(base.monthlyRent) || 0;
+  const vacancyPct = clamp(Number(base.vacancyPct) || 0, 0, 0.5);
+  const mgmtPct = clamp(Number(base.mgmtPct) || 0, 0, 0.25);
+  const repairsPct = clamp(Number(base.repairsPct) || 0, 0, 0.25);
+  const purchasePrice = Number(base.purchasePrice) || 0;
+  const depositPct = Number(base.depositPct) || 0.25;
+
+  const candidates = [
+    {
+      id: 'baseline',
+      label: 'Keep current cash-on-cash performance',
+      description: 'Maintain the existing leverage and rent assumptions.',
+      apply: () => ({}),
+    },
+    {
+      id: 'rent_plus_8',
+      label: 'Increase rent by 8% and cut vacancy by 1%',
+      description: 'Improve marketing and tenant retention to grow year-one cash flow.',
+      apply: () => ({
+        monthlyRent: roundToNearest(monthlyRent * 1.08, 1),
+        vacancyPct: clamp(vacancyPct - 0.01, 0, 0.25),
+      }),
+    },
+    {
+      id: 'expense_trim',
+      label: 'Trim management and repairs allowances',
+      description: 'Introduce service efficiencies to reduce opex by 1 pp each.',
+      apply: () => ({
+        mgmtPct: clamp(mgmtPct - 0.01, 0, 0.2),
+        repairsPct: clamp(repairsPct - 0.01, 0, 0.2),
+      }),
+    },
+    {
+      id: 'negotiate_price',
+      label: 'Negotiate a 3% lower purchase price',
+      description: 'Reduce equity outlay and upfront costs to improve cash-on-cash returns.',
+      apply: () => ({
+        purchasePrice: roundToNearest(purchasePrice * 0.97, 1000),
+      }),
+    },
+  ];
+
+  if (depositPct > 0.15) {
+    candidates.push({
+      id: 'higher_leverage',
+      label: 'Reduce deposit by 5 pp to increase leverage',
+      description: 'Deploy less equity while monitoring coverage metrics.',
+      apply: () => ({
+        depositPct: clamp(depositPct - 0.05, 0.1, 0.6),
+      }),
+    });
+  }
+
+  if (base.loanType !== 'interest_only') {
+    candidates.push({
+      id: 'interest_only_coc',
+      label: 'Switch to interest-only payments',
+      description: 'Lower scheduled debt service to boost year-one cash yield.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  return candidates;
+}
+
+function buildCandidateOptimization(goalKey, baseInputs, baselineMetrics) {
+  const config = OPTIMIZATION_GOAL_CONFIG[goalKey];
+  if (!config) {
+    return { status: 'unavailable', message: 'Unsupported optimisation goal.' };
+  }
+  if (!baselineMetrics) {
+    return { status: 'unavailable', message: config.unavailableMessage };
+  }
+  const baselineValue = config.metricGetter(baselineMetrics, baseInputs, baseInputs);
+  if (!Number.isFinite(baselineValue)) {
+    return { status: 'unavailable', message: config.unavailableMessage };
+  }
+
+  const base = { ...baseInputs };
+  const candidateDefs = typeof config.buildCandidates === 'function' ? config.buildCandidates(base, baselineMetrics) : [];
+  if (!candidateDefs.some((candidate) => candidate?.id === 'baseline')) {
+    candidateDefs.unshift({
+      id: 'baseline',
+      label: 'Maintain current configuration',
+      description: 'Keep your existing assumptions in place.',
+      apply: () => ({}),
+    });
+  }
+
+  const results = [];
+  candidateDefs.forEach((candidate) => {
+    if (!candidate || typeof candidate.apply !== 'function') {
+      return;
+    }
+    const overrides = candidate.apply(base, baselineMetrics);
+    if (!overrides || typeof overrides !== 'object') {
+      return;
+    }
+    const scenarioInputs = { ...base, ...overrides };
+    const isBaseline = Object.keys(overrides).length === 0;
+    const metrics = isBaseline ? baselineMetrics : calculateEquity(scenarioInputs);
+    const value = config.metricGetter(metrics, scenarioInputs, base, baselineMetrics);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    const delta = value - baselineValue;
+    const adjustments = candidate.effects
+      ? candidate.effects(base, scenarioInputs, overrides, metrics)
+      : describeOverrides(base, overrides, scenarioInputs);
+    const feasible = typeof candidate.feasible === 'function'
+      ? candidate.feasible(metrics, scenarioInputs, base, baselineMetrics)
+      : true;
+    const note = typeof candidate.notes === 'function'
+      ? candidate.notes(metrics, scenarioInputs, base, baselineMetrics)
+      : '';
+
+    results.push({
+      id: candidate.id,
+      label: candidate.label ?? candidate.id,
+      description: candidate.description ?? '',
+      value,
+      delta,
+      formattedValue: config.formatValue(value),
+      formattedDelta: config.formatDelta(delta),
+      adjustments,
+      feasible,
+      note,
+    });
+  });
+
+  if (results.length === 0) {
+    return { status: 'unavailable', message: 'Unable to evaluate strategies for this goal.' };
+  }
+
+  const sortComparator = config.direction === 'max' ? (a, b) => b.value - a.value : (a, b) => a.value - b.value;
+  results.sort(sortComparator);
+
+  const threshold = Number.isFinite(config.improvementThreshold) ? config.improvementThreshold : 0;
+  const isImprovement = (result) => {
+    if (!result.feasible) {
+      return false;
+    }
+    if (config.direction === 'max') {
+      return result.delta > threshold;
+    }
+    return result.delta < -threshold;
+  };
+
+  let recommendation = results.find((result) => isImprovement(result));
+  if (!recommendation) {
+    recommendation = results.find((result) => result.feasible) || results[0];
+  }
+  const improvementAchieved = recommendation ? isImprovement(recommendation) : false;
+
+  const positiveAlternatives = results
+    .filter((result) => result !== recommendation && isImprovement(result))
+    .slice(0, 3);
+
+  const additional = positiveAlternatives.length > 0
+    ? positiveAlternatives
+    : results.filter((result) => result !== recommendation).slice(0, 3);
+
+  return {
+    status: 'ready',
+    goal: config,
+    baseline: {
+      value: baselineValue,
+      formatted: config.formatValue(baselineValue),
+    },
+    recommendation: recommendation
+      ? {
+          id: recommendation.id,
+          label: recommendation.label,
+          description: recommendation.description,
+          value: recommendation.value,
+          formattedValue: recommendation.formattedValue,
+          delta: recommendation.delta,
+          formattedDelta: recommendation.formattedDelta,
+          adjustments: recommendation.adjustments,
+          note: recommendation.note,
+          feasible: recommendation.feasible,
+          improvement: improvementAchieved,
+        }
+      : null,
+    additional: additional.map((item) => ({
+      id: item.id,
+      label: item.label,
+      description: item.description,
+      value: item.value,
+      formattedValue: item.formattedValue,
+      delta: item.delta,
+      formattedDelta: item.formattedDelta,
+      adjustments: item.adjustments,
+      note: item.note,
+      feasible: item.feasible,
+      improvement: isImprovement(item),
+    })),
+    analysisNote: improvementAchieved
+      ? ''
+      : 'Current inputs already perform strongly for this objective. The options below highlight other levers to consider.',
+  };
+}
+
+function buildPurchasePriceOptimization(baseInputs, baselineMetrics) {
+  const config = OPTIMIZATION_GOAL_CONFIG.max_purchase_price;
+  const basePrice = Number(baseInputs?.purchasePrice);
+  if (!config) {
+    return { status: 'unavailable', message: 'Unsupported optimisation goal.' };
+  }
+  if (!Number.isFinite(basePrice) || basePrice <= 0 || !baselineMetrics) {
+    return { status: 'unavailable', message: config.unavailableMessage };
+  }
+
+  const base = { ...baseInputs };
+  const multipliers = [0.6, 0.7, 0.8, 0.9, 1, 1.05, 1.1, 1.15, 1.2];
+  const MIN_DSCR = 1.1;
+  const MIN_CASHFLOW = 0;
+
+  const results = multipliers.map((multiplier) => {
+    const targetPrice = roundToNearest(basePrice * multiplier, 1000);
+    const overrides = multiplier === 1 ? {} : { purchasePrice: targetPrice };
+    const scenarioInputs = { ...base, ...overrides };
+    const isBaseline = multiplier === 1;
+    const metrics = isBaseline ? baselineMetrics : calculateEquity(scenarioInputs);
+    const dscr = Number(metrics?.dscr);
+    const cashflow = Number.isFinite(metrics?.cashflowYear1AfterTax)
+      ? metrics.cashflowYear1AfterTax
+      : Number.isFinite(metrics?.cashflowYear1)
+        ? metrics.cashflowYear1
+        : NaN;
+    const feasible = Number.isFinite(dscr) && dscr >= MIN_DSCR && Number.isFinite(cashflow) && cashflow >= MIN_CASHFLOW;
+    const note = Number.isFinite(dscr) && Number.isFinite(cashflow)
+      ? `DSCR ${formatDecimal(dscr, 2)}, year-one after-tax cash ${currency(cashflow)}`
+      : 'Insufficient data to evaluate coverage.';
+    const label = multiplier >= 1
+      ? `Stretch to ${currency(targetPrice)}`
+      : `Cap at ${currency(targetPrice)}`;
+
+    return {
+      id: `purchase_${targetPrice}`,
+      label,
+      description: feasible
+        ? 'Maintains lender coverage and non-negative cash flow at this price point.'
+        : 'Fails coverage or cash flow tests without further adjustments.',
+      value: targetPrice,
+      delta: targetPrice - basePrice,
+      formattedValue: config.formatValue(targetPrice),
+      formattedDelta: config.formatDelta(targetPrice - basePrice),
+      adjustments: describeOverrides(base, overrides, scenarioInputs),
+      feasible,
+      note,
+    };
+  });
+
+  results.sort((a, b) => b.value - a.value);
+  const feasibleResults = results.filter((result) => result.feasible);
+  const recommendation = feasibleResults[0] || null;
+
+  if (!recommendation) {
+    return {
+      status: 'unavailable',
+      message: 'No tested price level meets coverage with current assumptions. Increase income or reduce costs to unlock headroom.',
+    };
+  }
+
+  const additional = feasibleResults.slice(1, 4);
+  const supplemental = additional.length > 0
+    ? additional
+    : results.filter((result) => !result.feasible).slice(0, 3);
+
+  return {
+    status: 'ready',
+    goal: config,
+    baseline: {
+      value: basePrice,
+      formatted: config.formatValue(basePrice),
+    },
+    recommendation: {
+      id: recommendation.id,
+      label: recommendation.label,
+      description: recommendation.description,
+      value: recommendation.value,
+      formattedValue: recommendation.formattedValue,
+      delta: recommendation.delta,
+      formattedDelta: recommendation.formattedDelta,
+      adjustments: recommendation.adjustments,
+      note: recommendation.note,
+      feasible: true,
+      improvement: recommendation.value !== basePrice,
+    },
+    additional: supplemental.map((item) => ({
+      id: item.id,
+      label: item.label,
+      description: item.description,
+      value: item.value,
+      formattedValue: item.formattedValue,
+      delta: item.delta,
+      formattedDelta: item.formattedDelta,
+      adjustments: item.adjustments,
+      note: item.note,
+      feasible: item.feasible,
+      improvement: item.value > basePrice,
+    })),
+    analysisNote:
+      recommendation.value === basePrice
+        ? 'Your current purchase price already sits at the recommended ceiling. Explore the alternatives below to unlock more headroom.'
+        : '',
+  };
+}
+
+function buildRentOptimization(baseInputs, baselineMetrics) {
+  const config = OPTIMIZATION_GOAL_CONFIG.min_rent;
+  const baseRent = Number(baseInputs?.monthlyRent);
+  if (!config) {
+    return { status: 'unavailable', message: 'Unsupported optimisation goal.' };
+  }
+  if (!Number.isFinite(baseRent) || baseRent <= 0 || !baselineMetrics) {
+    return { status: 'unavailable', message: config.unavailableMessage };
+  }
+
+  const base = { ...baseInputs };
+  const rentMultipliers = [1.1, 1.05, 1, 0.95, 0.9, 0.85, 0.8, 0.75];
+  const strategies = [
+    {
+      id: 'baseline',
+      label: 'Baseline operating assumptions',
+      description: 'Keep existing expense and financing settings.',
+      apply: () => ({}),
+    },
+    {
+      id: 'lean_ops',
+      label: 'Lean operating plan',
+      description: 'Reduce management and repairs allowances by 1 pp each.',
+      apply: () => ({
+        mgmtPct: clamp(Number(base.mgmtPct) - 0.01 || 0, 0, 0.2),
+        repairsPct: clamp(Number(base.repairsPct) - 0.01 || 0, 0, 0.2),
+      }),
+    },
+  ];
+
+  if (base.loanType !== 'interest_only') {
+    strategies.push({
+      id: 'interest_only',
+      label: 'Interest-only financing',
+      description: 'Switch to interest-only payments to reduce annual debt service.',
+      apply: () => ({ loanType: 'interest_only' }),
+    });
+  }
+
+  const MIN_DSCR = 1.05;
+  const MIN_CASHFLOW = 0;
+  const seen = new Set();
+  const results = [];
+
+  strategies.forEach((strategy) => {
+    rentMultipliers.forEach((multiplier) => {
+      const rentValue = roundToNearest(baseRent * multiplier, 1);
+      const overrides = {
+        monthlyRent: rentValue,
+        ...strategy.apply(base, baselineMetrics),
+      };
+      const key = JSON.stringify({
+        rent: rentValue,
+        loanType: overrides.loanType ?? base.loanType,
+        mgmtPct: overrides.mgmtPct ?? base.mgmtPct,
+        repairsPct: overrides.repairsPct ?? base.repairsPct,
+      });
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+
+      const scenarioInputs = { ...base, ...overrides };
+      const isBaseline = rentValue === baseRent && strategy.id === 'baseline';
+      const metrics = isBaseline ? baselineMetrics : calculateEquity(scenarioInputs);
+      const dscr = Number(metrics?.dscr);
+      const cashflow = Number.isFinite(metrics?.cashflowYear1AfterTax)
+        ? metrics.cashflowYear1AfterTax
+        : Number.isFinite(metrics?.cashflowYear1)
+          ? metrics.cashflowYear1
+          : NaN;
+      const feasible = Number.isFinite(dscr) && dscr >= MIN_DSCR && Number.isFinite(cashflow) && cashflow >= MIN_CASHFLOW;
+      const note = Number.isFinite(dscr) && Number.isFinite(cashflow)
+        ? `DSCR ${formatDecimal(dscr, 2)}, year-one after-tax cash ${currency(cashflow)}`
+        : 'Insufficient data to evaluate coverage.';
+      const description = strategy.description;
+
+      results.push({
+        id: `${strategy.id}_${rentValue}`,
+        label: `${strategy.label} at ${currency(rentValue)}`,
+        description,
+        value: rentValue,
+        delta: rentValue - baseRent,
+        formattedValue: config.formatValue(rentValue),
+        formattedDelta: config.formatDelta(rentValue - baseRent),
+        adjustments: describeOverrides(base, overrides, scenarioInputs),
+        feasible,
+        note,
+      });
+    });
+  });
+
+  if (results.length === 0) {
+    return { status: 'unavailable', message: 'Unable to evaluate rent stress tests for this goal.' };
+  }
+
+  results.sort((a, b) => a.value - b.value);
+  const recommendation = results.find((result) => result.feasible) || null;
+
+  if (!recommendation) {
+    return {
+      status: 'unavailable',
+      message: 'No tested rent level maintains coverage with current assumptions. Strengthen income or cut costs before reducing rent.',
+    };
+  }
+
+  const additional = results
+    .filter((result) => result !== recommendation && result.feasible)
+    .slice(0, 3);
+  const supplemental = additional.length > 0
+    ? additional
+    : results.filter((result) => result !== recommendation).slice(0, 3);
+
+  return {
+    status: 'ready',
+    goal: config,
+    baseline: {
+      value: baseRent,
+      formatted: config.formatValue(baseRent),
+    },
+    recommendation: {
+      id: recommendation.id,
+      label: recommendation.label,
+      description: recommendation.description,
+      value: recommendation.value,
+      formattedValue: recommendation.formattedValue,
+      delta: recommendation.delta,
+      formattedDelta: recommendation.formattedDelta,
+      adjustments: recommendation.adjustments,
+      note: recommendation.note,
+      feasible: true,
+      improvement: recommendation.value < baseRent,
+    },
+    additional: supplemental.map((item) => ({
+      id: item.id,
+      label: item.label,
+      description: item.description,
+      value: item.value,
+      formattedValue: item.formattedValue,
+      delta: item.delta,
+      formattedDelta: item.formattedDelta,
+      adjustments: item.adjustments,
+      note: item.note,
+      feasible: item.feasible,
+      improvement: item.value < baseRent,
+    })),
+    analysisNote:
+      recommendation.value === baseRent
+        ? 'Your current rent is already the lowest sustainable level without changing operations.'
+        : '',
+  };
+}
+
+function buildOptimizationModel(goalKey, baseInputs, baselineMetrics) {
+  if (!goalKey) {
+    return { status: 'unavailable', message: 'Select an optimisation goal to begin.' };
+  }
+  if (goalKey === 'max_purchase_price') {
+    return buildPurchasePriceOptimization(baseInputs, baselineMetrics);
+  }
+  if (goalKey === 'min_rent') {
+    return buildRentOptimization(baseInputs, baselineMetrics);
+  }
+  return buildCandidateOptimization(goalKey, baseInputs, baselineMetrics);
 }
 
 export default function App() {
   const [extraSettings, setExtraSettings] = useState(() => loadStoredExtraSettings());
+  const [pendingExtraSettings, setPendingExtraSettings] = useState(() => ({
+    ...loadStoredExtraSettings(),
+  }));
+  const [propertyPriceState, setPropertyPriceState] = useState({ status: 'idle', data: null, error: '' });
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
+  const [showOptimizationModal, setShowOptimizationModal] = useState(false);
+  const [optimizationGoal, setOptimizationGoal] = useState(
+    OPTIMIZATION_GOAL_OPTIONS[0]?.value ?? 'max_income'
+  );
   const [scenarioScatterXAxis, setScenarioScatterXAxis] = useState(
     () => SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'cap'
   );
@@ -2886,6 +4922,7 @@ export default function App() {
     leverage: true,
     investmentProfile: true,
   });
+  const [showInvestmentProfileDetails, setShowInvestmentProfileDetails] = useState(false);
   const [cashflowColumnKeys, setCashflowColumnKeys] = useState(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -2940,6 +4977,22 @@ export default function App() {
     efficiency: true,
     irrHurdle: true,
   });
+  const [leverageExpanded, setLeverageExpanded] = useState(false);
+  const [interestSplitExpanded, setInterestSplitExpanded] = useState(false);
+  const [cashflowDetailExpanded, setCashflowDetailExpanded] = useState(false);
+  const [leverageRange, setLeverageRange] = useState(() => ({
+    min: LEVERAGE_LTV_OPTIONS[0],
+    max: LEVERAGE_MAX_LTV,
+  }));
+  const [interestSplitRange, setInterestSplitRange] = useState(() => ({
+    start: 1,
+    end: Math.max(1, Number(DEFAULT_INPUTS.exitYear) || 1),
+  }));
+  const [cashflowDetailRange, setCashflowDetailRange] = useState(() => ({
+    start: 1,
+    end: Math.max(1, Number(DEFAULT_INPUTS.exitYear) || 1),
+  }));
+  const [cashflowDetailView, setCashflowDetailView] = useState('all');
   const [npvSeriesActive, setNpvSeriesActive] = useState(() =>
     NPV_SERIES_KEYS.reduce((acc, key) => {
       acc[key] = true;
@@ -2959,13 +5012,24 @@ export default function App() {
   const [chartFocus, setChartFocus] = useState(null);
   const [chartFocusLocked, setChartFocusLocked] = useState(false);
   const [expandedMetricDetails, setExpandedMetricDetails] = useState({});
+  const closeInterestSplitOverlay = useCallback(() => {
+    setInterestSplitExpanded(false);
+  }, []);
+  const closeLeverageOverlay = useCallback(() => {
+    setLeverageExpanded(false);
+  }, []);
+  const closeCashflowDetailOverlay = useCallback(() => {
+    setCashflowDetailExpanded(false);
+  }, []);
   const chartAreaRef = useRef(null);
   const chartOverlayRef = useRef(null);
   const chartModalContentRef = useRef(null);
   const geocodeDebounceRef = useRef(null);
   const geocodeAbortRef = useRef(null);
   const crimeAbortRef = useRef(null);
+  const crimePostcodeAbortRef = useRef(null);
   const lastGeocodeQueryRef = useRef('');
+  const lastCrimePostcodeRef = useRef('');
   const [rateChartSettings, setRateChartSettings] = useState({
     showMovingAverage: false,
     movingAverageWindow: 3,
@@ -2985,8 +5049,85 @@ export default function App() {
   const [syncError, setSyncError] = useState('');
   const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
   const [crimeState, setCrimeState] = useState(INITIAL_CRIME_STATE);
+  const [crimePostcodeState, setCrimePostcodeState] = useState({ status: 'idle', data: null, error: '' });
+  const [crimeSelectedMonth, setCrimeSelectedMonth] = useState('');
+  const [crimeTrendActiveCategories, setCrimeTrendActiveCategories] = useState({});
   const [urlSyncReady, setUrlSyncReady] = useState(false);
   const urlSyncLastValueRef = useRef('');
+
+  useEffect(() => {
+    if (collapsedSections.investmentProfile) {
+      setShowInvestmentProfileDetails(false);
+    }
+  }, [collapsedSections.investmentProfile]);
+
+  useEffect(() => {
+    if (collapsedSections.leverage) {
+      setLeverageExpanded(false);
+    }
+  }, [collapsedSections.leverage]);
+
+  useEffect(() => {
+    if (collapsedSections.interestSplit) {
+      setInterestSplitExpanded(false);
+    }
+  }, [collapsedSections.interestSplit]);
+
+  useEffect(() => {
+    if (collapsedSections.cashflowDetail) {
+      setCashflowDetailExpanded(false);
+    }
+  }, [collapsedSections.cashflowDetail]);
+
+  useOverlayEscape(interestSplitExpanded, closeInterestSplitOverlay);
+  useOverlayEscape(leverageExpanded, closeLeverageOverlay);
+  useOverlayEscape(cashflowDetailExpanded, closeCashflowDetailOverlay);
+  useOverlayEscape(showOptimizationModal, () => setShowOptimizationModal(false));
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const load = async () => {
+      setPropertyPriceState((prev) =>
+        prev.status === 'success' ? prev : { status: 'loading', data: null, error: '' }
+      );
+      try {
+        const response = await fetch(propertyPriceDataUrl, {
+          signal: controller.signal,
+          headers: { Accept: 'text/csv,application/octet-stream;q=0.9,*/*;q=0.8' },
+        });
+        if (!response.ok) {
+          throw new Error('Unable to load property price history.');
+        }
+        const text = await response.text();
+        if (cancelled) {
+          return;
+        }
+        const parsed = parsePropertyPriceCsv(text);
+        const statsIndex = buildPropertyGrowthStatsIndex(parsed);
+        setPropertyPriceState({ status: 'success', data: { records: parsed, statsIndex }, error: '' });
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          return;
+        }
+        console.warn('Unable to load property price history:', error);
+        setPropertyPriceState({
+          status: 'error',
+          data: null,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : 'Unable to load property price history.',
+        });
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
   const propertyAddress = (inputs.propertyAddress ?? '').trim();
   const hasPropertyAddress = propertyAddress !== '';
   const geocodeLat = Number(geocodeState.data?.lat);
@@ -3000,7 +5141,266 @@ export default function App() {
   const geocodeAddressQuery = geocodeAddressDetails.query;
   const geocodeBounds = geocodeAddressDetails.bounds;
   const geocodePostcode = geocodeAddressDetails.postcode;
+  const geocodeCountyName = geocodeAddressDetails.county;
+  const geocodeCityName = geocodeAddressDetails.city;
+  const geocodeStateName = geocodeAddressDetails.state;
+  const geocodeCountry = geocodeAddressDetails.country;
+  const geocodeCountryCode = geocodeAddressDetails.countryCode;
+  const normalizedCrimePostcode = useMemo(
+    () => normalizePostcode(geocodePostcode),
+    [geocodePostcode]
+  );
+  const shouldLookupCrimePostcode =
+    normalizedCrimePostcode !== '' && isUkCountryCode(geocodeCountryCode);
+  const crimePostcodeQuery = shouldLookupCrimePostcode ? normalizedCrimePostcode : '';
+  const postcodeCrimeLat = Number(crimePostcodeState.data?.lat);
+  const postcodeCrimeLon = Number(crimePostcodeState.data?.lon);
+  const storedPropertyLat = Number(inputs.propertyLatitude);
+  const storedPropertyLon = Number(inputs.propertyLongitude);
+  const storedCoordinates = resolveCoordinatePair(storedPropertyLat, storedPropertyLon);
+  const postcodeCoordinates = resolveCoordinatePair(postcodeCrimeLat, postcodeCrimeLon);
+  const geocodeCoordinates = resolveCoordinatePair(geocodeLat, geocodeLon);
+  const resolvedCoordinates = storedCoordinates || postcodeCoordinates || geocodeCoordinates || null;
+  const crimeLat = resolvedCoordinates ? resolvedCoordinates.lat : null;
+  const crimeLon = resolvedCoordinates ? resolvedCoordinates.lon : null;
 
+  const propertyPriceStatsSelection = useMemo(() => {
+    if (propertyPriceState.status !== 'success') {
+      return { stats: {}, label: '', fallback: true };
+    }
+    const statsIndex = propertyPriceState.data?.statsIndex;
+    if (!statsIndex || typeof statsIndex !== 'object') {
+      return { stats: {}, label: '', fallback: true };
+    }
+    const regions = statsIndex.regions ?? {};
+    const aliasLookup = statsIndex.aliases ?? {};
+    const globalEntry = statsIndex.global ?? { label: '', stats: {} };
+    const seen = new Set();
+    const candidates = [];
+    const pushCandidate = (value) => {
+      if (typeof value !== 'string') {
+        return;
+      }
+      const raw = value.trim();
+      if (!raw) {
+        return;
+      }
+      const canonical = canonicalizeRegionKey(raw);
+      const dedupeKey = canonical || normalizeRegionKey(raw);
+      if (!dedupeKey || seen.has(dedupeKey)) {
+        return;
+      }
+      seen.add(dedupeKey);
+      candidates.push({ raw, canonical });
+    };
+    if (geocodeCountyName) {
+      pushCandidate(geocodeCountyName);
+    }
+    if (geocodeCityName) {
+      pushCandidate(geocodeCityName);
+    }
+    if (geocodeStateName) {
+      pushCandidate(geocodeStateName);
+    }
+    if (geocodeCountryCode) {
+      pushCandidate(geocodeCountryCode);
+      const mapped = COUNTRY_REGION_SYNONYMS[normalizeRegionKey(geocodeCountryCode)];
+      if (mapped) {
+        pushCandidate(mapped);
+      }
+    }
+    if (geocodeCountry) {
+      pushCandidate(geocodeCountry);
+    }
+    const findRegionMatch = ({ raw, canonical }) => {
+      if (canonical && regions[canonical]?.stats && Object.keys(regions[canonical].stats).length > 0) {
+        return { key: canonical, entry: regions[canonical] };
+      }
+      const aliasKeys = buildRegionAliasKeys(raw);
+      const aliasCandidates = [];
+      if (canonical) {
+        aliasCandidates.push(canonical);
+      }
+      aliasKeys.forEach((alias) => {
+        if (!aliasCandidates.includes(alias)) {
+          aliasCandidates.push(alias);
+        }
+      });
+      for (const alias of aliasCandidates) {
+        const mapped = aliasLookup[alias];
+        if (Array.isArray(mapped)) {
+          for (const regionKey of mapped) {
+            const regionEntry = regions[regionKey];
+            if (regionEntry?.stats && Object.keys(regionEntry.stats).length > 0) {
+              return { key: regionKey, entry: regionEntry };
+            }
+          }
+        }
+      }
+      let fallback = null;
+      aliasCandidates.forEach((alias) => {
+        const cleanedAlias = alias.replace(/[^a-z0-9]/g, '');
+        Object.entries(regions).forEach(([regionKey, regionEntry]) => {
+          if (!regionEntry?.stats || Object.keys(regionEntry.stats).length === 0) {
+            return;
+          }
+          const regionAliases = Array.isArray(regionEntry.aliases) ? regionEntry.aliases : [];
+          if (regionAliases.includes(alias)) {
+            fallback = { key: regionKey, entry: regionEntry, score: cleanedAlias.length };
+            return;
+          }
+          regionAliases.forEach((regionAlias) => {
+            if (!regionAlias) {
+              return;
+            }
+            const cleanedRegion = regionAlias.replace(/[^a-z0-9]/g, '');
+            if (!cleanedAlias || !cleanedRegion) {
+              return;
+            }
+            if (cleanedAlias === cleanedRegion) {
+              fallback = { key: regionKey, entry: regionEntry, score: cleanedAlias.length };
+              return;
+            }
+            if (
+              cleanedAlias.length > 3 &&
+              cleanedRegion.length > 3 &&
+              (cleanedAlias.startsWith(cleanedRegion) || cleanedRegion.startsWith(cleanedAlias))
+            ) {
+              if (!fallback || cleanedRegion.length > fallback.score) {
+                fallback = { key: regionKey, entry: regionEntry, score: cleanedRegion.length };
+              }
+            }
+          });
+        });
+      });
+      return fallback ? { key: fallback.key, entry: fallback.entry } : null;
+    };
+
+    for (const candidate of candidates) {
+      const match = findRegionMatch(candidate);
+      if (match) {
+        return {
+          stats: match.entry.stats,
+          label: match.entry.label ?? match.key,
+          fallback: false,
+        };
+      }
+    }
+    return {
+      stats: globalEntry?.stats ?? {},
+      label: globalEntry?.label ?? '',
+      fallback: true,
+    };
+  }, [
+    propertyPriceState,
+    geocodeCityName,
+    geocodeCountyName,
+    geocodeCountry,
+    geocodeCountryCode,
+    geocodeStateName,
+  ]);
+
+  const propertyPriceStats = propertyPriceStatsSelection.stats;
+  const propertyGrowthRegionLabel = propertyPriceStatsSelection.label;
+  const propertyGrowthRegionIsFallback = propertyPriceStatsSelection.fallback;
+
+  const propertyTypeOption = useMemo(() => {
+    const selectedValue = typeof inputs.propertyType === 'string' ? inputs.propertyType : '';
+    return (
+      PROPERTY_TYPE_OPTIONS.find((option) => option.value === selectedValue) || PROPERTY_TYPE_OPTIONS[0]
+    );
+  }, [inputs.propertyType]);
+
+  const propertyTypeValue = propertyTypeOption.value;
+  const propertyTypeLabel = propertyTypeOption.label;
+  const propertyTypeGrowth = propertyPriceStats[propertyTypeValue] ?? null;
+  const rawHistoricalWindow = Number(inputs.historicalAppreciationWindow);
+  const sanitizedHistoricalWindow = PROPERTY_APPRECIATION_WINDOWS.includes(rawHistoricalWindow)
+    ? rawHistoricalWindow
+    : DEFAULT_APPRECIATION_WINDOW;
+  const derivedHistoricalRate = propertyTypeGrowth?.cagr?.[sanitizedHistoricalWindow] ?? null;
+  const longTermGrowthRate = propertyTypeGrowth?.cagr?.[20] ?? null;
+  const propertyGrowthLatestDate = propertyTypeGrowth?.latest?.date ?? null;
+  const propertyGrowthLatestPrice = propertyTypeGrowth?.latest?.price ?? null;
+  const propertyGrowthWindowRateValue = Number.isFinite(derivedHistoricalRate) ? derivedHistoricalRate : null;
+  const propertyGrowth20YearValue = Number.isFinite(longTermGrowthRate) ? longTermGrowthRate : null;
+  const propertyGrowthStatus = propertyPriceState.status;
+  const propertyGrowthLoading = propertyGrowthStatus === 'loading';
+  const propertyGrowthError = propertyGrowthStatus === 'error' ? propertyPriceState.error || '' : '';
+  const propertyGrowthRegionSummary = (() => {
+    if (propertyGrowthRegionIsFallback) {
+      return propertyGrowthRegionLabel || 'Dataset average';
+    }
+    if (propertyGrowthRegionLabel) {
+      return `${propertyGrowthRegionLabel} market data`;
+    }
+    return '';
+  })();
+  const propertyGrowthLatestLabel = propertyGrowthLatestDate
+    ? propertyGrowthLatestDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
+    : '';
+  const propertyGrowthLatestPriceLabel = Number.isFinite(propertyGrowthLatestPrice)
+    ? currencyNoPence(propertyGrowthLatestPrice)
+    : '';
+  const manualAppreciationRate = Number.isFinite(inputs.annualAppreciation)
+    ? Number(inputs.annualAppreciation)
+    : 0;
+  const useHistoricalAppreciation = Boolean(inputs.useHistoricalAppreciation);
+  const historicalToggleDisabled = propertyGrowthLoading || propertyGrowthWindowRateValue === null;
+  const historicalToggleChecked = useHistoricalAppreciation && propertyGrowthWindowRateValue !== null;
+  const crimeSummaryData = crimeState.data;
+  const localCrimeMonthlyIncidents = useMemo(() => {
+    if (!crimeSummaryData) {
+      return null;
+    }
+    const incidents = Number(
+      crimeSummaryData.averageMonthlyIncidents ?? crimeSummaryData.totalIncidents
+    );
+    if (!Number.isFinite(incidents)) {
+      return null;
+    }
+    return Math.max(0, incidents);
+  }, [crimeSummaryData]);
+
+  const localCrimeIncidentDensity = useMemo(() => {
+    if (!crimeSummaryData) {
+      return null;
+    }
+    const directDensity = Number(
+      crimeSummaryData.averageMonthlyIncidentDensity ?? crimeSummaryData.incidentDensityPerSqKm
+    );
+    if (Number.isFinite(directDensity)) {
+      return Math.max(0, directDensity);
+    }
+    if (Number.isFinite(localCrimeMonthlyIncidents) && CRIME_SEARCH_AREA_KM2 > 0) {
+      return Math.max(0, localCrimeMonthlyIncidents / CRIME_SEARCH_AREA_KM2);
+    }
+    return null;
+  }, [crimeSummaryData, localCrimeMonthlyIncidents]);
+
+  const crimeSearchAreaSqKm =
+    Number.isFinite(crimeSummaryData?.searchAreaSqKm) && crimeSummaryData.searchAreaSqKm > 0
+      ? crimeSummaryData.searchAreaSqKm
+      : CRIME_SEARCH_AREA_KM2;
+
+  const effectiveAnnualAppreciation = useMemo(() => {
+    if (useHistoricalAppreciation && Number.isFinite(derivedHistoricalRate)) {
+      return derivedHistoricalRate;
+    }
+    return manualAppreciationRate;
+  }, [useHistoricalAppreciation, derivedHistoricalRate, manualAppreciationRate]);
+
+  useEffect(() => {
+    if (
+      inputs.useHistoricalAppreciation &&
+      !propertyGrowthLoading &&
+      propertyGrowthWindowRateValue === null
+    ) {
+      setInputs((prev) =>
+        prev.useHistoricalAppreciation ? { ...prev, useHistoricalAppreciation: false } : prev
+      );
+    }
+  }, [inputs.useHistoricalAppreciation, propertyGrowthLoading, propertyGrowthWindowRateValue, setInputs]);
   const remoteAvailable = remoteEnabled && authStatus === 'ready';
 
   function applyUiState(uiState) {
@@ -3229,7 +5629,10 @@ export default function App() {
       const payload = {};
       EXTRA_SETTING_KEYS.forEach((key) => {
         const value = extraSettings[key];
-        if (Number.isFinite(value)) {
+        const defaultValue = EXTRA_SETTINGS_DEFAULTS[key];
+        if (typeof defaultValue === 'boolean') {
+          payload[key] = typeof value === 'boolean' ? value : defaultValue;
+        } else if (Number.isFinite(value)) {
           payload[key] = value;
         }
       });
@@ -3240,13 +5643,45 @@ export default function App() {
   }, [extraSettings]);
 
   useEffect(() => {
+    setPendingExtraSettings((prev) => {
+      const defaults = getDefaultExtraSettings();
+      const next = {};
+      EXTRA_SETTING_KEYS.forEach((key) => {
+        const defaultValue = defaults[key];
+        if (typeof defaultValue === 'boolean') {
+          const value = extraSettings[key];
+          next[key] = typeof value === 'boolean' ? value : defaultValue;
+        } else {
+          const value = Number(extraSettings[key]);
+          next[key] = Number.isFinite(value) ? value : defaultValue;
+        }
+      });
+      const previous = prev ?? {};
+      const changed = EXTRA_SETTING_KEYS.some((key) => next[key] !== previous[key]);
+      if (!changed) {
+        return prev ?? next;
+      }
+      return next;
+    });
+  }, [extraSettings]);
+
+  useEffect(() => {
     setInputs((prev) => {
       let changed = false;
       const next = { ...prev };
+      const defaults = getDefaultExtraSettings();
       EXTRA_SETTING_KEYS.forEach((key) => {
-        const value = extraSettings[key];
-        if (Number.isFinite(value) && next[key] !== value) {
-          next[key] = value;
+        const defaultValue = defaults[key];
+        let normalized = defaultValue;
+        if (typeof defaultValue === 'boolean') {
+          const value = extraSettings[key];
+          normalized = typeof value === 'boolean' ? value : defaultValue;
+        } else {
+          const value = Number(extraSettings[key]);
+          normalized = Number.isFinite(value) ? value : defaultValue;
+        }
+        if (next[key] !== normalized) {
+          next[key] = normalized;
           changed = true;
         }
       });
@@ -3511,6 +5946,106 @@ export default function App() {
   }, [geocodeState.status, geocodeState.data]);
 
   useEffect(() => {
+    if (!shouldLookupCrimePostcode) {
+      if (crimePostcodeAbortRef.current) {
+        crimePostcodeAbortRef.current.abort();
+        crimePostcodeAbortRef.current = null;
+      }
+      if (
+        crimePostcodeState.status !== 'idle' ||
+        crimePostcodeState.data !== null ||
+        crimePostcodeState.error !== ''
+      ) {
+        setCrimePostcodeState({ status: 'idle', data: null, error: '' });
+      }
+      lastCrimePostcodeRef.current = '';
+      return;
+    }
+
+    if (
+      lastCrimePostcodeRef.current === normalizedCrimePostcode &&
+      crimePostcodeState.status === 'success'
+    ) {
+      return;
+    }
+
+    if (crimePostcodeAbortRef.current) {
+      crimePostcodeAbortRef.current.abort();
+      crimePostcodeAbortRef.current = null;
+    }
+
+    const controller = new AbortController();
+    crimePostcodeAbortRef.current = controller;
+
+    setCrimePostcodeState((prev) => {
+      if (prev.status === 'success' && prev.data?.postcode === normalizedCrimePostcode) {
+        return prev;
+      }
+      const cachedData =
+        prev.data && prev.data.postcode === normalizedCrimePostcode ? prev.data : null;
+      return { status: 'loading', data: cachedData, error: '' };
+    });
+
+    (async () => {
+      try {
+        const response = await fetch(
+          `https://api.postcodes.io/postcodes/${encodeURIComponent(normalizedCrimePostcode)}`,
+          {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' },
+          }
+        );
+        if (!response.ok) {
+          throw new Error('Postcode lookup failed.');
+        }
+        const payload = await response.json();
+        const result = payload?.result;
+        const lat = Number.parseFloat(result?.latitude);
+        const lon = Number.parseFloat(result?.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          throw new Error('Postcode lookup returned invalid coordinates.');
+        }
+        lastCrimePostcodeRef.current = normalizedCrimePostcode;
+        setCrimePostcodeState({
+          status: 'success',
+          data: { lat, lon, postcode: normalizedCrimePostcode },
+          error: '',
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          return;
+        }
+        console.warn('Unable to resolve postcode centroid for crime lookup:', error);
+        lastCrimePostcodeRef.current = '';
+        setCrimePostcodeState({
+          status: 'error',
+          data: null,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : 'Unable to resolve postcode centroid.',
+        });
+      } finally {
+        if (crimePostcodeAbortRef.current === controller) {
+          crimePostcodeAbortRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      if (crimePostcodeAbortRef.current === controller) {
+        crimePostcodeAbortRef.current = null;
+      }
+    };
+  }, [
+    shouldLookupCrimePostcode,
+    normalizedCrimePostcode,
+    crimePostcodeState.status,
+    crimePostcodeState.data,
+  ]);
+
+  useEffect(() => {
     if (crimeAbortRef.current) {
       crimeAbortRef.current.abort();
       crimeAbortRef.current = null;
@@ -3521,7 +6056,7 @@ export default function App() {
       return;
     }
 
-    if (!Number.isFinite(geocodeLat) || !Number.isFinite(geocodeLon)) {
+    if (!hasUsableCoordinates(crimeLat, crimeLon)) {
       if (geocodeState.status === 'error') {
         setCrimeState({
           status: 'error',
@@ -3578,6 +6113,9 @@ export default function App() {
               let normalized = '';
               if (typeof value === 'string') {
                 normalized = value.trim();
+                if (key === 'postcode') {
+                  normalized = formatCrimePostcodeParam(normalized);
+                }
               } else if (typeof value === 'number') {
                 if (Number.isFinite(value)) {
                   normalized = value.toString();
@@ -3595,13 +6133,16 @@ export default function App() {
           return params;
         };
 
-        const latParam = formatCoordinate(geocodeLat);
-        const lonParam = formatCoordinate(geocodeLon);
+        const latParam = formatCoordinate(crimeLat);
+        const lonParam = formatCoordinate(crimeLon);
 
-        const baseParams = createCrimeParams({
-          lat: latParam,
-          lng: lonParam,
-        });
+        const baseParams =
+          crimePostcodeQuery !== ''
+            ? createCrimeParams({ postcode: crimePostcodeQuery })
+            : createCrimeParams({
+                lat: latParam,
+                lng: lonParam,
+              });
 
         const fetchCrimesWithParams = async (searchParams) => {
           const url = `https://data.police.uk/api/crimes-street/all-crime?${searchParams.toString()}`;
@@ -3651,6 +6192,7 @@ export default function App() {
         let summaryBoundsHint = geocodeBounds || null;
         let finalCrimeData = null;
         let finalError = null;
+        let lastSuccessfulParams = null;
 
         const attemptFetch = async (params, { boundsHint } = {}) => {
           try {
@@ -3659,6 +6201,7 @@ export default function App() {
               if (boundsHint) {
                 summaryBoundsHint = boundsHint;
               }
+              lastSuccessfulParams = new URLSearchParams(params);
               return data;
             }
             return null;
@@ -3676,6 +6219,11 @@ export default function App() {
 
         finalCrimeData = await attemptFetch(baseParams, { boundsHint: geocodeBounds || null });
 
+        if (!finalCrimeData && crimePostcodeQuery !== '' && hasUsableCoordinates(crimeLat, crimeLon)) {
+          const latLngParams = createCrimeParams({ lat: latParam, lng: lonParam });
+          finalCrimeData = await attemptFetch(latLngParams, { boundsHint: geocodeBounds || null });
+        }
+
         if (!finalCrimeData && geocodeBounds) {
           const boundingPolygon = boundsToPolygon(geocodeBounds);
           if (boundingPolygon) {
@@ -3687,8 +6235,8 @@ export default function App() {
         if (!finalCrimeData) {
           try {
             const neighbourhood = await fetchNeighbourhoodBoundary({
-              lat: geocodeLat,
-              lon: geocodeLon,
+              lat: crimeLat,
+              lon: crimeLon,
               postcode: geocodePostcode,
               addressQuery: geocodeAddressQuery,
               signal: controller.signal,
@@ -3731,23 +6279,181 @@ export default function App() {
           throw new Error(fallbackErrorMessage);
         }
 
-        const month = normalizeCrimeMonth(
+        const defaultMonth = normalizeCrimeMonth(
           lastUpdatedMonth || (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '')
         );
-        const summary = summarizeCrimeData(finalCrimeData, {
-          lat: geocodeLat,
-          lon: geocodeLon,
-          month,
-          lastUpdated: normalizeCrimeMonth(lastUpdatedDate) || lastUpdatedDate,
-          fallbackLocationName: geocodeLocationSummary || geocodeDisplayName || propertyAddress,
-          mapBoundsOverride: summaryBoundsHint ?? geocodeBounds,
-          mapCenterOverride:
-            Number.isFinite(geocodeLat) && Number.isFinite(geocodeLon)
-              ? { lat: geocodeLat, lon: geocodeLon }
-              : null,
+        const fallbackLocationName = geocodeLocationSummary || geocodeDisplayName || propertyAddress;
+        const normalizedLastUpdated = normalizeCrimeMonth(lastUpdatedDate) || lastUpdatedDate;
+        const mapCenterOverride = hasUsableCoordinates(crimeLat, crimeLon)
+          ? { lat: crimeLat, lon: crimeLon }
+          : null;
+        const mapBoundsOverride = summaryBoundsHint ?? geocodeBounds;
+
+        const primarySummary = summarizeCrimeData(finalCrimeData, {
+          lat: crimeLat,
+          lon: crimeLon,
+          month: defaultMonth,
+          lastUpdated: normalizedLastUpdated,
+          fallbackLocationName,
+          mapBoundsOverride,
+          mapCenterOverride,
         });
+
+        const monthCandidates = buildCrimeMonthRange(defaultMonth || lastUpdatedMonth || '');
+        if (defaultMonth && !monthCandidates.includes(defaultMonth)) {
+          monthCandidates.unshift(defaultMonth);
+        }
+        const availableMonthValues = monthCandidates.length > 0 ? monthCandidates : defaultMonth ? [defaultMonth] : [];
+
+        const monthlySummaryMap = new Map();
+        const categoryTotals = new Map();
+        const combinedCrimes = [];
+
+        const applyCategoryTotals = (breakdown) => {
+          if (!Array.isArray(breakdown)) return;
+          breakdown.forEach(({ label, count }) => {
+            if (typeof label !== 'string' || label === '') return;
+            const numericCount = Number(count) || 0;
+            categoryTotals.set(label, (categoryTotals.get(label) ?? 0) + numericCount);
+          });
+        };
+
+        const registerMonthSummary = (monthValue, crimes, summaryValue) => {
+          if (typeof monthValue === 'string' && monthValue !== '') {
+            monthlySummaryMap.set(monthValue, summaryValue);
+          }
+          if (Array.isArray(crimes) && crimes.length > 0) {
+            combinedCrimes.push(...crimes);
+          }
+          applyCategoryTotals(summaryValue?.categoryBreakdown);
+        };
+
+        registerMonthSummary(defaultMonth || '', finalCrimeData, primarySummary);
+
+        const paramsTemplateString = (lastSuccessfulParams || baseParams).toString();
+
+        for (const monthValue of availableMonthValues) {
+          if (!monthValue || monthValue === defaultMonth) {
+            continue;
+          }
+          let monthCrimes = [];
+          try {
+            const monthParams = new URLSearchParams(paramsTemplateString);
+            monthParams.set('date', monthValue);
+            monthCrimes = await fetchCrimesWithParams(monthParams);
+          } catch (monthError) {
+            if (monthError?.name === 'AbortError') {
+              throw monthError;
+            }
+            if (monthError?.status && monthError.status !== 404) {
+              console.warn('Unable to fetch crime statistics for month', monthValue, monthError);
+            }
+            monthCrimes = [];
+          }
+          const monthSummary = summarizeCrimeData(monthCrimes, {
+            lat: crimeLat,
+            lon: crimeLon,
+            month: monthValue,
+            lastUpdated: normalizedLastUpdated,
+            fallbackLocationName,
+            mapBoundsOverride,
+            mapCenterOverride,
+          });
+          registerMonthSummary(monthValue, monthCrimes, monthSummary);
+        }
+
+        const chronologicalMonths = [...monthlySummaryMap.keys()].sort(compareCrimeMonths);
+        const chartData = chronologicalMonths.map((monthValue) => {
+          const summaryValue = monthlySummaryMap.get(monthValue);
+          const entry = {
+            month: monthValue,
+            label: formatCrimeMonth(monthValue),
+            total: summaryValue?.totalIncidents ?? 0,
+          };
+          if (Array.isArray(summaryValue?.categoryBreakdown)) {
+            summaryValue.categoryBreakdown.forEach(({ label, count }) => {
+              if (typeof label === 'string' && label !== '') {
+                entry[label] = count ?? 0;
+              }
+            });
+          }
+          return entry;
+        });
+
+        const sortedCategories = Array.from(categoryTotals.entries())
+          .sort((a, b) => b[1] - a[1])
+          .map(([label]) => label);
+
+        const aggregatedSummary = summarizeCrimeData(combinedCrimes, {
+          lat: crimeLat,
+          lon: crimeLon,
+          month: '',
+          lastUpdated: normalizedLastUpdated,
+          fallbackLocationName,
+          mapBoundsOverride,
+          mapCenterOverride,
+        });
+        aggregatedSummary.month = 'all';
+        aggregatedSummary.monthsCount = chronologicalMonths.length;
+        if (Number.isFinite(aggregatedSummary.totalIncidents) && aggregatedSummary.monthsCount > 0) {
+          const avgIncidents = aggregatedSummary.totalIncidents / aggregatedSummary.monthsCount;
+          aggregatedSummary.averageMonthlyIncidents = avgIncidents;
+          aggregatedSummary.averageMonthlyIncidentDensity =
+            CRIME_SEARCH_AREA_KM2 > 0 ? avgIncidents / CRIME_SEARCH_AREA_KM2 : null;
+        }
+        const monthsCount = chronologicalMonths.length;
+        if (monthsCount > 1) {
+          const oldestLabel = formatCrimeMonth(chronologicalMonths[0]);
+          const newestLabel = formatCrimeMonth(chronologicalMonths[monthsCount - 1]);
+          if (oldestLabel && newestLabel) {
+            aggregatedSummary.monthLabel = oldestLabel === newestLabel ? newestLabel : `${oldestLabel} – ${newestLabel}`;
+          } else {
+            aggregatedSummary.monthLabel = 'All months';
+          }
+          aggregatedSummary.rangeDescription = `Past ${monthsCount} months`;
+        } else if (monthsCount === 1) {
+          aggregatedSummary.monthLabel = formatCrimeMonth(chronologicalMonths[0]) || 'All months';
+          aggregatedSummary.rangeDescription = aggregatedSummary.monthLabel;
+        } else {
+          aggregatedSummary.monthLabel = 'All months';
+          aggregatedSummary.rangeDescription = 'All months';
+        }
+
+        const monthOptions = availableMonthValues
+          .filter((value) => typeof value === 'string' && value !== '')
+          .map((value) => ({
+            value,
+            label: formatCrimeMonth(value) || value,
+          }));
+        const availableMonths = monthOptions.length > 0
+          ? [{ value: 'all', label: 'All months' }, ...monthOptions]
+          : [{ value: 'all', label: 'All months' }];
+
+        const monthlySummariesObject = {};
+        monthlySummaryMap.forEach((value, key) => {
+          if (typeof key === 'string' && key !== '') {
+            monthlySummariesObject[key] = value;
+          }
+        });
+
+        const trendData = {
+          data: chartData,
+          categories: sortedCategories,
+        };
+
         if (!controller.signal.aborted) {
-          setCrimeState({ status: 'success', data: summary, error: '' });
+          setCrimeState({
+            status: 'success',
+            data: {
+              ...primarySummary,
+              availableMonths,
+              monthlySummaries: monthlySummariesObject,
+              aggregatedSummary,
+              trendData,
+              defaultMonth: defaultMonth && monthlySummariesObject[defaultMonth] ? defaultMonth : '',
+            },
+            error: '',
+          });
         }
       } catch (error) {
         if (error.name === 'AbortError') {
@@ -3777,8 +6483,8 @@ export default function App() {
     };
   }, [
     hasPropertyAddress,
-    geocodeLat,
-    geocodeLon,
+    crimeLat,
+    crimeLon,
     geocodeDisplayName,
     geocodeLocationSummary,
     propertyAddress,
@@ -3787,6 +6493,8 @@ export default function App() {
     geocodeBounds,
     geocodeState.status,
     geocodeState.error,
+    crimePostcodeQuery,
+    shouldLookupCrimePostcode,
   ]);
 
   useEffect(() => {
@@ -3879,7 +6587,43 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [shareNotice]);
 
-  const equity = useMemo(() => calculateEquity(inputs), [inputs]);
+  const equityInputs = useMemo(() => {
+    const derivedRate = Number.isFinite(derivedHistoricalRate) ? derivedHistoricalRate : null;
+    const longRunRate = Number.isFinite(longTermGrowthRate) ? longTermGrowthRate : null;
+    const crimeDensityValue = Number.isFinite(localCrimeIncidentDensity)
+      ? localCrimeIncidentDensity
+      : null;
+    const crimeMonthlyIncidentsValue = Number.isFinite(localCrimeMonthlyIncidents)
+      ? localCrimeMonthlyIncidents
+      : null;
+    return {
+      ...inputs,
+      propertyType: propertyTypeValue,
+      annualAppreciation: effectiveAnnualAppreciation,
+      propertyGrowthWindowYears: sanitizedHistoricalWindow,
+      propertyGrowthWindowRate: derivedRate,
+      propertyGrowth20Year: longRunRate,
+      propertyTypeLabel,
+      propertyGrowthSource: propertyGrowthRegionSummary,
+      localCrimeIncidentDensity: crimeDensityValue,
+      localCrimeMonthlyIncidents: crimeMonthlyIncidentsValue,
+      crimeSearchAreaSqKm: crimeSearchAreaSqKm,
+    };
+  }, [
+    inputs,
+    propertyTypeValue,
+    effectiveAnnualAppreciation,
+    sanitizedHistoricalWindow,
+    derivedHistoricalRate,
+    longTermGrowthRate,
+    propertyTypeLabel,
+    propertyGrowthRegionSummary,
+    localCrimeIncidentDensity,
+    localCrimeMonthlyIncidents,
+    crimeSearchAreaSqKm,
+  ]);
+
+  const equity = useMemo(() => calculateEquity(equityInputs), [equityInputs]);
 
   const scenarioTableData = useMemo(
     () =>
@@ -3994,6 +6738,10 @@ export default function App() {
     });
     return rows;
   }, [scenarioTableData, scenarioSort]);
+  const optimizationModel = useMemo(
+    () => buildOptimizationModel(optimizationGoal, equityInputs, equity),
+    [optimizationGoal, equityInputs, equity]
+  );
   const scenarioScatterData = useMemo(() => {
     if (scenarioTableData.length === 0) {
       return [];
@@ -4343,6 +7091,39 @@ export default function App() {
     });
   }, [equity.annualDebtService, equity.annualInterest, equity.annualPrincipal, exitYearCount]);
 
+  const interestSplitYearOptions = useMemo(() => {
+    const years = interestSplitChartData
+      .map((point) => Number(point?.year) || 0)
+      .filter((year) => year > 0);
+    const uniqueYears = Array.from(new Set(years)).sort((a, b) => a - b);
+    return uniqueYears.length > 0 ? uniqueYears : [1];
+  }, [interestSplitChartData]);
+
+  useEffect(() => {
+    if (!interestSplitYearOptions.length) {
+      return;
+    }
+    const minYear = interestSplitYearOptions[0];
+    const maxYear = interestSplitYearOptions[interestSplitYearOptions.length - 1];
+    setInterestSplitRange((prev) => {
+      const nextStart = clamp(Number(prev.start) || minYear, minYear, maxYear);
+      const nextEnd = clamp(Number(prev.end) || maxYear, nextStart, maxYear);
+      if (nextStart === prev.start && nextEnd === prev.end) {
+        return prev;
+      }
+      return { start: nextStart, end: nextEnd };
+    });
+  }, [interestSplitYearOptions]);
+
+  const interestSplitDisplayData = useMemo(() => {
+    const startYear = Number(interestSplitRange.start) || interestSplitYearOptions[0] || 1;
+    const endYear = Number(interestSplitRange.end) || startYear;
+    return interestSplitChartData.filter((point) => {
+      const year = Number(point?.year);
+      return Number.isFinite(year) && year >= startYear && year <= endYear;
+    });
+  }, [interestSplitChartData, interestSplitRange, interestSplitYearOptions]);
+
   const equityGrowthChartData = useMemo(() => {
     if (!Array.isArray(equity.chart)) {
       return [];
@@ -4405,7 +7186,9 @@ export default function App() {
 
 
   const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
-  const appreciationRate = Number(inputs.annualAppreciation) || 0;
+  const appreciationRate = Number.isFinite(effectiveAnnualAppreciation)
+    ? effectiveAnnualAppreciation
+    : 0;
   const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
   const appreciationFactor = 1 + appreciationRate;
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
@@ -4500,50 +7283,179 @@ export default function App() {
 
   const waitingForGeocode = hasPropertyAddress && geocodeState.status === 'loading';
   const crimeSummary = crimeState.data;
-  const hasCrimeIncidents = crimeState.status === 'success' && Boolean(crimeSummary);
-  const crimeLoading = crimeState.status === 'loading';
-  const crimeError = crimeState.status === 'error' ? crimeState.error : '';
-  const crimeMonthLabel = crimeSummary?.monthLabel ?? '';
-  const crimeIncidentsCount = crimeSummary?.totalIncidents ?? 0;
-  const crimeHasRecordedIncidents = crimeIncidentsCount > 0;
-  const crimeMapCenter = useMemo(() => {
-    const lat = Number.isFinite(crimeSummary?.mapCenter?.lat)
-      ? crimeSummary.mapCenter.lat
-      : Number.isFinite(geocodeLat)
-      ? geocodeLat
+  const crimeAvailableMonths = Array.isArray(crimeSummary?.availableMonths)
+    ? crimeSummary.availableMonths
+    : [];
+  const crimeMonthlySummaries =
+    crimeSummary?.monthlySummaries && typeof crimeSummary.monthlySummaries === 'object'
+      ? crimeSummary.monthlySummaries
+      : {};
+  const crimeAggregatedSummary =
+    crimeSummary?.aggregatedSummary && typeof crimeSummary.aggregatedSummary === 'object'
+      ? crimeSummary.aggregatedSummary
       : null;
-    const lon = Number.isFinite(crimeSummary?.mapCenter?.lon)
-      ? crimeSummary.mapCenter.lon
-      : Number.isFinite(geocodeLon)
-      ? geocodeLon
-      : null;
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+  const crimeTrendData =
+    crimeSummary?.trendData && typeof crimeSummary.trendData === 'object' ? crimeSummary.trendData : null;
+  const crimeDefaultMonth = typeof crimeSummary?.defaultMonth === 'string' ? crimeSummary.defaultMonth : '';
+
+  useEffect(() => {
+    if (crimeState.status !== 'success' || !crimeSummary) {
+      setCrimeSelectedMonth('');
+      return;
+    }
+    const monthValues = crimeAvailableMonths.map((option) => option.value);
+    if (monthValues.length === 0) {
+      setCrimeSelectedMonth('');
+      return;
+    }
+    const preferredMonth =
+      (crimeDefaultMonth && monthValues.includes(crimeDefaultMonth) && crimeDefaultMonth) ||
+      monthValues.find((value) => value !== 'all') ||
+      monthValues[0];
+    setCrimeSelectedMonth((prev) => (monthValues.includes(prev) ? prev : preferredMonth));
+  }, [crimeState.status, crimeSummary, crimeAvailableMonths, crimeDefaultMonth]);
+
+  useEffect(() => {
+    if (!crimeTrendData || !Array.isArray(crimeTrendData.categories) || crimeTrendData.categories.length === 0) {
+      setCrimeTrendActiveCategories({});
+      return;
+    }
+    setCrimeTrendActiveCategories((prev) => {
+      const next = {};
+      crimeTrendData.categories.forEach((category, index) => {
+        if (typeof category !== 'string' || category === '') {
+          return;
+        }
+        if (Object.prototype.hasOwnProperty.call(prev, category)) {
+          next[category] = prev[category];
+        } else {
+          next[category] = index < 4;
+        }
+      });
+      return next;
+    });
+  }, [crimeTrendData]);
+
+  const crimeTrendCategoryColors = useMemo(() => {
+    if (!crimeTrendData || !Array.isArray(crimeTrendData.categories)) {
+      return {};
+    }
+    const colors = {};
+    crimeTrendData.categories.forEach((category, index) => {
+      if (typeof category === 'string' && category !== '') {
+        colors[category] = CRIME_CATEGORY_PALETTE[index % CRIME_CATEGORY_PALETTE.length];
+      }
+    });
+    return colors;
+  }, [crimeTrendData]);
+
+  const displayedCrimeSummary = useMemo(() => {
+    if (!crimeSummary) {
       return null;
     }
-    const zoom = Number.isFinite(crimeSummary?.mapCenter?.zoom) ? crimeSummary.mapCenter.zoom : 14;
-    return { lat, lon, zoom };
-  }, [crimeSummary, geocodeLat, geocodeLon]);
-
-  const crimeMapEmbedUrl = useMemo(() => {
-    if (!crimeMapCenter) {
-      return '';
+    if (crimeSelectedMonth === 'all') {
+      return crimeAggregatedSummary ?? crimeSummary;
     }
-    const { lat, lon, zoom } = crimeMapCenter;
-    const latFixed = Number(lat.toFixed(6));
-    const lonFixed = Number(lon.toFixed(6));
-    const clampedZoom = Number.isFinite(zoom) ? clamp(zoom, 3, 18) : 14;
-    const latDelta = 0.005 * Math.pow(2, 14 - clampedZoom);
-    const lonDelta = 0.009 * Math.pow(2, 14 - clampedZoom);
-    const south = Math.max(-90, latFixed - latDelta);
-    const north = Math.min(90, latFixed + latDelta);
-    const west = Math.max(-180, lonFixed - lonDelta);
-    const east = Math.min(180, lonFixed + lonDelta);
-    const bbox = `${west.toFixed(6)},${south.toFixed(6)},${east.toFixed(6)},${north.toFixed(6)}`;
-    const marker = `${latFixed.toFixed(6)},${lonFixed.toFixed(6)}`;
-    return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(
-      bbox
-    )}&layer=mapnik&marker=${encodeURIComponent(marker)}`;
-  }, [crimeMapCenter]);
+    if (crimeSelectedMonth && crimeMonthlySummaries[crimeSelectedMonth]) {
+      return crimeMonthlySummaries[crimeSelectedMonth];
+    }
+    if (crimeSummary.month && crimeMonthlySummaries[crimeSummary.month]) {
+      return crimeMonthlySummaries[crimeSummary.month];
+    }
+    return crimeSummary;
+  }, [crimeAggregatedSummary, crimeMonthlySummaries, crimeSelectedMonth, crimeSummary]);
+
+  const hasCrimeIncidents = crimeState.status === 'success' && Boolean(displayedCrimeSummary);
+  const crimeLoading = crimeState.status === 'loading';
+  const crimeError = crimeState.status === 'error' ? crimeState.error : '';
+  const crimeMonthLabel = displayedCrimeSummary?.monthLabel ?? '';
+  const crimePeriodDescription =
+    crimeSelectedMonth === 'all'
+      ? crimeAggregatedSummary?.rangeDescription ?? crimeMonthLabel
+      : crimeMonthLabel;
+  const crimeIncidentsCount = displayedCrimeSummary?.totalIncidents ?? 0;
+  const crimeHasRecordedIncidents = crimeIncidentsCount > 0;
+  const crimeMapCenter = useMemo(() => {
+    const fallbackCoordinates = hasUsableCoordinates(crimeLat, crimeLon)
+      ? { lat: crimeLat, lon: crimeLon }
+      : null;
+    const lat = Number.isFinite(displayedCrimeSummary?.mapCenter?.lat)
+      ? displayedCrimeSummary.mapCenter.lat
+      : fallbackCoordinates?.lat ?? null;
+    const lon = Number.isFinite(displayedCrimeSummary?.mapCenter?.lon)
+      ? displayedCrimeSummary.mapCenter.lon
+      : fallbackCoordinates?.lon ?? null;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !hasUsableCoordinates(lat, lon)) {
+      return null;
+    }
+    const zoom = Number.isFinite(displayedCrimeSummary?.mapCenter?.zoom)
+      ? displayedCrimeSummary.mapCenter.zoom
+      : 14;
+    return { lat, lon, zoom };
+  }, [crimeLat, crimeLon, displayedCrimeSummary]);
+  const crimeMapBounds = useMemo(() => {
+    const rawBounds = displayedCrimeSummary?.mapBounds;
+    if (
+      !Array.isArray(rawBounds) ||
+      rawBounds.length !== 2 ||
+      !Array.isArray(rawBounds[0]) ||
+      !Array.isArray(rawBounds[1])
+    ) {
+      return null;
+    }
+    const southLat = Number(rawBounds[0][0]);
+    const southLon = Number(rawBounds[0][1]);
+    const northLat = Number(rawBounds[1][0]);
+    const northLon = Number(rawBounds[1][1]);
+    if (
+      !Number.isFinite(southLat) ||
+      !Number.isFinite(southLon) ||
+      !Number.isFinite(northLat) ||
+      !Number.isFinite(northLon)
+    ) {
+      return null;
+    }
+    const minLat = Math.min(southLat, northLat);
+    const maxLat = Math.max(southLat, northLat);
+    const minLon = Math.min(southLon, northLon);
+    const maxLon = Math.max(southLon, northLon);
+    if (minLat === maxLat && minLon === maxLon) {
+      return [
+        [minLat - 0.0005, minLon - 0.0005],
+        [maxLat + 0.0005, maxLon + 0.0005],
+      ];
+    }
+    return [
+      [minLat, minLon],
+      [maxLat, maxLon],
+    ];
+  }, [displayedCrimeSummary]);
+
+  const crimeMapMarkers = useMemo(() => {
+    if (!displayedCrimeSummary?.mapCrimes) {
+      return [];
+    }
+    return displayedCrimeSummary.mapCrimes
+      .map((incident) => {
+        const lat = Number(incident?.lat);
+        const lon = Number(incident?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          return null;
+        }
+        return {
+          id: incident?.id ?? `${lat},${lon}`,
+          lat,
+          lon,
+          category: typeof incident?.category === 'string' ? incident.category : '',
+          street: typeof incident?.street === 'string' ? incident.street : '',
+          outcome: typeof incident?.outcome === 'string' ? incident.outcome : '',
+          month: typeof incident?.month === 'string' ? formatCrimeMonth(incident.month) : '',
+        };
+      })
+      .filter(Boolean);
+  }, [displayedCrimeSummary]);
+
+  const crimeMapKey = displayedCrimeSummary?.mapKey ?? '';
 
   const crimeMapExternalUrl = useMemo(() => {
     if (!crimeMapCenter) {
@@ -4555,6 +7467,21 @@ export default function App() {
       6
     )}#map=${mapZoom}/${lat.toFixed(6)}/${lon.toFixed(6)}`;
   }, [crimeMapCenter]);
+
+  const crimeTrendActiveKeys = useMemo(() => {
+    if (!crimeTrendData || !Array.isArray(crimeTrendData.categories)) {
+      return [];
+    }
+    return crimeTrendData.categories.filter((category) => crimeTrendActiveCategories[category] !== false);
+  }, [crimeTrendActiveCategories, crimeTrendData]);
+
+  const crimeTrendChartData = Array.isArray(crimeTrendData?.data) ? crimeTrendData.data : [];
+  const crimeFallbackMonthOption =
+    crimeAvailableMonths.find((option) => option.value === crimeDefaultMonth) ??
+    crimeAvailableMonths.find((option) => option.value !== 'all') ??
+    crimeAvailableMonths[0] ??
+    null;
+  const crimeSelectValue = crimeSelectedMonth || crimeFallbackMonthOption?.value || '';
 
   const leverageChartData = useMemo(() => {
     const price = Number(inputs.purchasePrice) || 0;
@@ -4589,11 +7516,51 @@ export default function App() {
     });
   }, [inputs]);
 
-  const hasInterestSplitData = interestSplitChartData.some(
+  const leverageDisplayData = useMemo(() => {
+    const minLtv = Number(leverageRange.min) || LEVERAGE_LTV_OPTIONS[0];
+    const maxLtv = Number(leverageRange.max) || LEVERAGE_MAX_LTV;
+    const lowerBound = Math.min(minLtv, maxLtv);
+    const upperBound = Math.max(minLtv, maxLtv);
+    return leverageChartData.filter(
+      (point) => point.ltv >= lowerBound - 1e-6 && point.ltv <= upperBound + 1e-6
+    );
+  }, [leverageChartData, leverageRange]);
+
+  const leverageDisplayTicks = useMemo(() => {
+    const minLtv = Number(leverageRange.min) || LEVERAGE_LTV_OPTIONS[0];
+    const maxLtv = Number(leverageRange.max) || LEVERAGE_MAX_LTV;
+    const lowerBound = Math.min(minLtv, maxLtv);
+    const upperBound = Math.max(minLtv, maxLtv);
+    return LEVERAGE_LTV_OPTIONS.filter(
+      (ltv) => ltv >= lowerBound - 1e-6 && ltv <= upperBound + 1e-6
+    );
+  }, [leverageRange]);
+
+  const hasInterestSplitData = interestSplitDisplayData.some(
     (point) => Math.abs(point.interestPaid) > 1e-2 || Math.abs(point.principalPaid) > 1e-2
   );
-  const hasLeverageData = leverageChartData.some(
+  const hasLeverageData = leverageDisplayData.some(
     (point) => Number.isFinite(point.irr) || Number.isFinite(point.roi)
+  );
+
+  const isCompanyBuyer = inputs.buyerType === 'company';
+  const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
+  const rentalTaxCumulativeLabel = isCompanyBuyer
+    ? 'Corporation tax on rent (cumulative)'
+    : 'Rental income tax (cumulative)';
+  const propertyNetAfterTaxLabel = isCompanyBuyer
+    ? 'Property net after corporation tax'
+    : 'Property net after tax';
+
+  const leverageMetricOptions = useMemo(
+    () => [
+      { key: 'irr', label: 'IRR' },
+      { key: 'roi', label: 'Total ROI' },
+      { key: 'propertyNetAfterTax', label: propertyNetAfterTaxLabel },
+      { key: 'efficiency', label: 'IRR × net wealth' },
+      { key: 'irrHurdle', label: 'IRR hurdle' },
+    ],
+    [propertyNetAfterTaxLabel]
   );
 
   useEffect(() => {
@@ -5026,14 +7993,6 @@ export default function App() {
     setChartFocusLocked(false);
   }, []);
 
-  const isCompanyBuyer = inputs.buyerType === 'company';
-  const rentalTaxLabel = isCompanyBuyer ? 'Corporation tax on rent' : 'Income tax on rent';
-  const rentalTaxCumulativeLabel = isCompanyBuyer
-    ? 'Corporation tax on rent (cumulative)'
-    : 'Rental income tax (cumulative)';
-  const propertyNetAfterTaxLabel = isCompanyBuyer
-    ? 'Property net after corporation tax'
-    : 'Property net after tax';
   const verifyingAuth = authStatus === 'verifying';
   const shouldShowAuthOverlay = remoteEnabled && (authStatus === 'unauthorized' || verifyingAuth);
   const selectedScenario = useMemo(
@@ -5272,6 +8231,7 @@ export default function App() {
     const depositValue = Number(equity.deposit) || 0;
     const stampDutyValue = Number(equity.stampDuty) || 0;
     const closingCostsValue = Number(equity.otherClosing) || 0;
+    const packageFeeValue = Number(equity.packageFees) || 0;
     const renovationValue = Number(inputs.renovationCost) || 0;
     const bridgingAmountValue = Number(equity.bridgingLoanAmount) || 0;
     const totalCashRequiredValue = Number(equity.cashIn) || 0;
@@ -5320,7 +8280,9 @@ export default function App() {
     const roiValue = totalCashRequiredValue > 0 ? propertyNetValue / totalCashRequiredValue - 1 : 0;
     const efficiencyValue =
       Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue) ? irrValue * propertyNetAfterTaxValue : 0;
-    const appreciationRateValue = Number(inputs.annualAppreciation) || 0;
+    const appreciationRateValue = Number.isFinite(effectiveAnnualAppreciation)
+      ? effectiveAnnualAppreciation
+      : 0;
     const rentGrowthRateValue = Number(inputs.rentGrowth) || 0;
     const scoreValue = Number(equity.score) || 0;
     const scoreMaxValue = Number.isFinite(equity.scoreMax) ? Number(equity.scoreMax) : TOTAL_SCORE_MAX;
@@ -5330,6 +8292,7 @@ export default function App() {
       ltv: { value: currentLtv, formatted: formatPercent(currentLtv) },
       stampDuty: { value: stampDutyValue, formatted: currency(stampDutyValue) },
       closingCosts: { value: closingCostsValue, formatted: currency(closingCostsValue) },
+      mortgagePackageFee: { value: packageFeeValue, formatted: currency(packageFeeValue) },
       renovationCost: { value: renovationValue, formatted: currency(renovationValue) },
       bridgingLoanAmount: { value: bridgingAmountValue, formatted: currency(bridgingAmountValue) },
       netCashIn: { value: netCashInValue, formatted: currency(netCashInValue) },
@@ -5389,6 +8352,7 @@ export default function App() {
     equity.deposit,
     equity.stampDuty,
     equity.otherClosing,
+    equity.packageFees,
     inputs.renovationCost,
     equity.bridgingLoanAmount,
     equity.cashIn,
@@ -5429,7 +8393,7 @@ export default function App() {
     equity.annualPrincipal,
     equity.annualDebtService,
     inputs.depositPct,
-    inputs.annualAppreciation,
+    effectiveAnnualAppreciation,
     inputs.rentGrowth,
     propertyNetAfterTaxLabel,
     rentalTaxLabel,
@@ -5447,6 +8411,18 @@ export default function App() {
     const afterTaxCashValue = Number(equity.cashflowYear1AfterTax);
     const discountRateValue = Number(inputs.discountRate);
     const scoreValueRaw = Number(equity.score);
+    const capRateValue = Number(equity.cap);
+    const dscrValue = Number(equity.dscr);
+    const propertyGrowth20YearValue = Number(equity.propertyGrowth20Year);
+    const propertyGrowthWindowRateValue = Number(equity.propertyGrowthWindowRate);
+    const propertyGrowthWindowYearsValue = Number(equity.propertyGrowthWindowYears);
+    const propertyTypeName =
+      typeof equity.propertyTypeLabel === 'string' && equity.propertyTypeLabel.trim() !== ''
+        ? equity.propertyTypeLabel
+        : propertyTypeLabel;
+    const localCrimeDensityValue = Number(equity.localCrimeIncidentDensity);
+    const crimeMonthlyIncidentsValue = Number(equity.localCrimeMonthlyIncidents);
+    const crimeAreaSqKmValue = Number(equity.crimeSearchAreaSqKm);
     const scoreMax = Number.isFinite(equity.scoreMax) ? Number(equity.scoreMax) : TOTAL_SCORE_MAX;
     const scoreComponents = equity.scoreComponents || {};
     const hasSignals =
@@ -5516,6 +8492,35 @@ export default function App() {
       sentences.push(`Discounting cash flows at ${rateText} yields an NPV of ${currency(npvValue)}, ${direction}.`);
     }
 
+    if (Number.isFinite(propertyGrowth20YearValue)) {
+      const windowRateText = Number.isFinite(propertyGrowthWindowRateValue)
+        ? ` (recent ${
+            Number.isFinite(propertyGrowthWindowYearsValue) && propertyGrowthWindowYearsValue > 0
+              ? propertyGrowthWindowYearsValue
+              : sanitizedHistoricalWindow
+          }-year CAGR ${formatPercent(propertyGrowthWindowRateValue)})`
+        : '';
+      sentences.push(
+        `${propertyTypeName} prices have compounded at ${formatPercent(
+          propertyGrowth20YearValue
+        )} annually over the past 20 years${windowRateText}.`
+      );
+    }
+
+    if (Number.isFinite(localCrimeDensityValue)) {
+      const densityLabel = formatCrimeDensityValue(localCrimeDensityValue);
+      const areaLabel = Number.isFinite(crimeAreaSqKmValue)
+        ? crimeAreaSqKmValue > 10
+          ? crimeAreaSqKmValue.toFixed(0)
+          : crimeAreaSqKmValue.toFixed(1)
+        : '';
+      const incidentsLabel = Number.isFinite(crimeMonthlyIncidentsValue)
+        ? `${crimeMonthlyIncidentsValue.toFixed(crimeMonthlyIncidentsValue >= 10 ? 0 : 1)} incidents`
+        : 'police-reported incidents';
+      const areaSuffix = areaLabel ? ` across ~${areaLabel} km²` : '';
+      sentences.push(`Latest month logged about ${incidentsLabel} (~${densityLabel} per km²${areaSuffix}).`);
+    }
+
     sentences.push(
       `Overall these signals point to a ${ratingLabel} profile with an investment score of ${Math.round(
         scoreValue
@@ -5579,7 +8584,58 @@ export default function App() {
       });
     }
 
-    const visuals = ['irr', 'irrHurdle', 'cashOnCash', 'cashflow', 'cashInvested', 'npv']
+    const capComponent = componentFor('capRate');
+    if (Number.isFinite(capRateValue)) {
+      chips.push({
+        label: 'Cap rate',
+        value: capComponent?.displayValue ?? formatPercent(capRateValue),
+        className: toneToClass(capComponent?.tone ?? 'neutral'),
+      });
+    }
+
+    const dscrComponent = componentFor('dscr');
+    if (Number.isFinite(dscrValue)) {
+      chips.push({
+        label: 'DSCR',
+        value: dscrComponent?.displayValue ?? dscrValue.toFixed(2),
+        className: toneToClass(
+          dscrComponent?.tone ?? (dscrValue >= 1.25 ? 'positive' : dscrValue >= 1 ? 'warning' : 'negative')
+        ),
+      });
+    }
+
+    const growthComponent = componentFor('propertyGrowth');
+    if (Number.isFinite(propertyGrowth20YearValue)) {
+      chips.push({
+        label: '20-yr growth',
+        value: growthComponent?.displayValue ?? formatPercent(propertyGrowth20YearValue),
+        className: toneToClass(growthComponent?.tone ?? 'neutral'),
+      });
+    }
+
+    const crimeComponent = componentFor('crimeSafety');
+    if (Number.isFinite(localCrimeDensityValue)) {
+      const displayDensity =
+        crimeComponent?.displayValue ?? `${formatCrimeDensityValue(localCrimeDensityValue)} /km²`;
+      chips.push({
+        label: 'Crime density',
+        value: displayDensity,
+        className: toneToClass(crimeComponent?.tone ?? 'neutral'),
+      });
+    }
+
+    const visuals = [
+      'irr',
+      'irrHurdle',
+      'cashOnCash',
+      'cashflow',
+      'cashInvested',
+      'npv',
+      'capRate',
+      'dscr',
+      'propertyGrowth',
+      'crimeSafety',
+    ]
       .map((key) => {
         const component = componentFor(key);
         if (!component) {
@@ -5613,7 +8669,16 @@ export default function App() {
       chips,
       visuals,
     };
-  }, [equity, equity.score, equity.scoreComponents, equity.scoreMax, inputs.discountRate, inputs.irrHurdle]);
+  }, [
+    equity,
+    equity.score,
+    equity.scoreComponents,
+    equity.scoreMax,
+    inputs.discountRate,
+    inputs.irrHurdle,
+    propertyTypeLabel,
+    sanitizedHistoricalWindow,
+  ]);
 
   const knowledgeMetricList = useMemo(
     () =>
@@ -5867,6 +8932,49 @@ export default function App() {
     return rows;
   }, [equity, exitYearCount]);
 
+  const cashflowYearOptions = useMemo(() => {
+    const years = cashflowTableRows
+      .map((row) => Number(row?.year) || 0)
+      .filter((year) => year > 0);
+    const uniqueYears = Array.from(new Set(years)).sort((a, b) => a - b);
+    return uniqueYears.length > 0 ? uniqueYears : [1];
+  }, [cashflowTableRows]);
+
+  useEffect(() => {
+    if (!cashflowYearOptions.length) {
+      return;
+    }
+    const minYear = cashflowYearOptions[0];
+    const maxYear = cashflowYearOptions[cashflowYearOptions.length - 1];
+    setCashflowDetailRange((prev) => {
+      const nextStart = clamp(Number(prev.start) || minYear, minYear, maxYear);
+      const nextEnd = clamp(Number(prev.end) || maxYear, nextStart, maxYear);
+      if (nextStart === prev.start && nextEnd === prev.end) {
+        return prev;
+      }
+      return { start: nextStart, end: nextEnd };
+    });
+  }, [cashflowYearOptions]);
+
+  const cashflowFilteredRows = useMemo(() => {
+    const startYear = Number(cashflowDetailRange.start) || cashflowYearOptions[0] || 1;
+    const endYear = Number(cashflowDetailRange.end) || startYear;
+    return cashflowTableRows.filter((row) => {
+      const year = Number(row?.year);
+      if (!Number.isFinite(year) || year < startYear || year > endYear) {
+        return false;
+      }
+      const afterTax = Number(row?.cashAfterTax) || 0;
+      if (cashflowDetailView === 'positive') {
+        return afterTax > 0;
+      }
+      if (cashflowDetailView === 'negative') {
+        return afterTax < 0;
+      }
+      return true;
+    });
+  }, [cashflowDetailRange, cashflowDetailView, cashflowTableRows, cashflowYearOptions]);
+
   const handlePrint = () => {
     if (typeof window === 'undefined') return;
     setShowLoadPanel(false);
@@ -5940,7 +9048,28 @@ export default function App() {
       `Loan: ${inputs.loanType} over ${inputs.mortgageYears} years at ${formatPercent(inputs.interestRate)}`,
       `Rent: ${currency(inputs.monthlyRent)} /mo; vacancy: ${formatPercent(inputs.vacancyPct)}; management: ${formatPercent(inputs.mgmtPct)}; repairs: ${formatPercent(inputs.repairsPct)}`,
       `Insurance: ${currency(inputs.insurancePerYear)}; other OpEx: ${currency(inputs.otherOpexPerYear)}`,
-      `Growth assumptions: appreciation ${formatPercent(inputs.annualAppreciation)}, rent growth ${formatPercent(inputs.rentGrowth)}, index fund ${formatPercent(inputs.indexFundGrowth)}`,
+      `Growth assumptions: appreciation ${formatPercent(effectiveAnnualAppreciation)}, rent growth ${formatPercent(inputs.rentGrowth)}, index fund ${formatPercent(inputs.indexFundGrowth)}`,
+      `Property type: ${propertyTypeLabel}; UK 20-year CAGR ${
+        propertyGrowth20YearValue !== null ? formatPercent(propertyGrowth20YearValue) : 'n/a'
+      }; local crime ${
+        Number.isFinite(localCrimeIncidentDensity)
+          ? `${formatCrimeDensityValue(localCrimeIncidentDensity)} per km²`
+          : 'n/a'
+      }${
+        Number.isFinite(localCrimeMonthlyIncidents)
+          ? ` (~${localCrimeMonthlyIncidents.toFixed(
+              localCrimeMonthlyIncidents >= 10 ? 0 : 1
+            )} incidents/mo${
+              Number.isFinite(crimeSearchAreaSqKm) && crimeSearchAreaSqKm > 0
+                ? ` across ~${
+                    crimeSearchAreaSqKm > 10
+                      ? crimeSearchAreaSqKm.toFixed(0)
+                      : crimeSearchAreaSqKm.toFixed(1)
+                  } km²`
+                : ''
+            })`
+          : ''
+      }`,
       `Exit year: ${inputs.exitYear}; selling costs: ${formatPercent(inputs.sellingCostsPct)}; discount rate: ${formatPercent(inputs.discountRate)}`,
       `Household incomes: ${currency(inputs.incomePerson1)} (${share1}%) and ${currency(inputs.incomePerson2)} (${share2}%)`,
       `Reinvest after-tax cash flow: ${inputs.reinvestIncome ? `${formatPercent(inputs.reinvestPct)} of after-tax cash` : 'No reinvestment'}`,
@@ -5975,6 +9104,12 @@ export default function App() {
           propertyNetWealthAtExit: equity.propertyNetWealthAtExit,
           propertyNetWealthAfterTax: equity.propertyNetWealthAfterTax,
           exitYear: equity.exitYear,
+          propertyType: equity.propertyTypeLabel || propertyTypeLabel,
+          propertyGrowth20Year: equity.propertyGrowth20Year,
+          propertyGrowthWindowRate: equity.propertyGrowthWindowRate,
+          crimeIncidentDensity: equity.localCrimeIncidentDensity,
+          crimeMonthlyIncidents: equity.localCrimeMonthlyIncidents,
+          crimeSearchAreaSqKm: equity.crimeSearchAreaSqKm,
           indexFundGrowth: inputs.indexFundGrowth,
         },
         extraSummary,
@@ -6229,6 +9364,89 @@ export default function App() {
     window.URL.revokeObjectURL(url);
   };
 
+  const handlePendingExtraSettingChange = (key, value, decimals = 4) => {
+    if (!EXTRA_SETTING_KEYS.includes(key)) {
+      return;
+    }
+    const defaultValue = EXTRA_SETTINGS_DEFAULTS[key];
+    let nextValue = defaultValue;
+    if (typeof defaultValue === 'boolean') {
+      nextValue = Boolean(value);
+    } else {
+      const numeric = Number(value);
+      nextValue = Number.isFinite(numeric) ? roundTo(numeric, decimals) : defaultValue;
+    }
+    setPendingExtraSettings((prev = {}) => {
+      if (prev[key] === nextValue) {
+        return prev;
+      }
+      return { ...prev, [key]: nextValue };
+    });
+    setInputs((prev) => {
+      if (prev[key] === nextValue) {
+        return prev;
+      }
+      return { ...prev, [key]: nextValue };
+    });
+  };
+
+  const handleSaveExtraSettings = () => {
+    if (!extraSettingsDirty) {
+      return;
+    }
+    const defaults = getDefaultExtraSettings();
+    const payload = {};
+    EXTRA_SETTING_KEYS.forEach((key) => {
+      const defaultValue = defaults[key];
+      const pendingValue = pendingExtraSettings?.[key];
+      if (typeof defaultValue === 'boolean') {
+        if (typeof pendingValue === 'boolean') {
+          payload[key] = pendingValue;
+        } else if (typeof pendingValue === 'string') {
+          const lowered = pendingValue.toLowerCase();
+          if (lowered === 'true') {
+            payload[key] = true;
+          } else if (lowered === 'false') {
+            payload[key] = false;
+          } else {
+            payload[key] = defaultValue;
+          }
+        } else if (pendingValue === 1 || pendingValue === 0) {
+          payload[key] = Boolean(pendingValue);
+        } else if (pendingValue === undefined) {
+          payload[key] = defaultValue;
+        } else {
+          payload[key] = Boolean(pendingValue);
+        }
+      } else {
+        const value = Number(pendingValue);
+        payload[key] = Number.isFinite(value) ? roundTo(value, 6) : defaultValue;
+      }
+    });
+    setExtraSettings(payload);
+  };
+
+  const extraSettingsDirty = useMemo(() => {
+    const defaults = getDefaultExtraSettings();
+    return EXTRA_SETTING_KEYS.some((key) => {
+      const defaultValue = defaults[key];
+      if (typeof defaultValue === 'boolean') {
+        const pending =
+          typeof pendingExtraSettings?.[key] === 'boolean'
+            ? pendingExtraSettings[key]
+            : defaultValue;
+        const saved =
+          typeof extraSettings?.[key] === 'boolean' ? extraSettings[key] : defaultValue;
+        return pending !== saved;
+      }
+      const pendingValue = Number(pendingExtraSettings?.[key]);
+      const savedValue = Number(extraSettings?.[key]);
+      const pending = Number.isFinite(pendingValue) ? pendingValue : defaultValue;
+      const saved = Number.isFinite(savedValue) ? savedValue : defaultValue;
+      return Math.abs(pending - saved) > 1e-6;
+    });
+  }, [extraSettings, pendingExtraSettings]);
+
   const onNum = (key, value, decimals = 2) => {
     const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
     if (EXTRA_SETTING_KEYS.includes(key)) {
@@ -6299,6 +9517,268 @@ export default function App() {
     }));
   };
 
+  const handleLeverageRangeChange = (key, rawValue) => {
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue)) {
+      return;
+    }
+    setLeverageRange((prev) => {
+      const minBound = LEVERAGE_LTV_OPTIONS[0];
+      const maxBound = LEVERAGE_MAX_LTV;
+      if (key === 'min') {
+        const nextMin = clamp(numericValue, minBound, maxBound);
+        const nextMax = clamp(Number(prev.max) || maxBound, nextMin, maxBound);
+        if (nextMin === prev.min && nextMax === prev.max) {
+          return prev;
+        }
+        return { min: nextMin, max: nextMax };
+      }
+      if (key === 'max') {
+        const nextMax = clamp(numericValue, minBound, maxBound);
+        const nextMin = clamp(Number(prev.min) || minBound, minBound, nextMax);
+        if (nextMin === prev.min && nextMax === prev.max) {
+          return prev;
+        }
+        return { min: nextMin, max: nextMax };
+      }
+      return prev;
+    });
+  };
+
+  const handleInterestSplitRangeChange = (key, rawValue) => {
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue) || !interestSplitYearOptions.length) {
+      return;
+    }
+    const minYear = interestSplitYearOptions[0];
+    const maxYear = interestSplitYearOptions[interestSplitYearOptions.length - 1];
+    setInterestSplitRange((prev) => {
+      if (key === 'start') {
+        const nextStart = clamp(numericValue, minYear, maxYear);
+        const nextEnd = clamp(Number(prev.end) || nextStart, nextStart, maxYear);
+        if (nextStart === prev.start && nextEnd === prev.end) {
+          return prev;
+        }
+        return { start: nextStart, end: nextEnd };
+      }
+      if (key === 'end') {
+        const nextEnd = clamp(numericValue, minYear, maxYear);
+        const nextStart = clamp(Number(prev.start) || minYear, minYear, nextEnd);
+        if (nextStart === prev.start && nextEnd === prev.end) {
+          return prev;
+        }
+        return { start: nextStart, end: nextEnd };
+      }
+      return prev;
+    });
+  };
+
+  const handleCashflowRangeChange = (key, rawValue) => {
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue) || !cashflowYearOptions.length) {
+      return;
+    }
+    const minYear = cashflowYearOptions[0];
+    const maxYear = cashflowYearOptions[cashflowYearOptions.length - 1];
+    setCashflowDetailRange((prev) => {
+      if (key === 'start') {
+        const nextStart = clamp(numericValue, minYear, maxYear);
+        const nextEnd = clamp(Number(prev.end) || nextStart, nextStart, maxYear);
+        if (nextStart === prev.start && nextEnd === prev.end) {
+          return prev;
+        }
+        return { start: nextStart, end: nextEnd };
+      }
+      if (key === 'end') {
+        const nextEnd = clamp(numericValue, minYear, maxYear);
+        const nextStart = clamp(Number(prev.start) || minYear, minYear, nextEnd);
+        if (nextStart === prev.start && nextEnd === prev.end) {
+          return prev;
+        }
+        return { start: nextStart, end: nextEnd };
+      }
+      return prev;
+    });
+  };
+
+  const handleCashflowViewChange = (value) => {
+    if (typeof value !== 'string') {
+      return;
+    }
+    setCashflowDetailView((prev) => (prev === value ? prev : value));
+  };
+
+  const renderInterestSplitChart = ({
+    heightClass = 'h-72 w-full',
+    fallbackMessage = 'Adjust the mortgage assumptions or expand the analysis to customise the interest and principal view.',
+  } = {}) => (
+    <div className={heightClass}>
+      {hasInterestSplitData ? (
+        <ResponsiveContainer>
+          <AreaChart data={interestSplitDisplayData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
+            <YAxis tickFormatter={(value) => currencyNoPence(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
+            <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+            <Legend />
+            <Area
+              type="monotone"
+              dataKey="interestPaid"
+              name="Interest"
+              stackId="payments"
+              stroke="#f97316"
+              fill="rgba(249,115,22,0.25)"
+              strokeWidth={2}
+              isAnimationActive={false}
+            />
+            <Area
+              type="monotone"
+              dataKey="principalPaid"
+              name="Principal"
+              stackId="payments"
+              stroke="#22c55e"
+              fill="rgba(34,197,94,0.3)"
+              strokeWidth={2}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      ) : (
+        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+          {fallbackMessage}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderLeverageChart = ({
+    heightClass = 'h-72 w-full',
+    fallbackMessage = 'Adjust the purchase inputs or expand the analysis to explore leverage outcomes in more detail.',
+  } = {}) => (
+    <div className={heightClass}>
+      {hasLeverageData ? (
+        <ResponsiveContainer>
+          <LineChart data={leverageDisplayData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              dataKey="ltv"
+              tickFormatter={(value) => formatPercent(value, 0)}
+              tick={{ fontSize: 11, fill: '#475569' }}
+              domain={[0.1, 0.95]}
+              type="number"
+              ticks={leverageDisplayTicks}
+            />
+            <YAxis
+              yAxisId="left"
+              tickFormatter={(value) => formatPercent(value, 0)}
+              tick={{ fontSize: 11, fill: '#475569' }}
+              width={80}
+            />
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tickFormatter={(value) => currencyThousands(value)}
+              tick={{ fontSize: 11, fill: '#475569' }}
+              width={72}
+            />
+            <Tooltip
+              formatter={(value, name, { dataKey }) => {
+                if (dataKey === 'propertyNetAfterTax' || dataKey === 'efficiency') {
+                  return [currency(value), name];
+                }
+                return [formatPercent(value), name];
+              }}
+              labelFormatter={(label) => `LTV ${formatPercent(label)}`}
+            />
+            <Legend
+              content={(props) => (
+                <ChartLegend
+                  {...props}
+                  activeSeries={leverageSeriesActive}
+                  onToggle={toggleLeverageSeries}
+                />
+              )}
+            />
+            {LEVERAGE_MAX_LTV > LEVERAGE_SAFE_MAX_LTV ? (
+              <ReferenceArea
+                x1={LEVERAGE_SAFE_MAX_LTV}
+                x2={LEVERAGE_MAX_LTV}
+                yAxisId="left"
+                y1="dataMin"
+                y2="dataMax"
+                strokeOpacity={0}
+                fill="#f1f5f9"
+                fillOpacity={0.35}
+              />
+            ) : null}
+            <RechartsLine
+              type="monotone"
+              dataKey="irr"
+              name="IRR"
+              yAxisId="left"
+              stroke={SERIES_COLORS.irrSeries}
+              strokeWidth={2}
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.irr}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="roi"
+              name="Total ROI"
+              yAxisId="left"
+              stroke="#0ea5e9"
+              strokeWidth={2}
+              strokeDasharray="4 2"
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.roi}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="irrHurdle"
+              name="IRR hurdle"
+              yAxisId="left"
+              stroke={SERIES_COLORS.irrHurdle}
+              strokeWidth={2}
+              strokeDasharray="4 4"
+              dot={false}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.irrHurdle}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="propertyNetAfterTax"
+              name={propertyNetAfterTaxLabel}
+              yAxisId="right"
+              stroke={SERIES_COLORS.propertyNetAfterTax}
+              strokeWidth={2}
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.propertyNetAfterTax}
+            />
+            <RechartsLine
+              type="monotone"
+              dataKey="efficiency"
+              name="IRR × net wealth"
+              yAxisId="right"
+              stroke="#8b5cf6"
+              strokeWidth={2}
+              strokeDasharray="6 3"
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+              hide={!leverageSeriesActive.efficiency}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      ) : (
+        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
+          {fallbackMessage}
+        </div>
+      )}
+    </div>
+  );
+
   const handleScenarioSort = (key) => {
     setScenarioSort((prev) => {
       if (prev.key === key) {
@@ -6325,6 +9805,25 @@ export default function App() {
           {icon}
         </span>
       </button>
+    );
+  };
+
+  const extraSettingPctInput = (key, label, step = 0.005) => {
+    const rawValue = pendingExtraSettings?.[key];
+    const value = Number.isFinite(rawValue) ? rawValue : 0;
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-medium text-slate-600">{label}</label>
+        <input
+          type="number"
+          value={Number.isFinite(value) ? roundTo(value * 100, 2) : ''}
+          onChange={(event) =>
+            handlePendingExtraSettingChange(key, Number(event.target.value) / 100, 4)
+          }
+          step={step * 100}
+          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+        />
+      </div>
     );
   };
 
@@ -6941,6 +10440,13 @@ export default function App() {
                     <li>Year-one after-tax cash flow (up to {SCORE_COMPONENT_CONFIG.cashflow.maxPoints} points).</li>
                     <li>Cash invested efficiency (up to {SCORE_COMPONENT_CONFIG.cashInvested.maxPoints} points).</li>
                     <li>Discounted NPV contribution (up to {SCORE_COMPONENT_CONFIG.npv.maxPoints} points).</li>
+                    <li>Cap rate resilience (up to {SCORE_COMPONENT_CONFIG.capRate.maxPoints} points).</li>
+                    <li>Debt service coverage ratio (up to {SCORE_COMPONENT_CONFIG.dscr.maxPoints} points).</li>
+                    <li>20-year market growth tailwind (up to {SCORE_COMPONENT_CONFIG.propertyGrowth.maxPoints} points).</li>
+                    <li>
+                      Crime safety based on police-reported incident density (up to{' '}
+                      {SCORE_COMPONENT_CONFIG.crimeSafety.maxPoints} points).
+                    </li>
                   </ul>
                   <p className="mt-2 text-slate-500">
                     Points are summed across the components and clipped between 0 and {TOTAL_SCORE_MAX}.
@@ -7000,6 +10506,40 @@ export default function App() {
                 >
                   <div className="grid gap-2 md:grid-cols-2">
                     <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
+                    <div className="md:col-span-2">
+                      <label className="text-xs font-medium text-slate-600">Property type</label>
+                      <select
+                        value={propertyTypeValue}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            propertyType: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+                      >
+                        {PROPERTY_TYPE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {propertyGrowthLoading
+                          ? 'Loading market data…'
+                          : propertyGrowthError
+                          ? `Market data unavailable: ${propertyGrowthError}`
+                          : propertyGrowth20YearValue !== null
+                          ? `${propertyGrowthRegionSummary || 'Market data'}${
+                              propertyGrowthLatestLabel ? ` (${propertyGrowthLatestLabel})` : ''
+                            } 20-year CAGR: ${formatPercent(propertyGrowth20YearValue)}${
+                              propertyGrowthWindowRateValue !== null
+                                ? ` · ${sanitizedHistoricalWindow}-year CAGR: ${formatPercent(propertyGrowthWindowRateValue)}`
+                                : ''
+                            }${propertyGrowthLatestPriceLabel ? ` · Latest avg price ${propertyGrowthLatestPriceLabel}` : ''}.`
+                          : 'Historical growth data not available for this property type.'}
+                      </p>
+                    </div>
                     <div>{stepperInput('bedrooms', 'Bedrooms', { min: 0, step: 1 })}</div>
                     <div>{stepperInput('bathrooms', 'Bathrooms', { min: 0, step: 1 })}</div>
                     <div className="flex flex-col gap-1 md:col-span-2">
@@ -7218,8 +10758,9 @@ export default function App() {
                   {moneyInput('purchasePrice', 'Purchase price (£)')}
                   {pctInput('depositPct', 'Deposit %')}
                   {pctInput('closingCostsPct', 'Other closing costs %')}
-                  {moneyInput('renovationCost', 'Renovation (upfront) £', 500)}
                   {pctInput('interestRate', 'Interest rate (APR) %', 0.001)}
+                  {moneyInput('renovationCost', 'Renovation (upfront) £', 500)}
+                  {moneyInput('mortgagePackageFee', 'Mortgage fee (£)', 100)}
                   {smallInput('mortgageYears', 'Mortgage term (years)')}
 
                   <div className="col-span-2">
@@ -7287,9 +10828,65 @@ export default function App() {
                   {pctInput('repairsPct', 'Repairs/CapEx %')}
                   {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
                   {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
-                  {pctInput('annualAppreciation', 'Appreciation %')}
+                  <div className="col-span-2 rounded-xl border border-slate-200 p-3">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-slate-600">Appreciation %</label>
+                        <input
+                          type="number"
+                          value={Number.isFinite(manualAppreciationRate) ? roundTo(manualAppreciationRate * 100, 2) : ''}
+                          onChange={(event) => onNum('annualAppreciation', Number(event.target.value) / 100, 4)}
+                          step={0.25}
+                          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+                          disabled={historicalToggleChecked}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-slate-600">Historical window</label>
+                        <select
+                          value={sanitizedHistoricalWindow}
+                          onChange={(event) =>
+                            setInputs((prev) => ({
+                              ...prev,
+                              historicalAppreciationWindow: Number(event.target.value) || DEFAULT_APPRECIATION_WINDOW,
+                            }))
+                          }
+                          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+                          disabled={propertyGrowthLoading}
+                        >
+                          {PROPERTY_APPRECIATION_WINDOWS.map((years) => (
+                            <option key={years} value={years}>
+                              {years} year{years === 1 ? '' : 's'} average
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <label className="mt-3 flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={historicalToggleChecked}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            useHistoricalAppreciation: event.target.checked,
+                          }))
+                        }
+                        disabled={historicalToggleDisabled}
+                      />
+                      <span>Use UK {sanitizedHistoricalWindow}-year average</span>
+                    </label>
+                    {propertyGrowthLoading || propertyGrowthError || propertyGrowthWindowRateValue === null ? (
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {propertyGrowthLoading
+                          ? 'Loading appreciation averages…'
+                          : propertyGrowthError
+                          ? `Cannot apply historical average: ${propertyGrowthError}`
+                          : 'Historical data unavailable for the selected window.'}
+                      </p>
+                    ) : null}
+                  </div>
                   {pctInput('rentGrowth', 'Rent growth %')}
-                  {pctInput('indexFundGrowth', 'Index fund growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
@@ -7304,7 +10901,7 @@ export default function App() {
                           }))
                         }
                       />
-                      <span>Reinvest after-tax cash flow into index fund</span>
+                      <span>Send after-tax cash to index fund</span>
                     </label>
                     {inputs.reinvestIncome && (
                       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 sm:items-center">
@@ -7323,9 +10920,47 @@ export default function App() {
                   collapsed={collapsedSections.extraSettings}
                   onToggle={() => toggleSection('extraSettings')}
                 >
-                  <div className="grid grid-cols-2 gap-2">
-                    {pctInput('discountRate', 'Discount rate %', 0.001)}
-                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
+                    {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                    {extraSettingPctInput('indexFundGrowth', 'Index fund growth %')}
+                    <div className="sm:col-span-2 rounded-xl border border-slate-200 p-3">
+                      <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(pendingExtraSettings?.deductOperatingExpenses)}
+                          onChange={(event) =>
+                            handlePendingExtraSettingChange(
+                              'deductOperatingExpenses',
+                              event.target.checked
+                            )
+                          }
+                        />
+                        <span>Treat operating expenses as tax deductible</span>
+                      </label>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        When enabled, annual operating costs reduce taxable rental profit before
+                        calculating income or corporation tax.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-col gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-[11px] text-slate-600">
+                      Save to apply these assumptions across every scenario.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleSaveExtraSettings}
+                      disabled={!extraSettingsDirty}
+                      aria-disabled={!extraSettingsDirty}
+                      className={`inline-flex items-center justify-center rounded-full px-3 py-1 text-xs font-semibold transition ${
+                        extraSettingsDirty
+                          ? 'bg-indigo-600 text-white hover:bg-indigo-500'
+                          : 'cursor-not-allowed bg-slate-200 text-slate-500'
+                      }`}
+                    >
+                      Save global settings
+                    </button>
                   </div>
                 </CollapsibleSection>
 
@@ -7352,39 +10987,37 @@ export default function App() {
                   knowledgeKey="closingCosts"
                 />
                 <Line
+                  label="Mortgage fee"
+                  value={currency(equity.packageFees)}
+                  knowledgeKey="mortgagePackageFee"
+                />
+                <Line
                   label="Renovation (upfront)"
                   value={currency(inputs.renovationCost)}
                   knowledgeKey="renovationCost"
                 />
-                {equity.bridgingLoanAmount > 0 ? (
-                  <Line
-                    label="Bridging loan (deposit financed)"
-                    value={currency(-equity.bridgingLoanAmount)}
-                    knowledgeKey="bridgingLoanAmount"
-                  />
-                ) : null}
                 <hr className="my-2" />
-                <Line
-                  label={
-                    equity.bridgingLoanAmount > 0
-                      ? 'Net cash in (after bridging)'
-                      : 'Total cash in'
-                  }
-                  value={currency(
-                    Number.isFinite(equity.initialCashOutlay)
-                      ? equity.initialCashOutlay
-                      : equity.cashIn
-                  )}
-                  bold
-                  knowledgeKey="netCashIn"
-                />
                 {equity.bridgingLoanAmount > 0 ? (
+                  <>
+                    <Line
+                      label="Total cash required"
+                      value={currency(equity.cashIn)}
+                      knowledgeKey="totalCashRequired"
+                    />
+                    <Line
+                      label="Bridging loan"
+                      value={currency(equity.bridgingLoanAmount)}
+                      knowledgeKey="bridgingLoanAmount"
+                    />
+                  </>
+                ) : (
                   <Line
-                    label="Total cash required"
+                    label="Total cash in"
                     value={currency(equity.cashIn)}
-                    knowledgeKey="totalCashRequired"
+                    bold
+                    knowledgeKey="netCashIn"
                   />
-                ) : null}
+                )}
               </SummaryCard>
 
               <SummaryCard
@@ -7602,15 +11235,39 @@ export default function App() {
                     knowledgeKey="wealthTrajectory"
                   />
                 </div>
-                {!collapsedSections.wealthTrajectory ? (
+                {showChartModal ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowChartModal(false)}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    title="Close wealth trajectory analysis"
+                  >
+                    <span>Close</span>
+                  </button>
+                ) : (
                   <button
                     type="button"
                     onClick={() => setShowChartModal(true)}
-                    className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    title="Expand wealth trajectory analysis"
                   >
-                    Expand chart
+                    <span>Expand</span>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      className="h-3 w-3"
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                    </svg>
                   </button>
-                ) : null}
+                )}
               </div>
               {!collapsedSections.wealthTrajectory ? (
                 <>
@@ -7744,17 +11401,41 @@ export default function App() {
                       knowledgeKey="rateTrends"
                     />
                   </div>
-                  {!collapsedSections.rateTrends ? (
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    {showRatesModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowRatesModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close return ratio analysis"
+                      >
+                        <span>Close</span>
+                      </button>
+                    ) : (
                       <button
                         type="button"
                         onClick={() => setShowRatesModal(true)}
-                        className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand return ratio analysis"
                       >
-                        Expand chart
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
                       </button>
-                    </div>
-                  ) : null}
+                    )}
+                  </div>
                 </div>
                 {!collapsedSections.rateTrends ? (
                   <>
@@ -7888,17 +11569,41 @@ export default function App() {
                       knowledgeKey="npv"
                     />
                   </div>
-                  {!collapsedSections.npvTimeline ? (
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    {showNpvModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowNpvModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close NPV analysis"
+                      >
+                        <span>Close</span>
+                      </button>
+                    ) : (
                       <button
                         type="button"
                         onClick={() => setShowNpvModal(true)}
-                        className="no-print hidden items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 sm:inline-flex"
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand NPV analysis"
                       >
-                        Expand chart
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
                       </button>
-                    </div>
-                  ) : null}
+                    )}
+                  </div>
                 </div>
                 {!collapsedSections.npvTimeline ? (
                   <>
@@ -8089,7 +11794,7 @@ export default function App() {
                   }`}
                 >
                   <div
-                    className={`flex items-center justify-between gap-3 ${
+                    className={`flex flex-wrap items-center justify-between gap-3 ${
                       collapsedSections.crime ? '' : 'mb-2'
                     }`}
                   >
@@ -8109,11 +11814,33 @@ export default function App() {
                         className="text-sm font-semibold text-slate-700"
                       />
                     </div>
-                    {crimeLoading ? (
-                      <span className="text-[11px] text-slate-500">Loading…</span>
-                    ) : crimeMonthLabel ? (
-                      <span className="text-[11px] text-slate-500">Data: {crimeMonthLabel}</span>
-                    ) : null}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {crimeAvailableMonths.length > 0 ? (
+                        <label
+                          htmlFor="crime-month-select"
+                          className="flex items-center gap-2 text-[11px] text-slate-500"
+                        >
+                          <span>Reporting period</span>
+                          <select
+                            id="crime-month-select"
+                            value={crimeSelectValue}
+                            onChange={(event) => setCrimeSelectedMonth(event.target.value)}
+                            className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                          >
+                            {crimeAvailableMonths.map((option) => (
+                              <option key={`crime-month-${option.value}`} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      {crimeLoading ? (
+                        <span className="text-[11px] text-slate-500">Loading…</span>
+                      ) : crimePeriodDescription ? (
+                        <span className="text-[11px] text-slate-500">Period: {crimePeriodDescription}</span>
+                      ) : null}
+                    </div>
                   </div>
                   {!collapsedSections.crime ? (
                     <div className="space-y-4">
@@ -8134,13 +11861,13 @@ export default function App() {
                           <div className="text-[11px] text-slate-500">
                             {crimeHasRecordedIncidents ? (
                               <>
-                                Latest month{crimeMonthLabel ? `: ${crimeMonthLabel}` : ''}.
-                                {crimeSummary?.locationSummary ? (
+                                Selected period{crimePeriodDescription ? `: ${crimePeriodDescription}` : ''}.
+                                {displayedCrimeSummary?.locationSummary ? (
                                   <>
                                     {' '}
                                     Most reports near{' '}
                                     <span className="font-semibold text-slate-700">
-                                      {crimeSummary.locationSummary}
+                                      {displayedCrimeSummary.locationSummary}
                                     </span>
                                     .
                                   </>
@@ -8148,14 +11875,14 @@ export default function App() {
                               </>
                             ) : (
                               <>
-                                No recorded crimes for the latest reporting month
-                                {crimeMonthLabel ? ` (${crimeMonthLabel})` : ''}.
-                                {crimeSummary?.locationSummary ? (
+                                No recorded crimes for the selected period
+                                {crimePeriodDescription ? ` (${crimePeriodDescription})` : ''}.
+                                {displayedCrimeSummary?.locationSummary ? (
                                   <>
                                     {' '}
                                     Monitoring area near{' '}
                                     <span className="font-semibold text-slate-700">
-                                      {crimeSummary.locationSummary}
+                                      {displayedCrimeSummary.locationSummary}
                                     </span>
                                     .
                                   </>
@@ -8167,29 +11894,29 @@ export default function App() {
                             <div className="rounded-lg bg-slate-50 px-3 py-2">
                               <div className="text-[11px] text-slate-500">Total incidents</div>
                               <div className="text-lg font-semibold text-slate-800">
-                                {crimeSummary.totalIncidents.toLocaleString()}
+                                {displayedCrimeSummary.totalIncidents.toLocaleString()}
                               </div>
                             </div>
                             <div className="rounded-lg bg-slate-50 px-3 py-2">
                               <div className="text-[11px] text-slate-500">Most common category</div>
                               <div className="text-sm font-semibold text-slate-800">
-                                {crimeSummary.topCategories[0]?.label ?? '—'}
+                                {displayedCrimeSummary.topCategories[0]?.label ?? '—'}
                               </div>
-                              {crimeSummary.topCategories[0] ? (
+                              {displayedCrimeSummary.topCategories[0] ? (
                                 <div className="text-[11px] text-slate-500">
-                                  {crimeSummary.topCategories[0].count.toLocaleString()} (
-                                  {formatPercent(crimeSummary.topCategories[0].share)})
+                                  {displayedCrimeSummary.topCategories[0].count.toLocaleString()} (
+                                  {formatPercent(displayedCrimeSummary.topCategories[0].share)})
                                 </div>
                               ) : null}
                             </div>
                             <div className="rounded-lg bg-slate-50 px-3 py-2">
                               <div className="text-[11px] text-slate-500">Most common outcome</div>
                               <div className="text-sm font-semibold text-slate-800">
-                                {crimeSummary.topOutcomes[0]?.label ?? 'Outcome pending'}
+                                {displayedCrimeSummary.topOutcomes[0]?.label ?? 'Outcome pending'}
                               </div>
-                              {crimeSummary.topOutcomes[0] ? (
+                              {displayedCrimeSummary.topOutcomes[0] ? (
                                 <div className="text-[11px] text-slate-500">
-                                  {crimeSummary.topOutcomes[0].count.toLocaleString()} reports
+                                  {displayedCrimeSummary.topOutcomes[0].count.toLocaleString()} reports
                                 </div>
                               ) : null}
                             </div>
@@ -8198,8 +11925,8 @@ export default function App() {
                             <div>
                               <h4 className="mb-2 text-xs font-semibold text-slate-700">Category breakdown</h4>
                               <ul className="space-y-1 text-[11px] text-slate-600">
-                                {crimeSummary.topCategories.length > 0 ? (
-                                  crimeSummary.topCategories.map((category) => (
+                                {displayedCrimeSummary.topCategories.length > 0 ? (
+                                  displayedCrimeSummary.topCategories.map((category) => (
                                     <li
                                       key={category.label}
                                       className="flex items-center justify-between gap-2"
@@ -8219,8 +11946,8 @@ export default function App() {
                             <div>
                               <h4 className="mb-2 text-xs font-semibold text-slate-700">Outcome snapshot</h4>
                               <ul className="space-y-1 text-[11px] text-slate-600">
-                                {crimeSummary.topOutcomes.length > 0 ? (
-                                  crimeSummary.topOutcomes.map((outcome) => (
+                                {displayedCrimeSummary.topOutcomes.length > 0 ? (
+                                  displayedCrimeSummary.topOutcomes.map((outcome) => (
                                     <li
                                       key={outcome.label}
                                       className="flex items-center justify-between gap-2"
@@ -8237,18 +11964,110 @@ export default function App() {
                               </ul>
                             </div>
                           </div>
+                          {crimeSelectedMonth === 'all' && crimeTrendChartData.length > 0 ? (
+                            <div className="space-y-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <h4 className="text-xs font-semibold text-slate-700">Monthly crime trend</h4>
+                                <p className="text-[11px] text-slate-500">
+                                  Toggle crime types to focus the chart on specific categories.
+                                </p>
+                              </div>
+                              {crimeTrendData?.categories?.length ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {crimeTrendData.categories.map((category) => {
+                                    if (typeof category !== 'string' || category === '') {
+                                      return null;
+                                    }
+                                    const active = crimeTrendActiveCategories[category] !== false;
+                                    const color = crimeTrendCategoryColors[category] ?? '#1e293b';
+                                    const background = active && color.startsWith('#') && color.length === 7
+                                      ? `${color}1a`
+                                      : active
+                                      ? 'rgba(30,41,59,0.1)'
+                                      : 'transparent';
+                                    return (
+                                      <button
+                                        type="button"
+                                        key={`crime-trend-toggle-${category}`}
+                                        onClick={() =>
+                                          setCrimeTrendActiveCategories((prev) => ({
+                                            ...prev,
+                                            [category]: prev[category] === false,
+                                          }))
+                                        }
+                                        className="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition hover:bg-slate-100"
+                                        style={{
+                                          borderColor: color,
+                                          backgroundColor: background,
+                                          color: active ? color : '#475569',
+                                        }}
+                                      >
+                                        <span
+                                          className="h-2.5 w-2.5 rounded-full"
+                                          style={{ backgroundColor: color }}
+                                        />
+                                        <span>{category}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+                              <div className="h-64 w-full">
+                                {crimeTrendData?.categories?.length ? (
+                                  crimeTrendActiveKeys.length > 0 ? (
+                                    <ResponsiveContainer>
+                                      <LineChart data={crimeTrendChartData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
+                                        <CartesianGrid strokeDasharray="3 3" />
+                                        <XAxis
+                                          dataKey="label"
+                                          tick={{ fontSize: 10, fill: '#475569' }}
+                                          interval={0}
+                                          angle={-30}
+                                          textAnchor="end"
+                                        />
+                                        <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#475569' }} />
+                                        <Tooltip
+                                          formatter={(value, name) => [Number(value).toLocaleString(), name]}
+                                          labelFormatter={(label) => label}
+                                        />
+                                        {crimeTrendActiveKeys.map((category) => (
+                                          <RechartsLine
+                                            key={`crime-trend-line-${category}`}
+                                            type="monotone"
+                                            dataKey={category}
+                                            name={category}
+                                            stroke={crimeTrendCategoryColors[category] ?? '#1e293b'}
+                                            strokeWidth={2}
+                                            dot={false}
+                                            isAnimationActive={false}
+                                          />
+                                        ))}
+                                      </LineChart>
+                                    </ResponsiveContainer>
+                                  ) : (
+                                    <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                                      Select at least one category to display the trend.
+                                    </div>
+                                  )
+                                ) : (
+                                  <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                                    Monthly category breakdown isn’t available for this area yet.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
                           <div className="h-72 w-full overflow-hidden rounded-xl border border-slate-200">
-                            {crimeMapEmbedUrl ? (
-                              <iframe
-                                key={crimeSummary.mapKey}
-                                title={`Map preview for ${
-                                  crimeSummary.locationSummary || propertyAddress || 'selected area'
-                                }`}
-                                src={crimeMapEmbedUrl}
+                            {crimeMapMarkers.length > 0 && crimeMapCenter ? (
+                              <CrimeMap
+                                key={crimeMapKey || 'crime-map'}
                                 className="h-full w-full"
-                                loading="lazy"
-                                referrerPolicy="no-referrer-when-downgrade"
-                                allowFullScreen
+                                center={crimeMapCenter}
+                                bounds={crimeMapBounds}
+                                markers={crimeMapMarkers}
+                                title={`Map preview for ${
+                                  displayedCrimeSummary?.locationSummary || propertyAddress || 'selected area'
+                                }`}
                               />
                             ) : (
                               <div className="flex h-full items-center justify-center bg-slate-50 text-[11px] text-slate-500">
@@ -8280,9 +12099,9 @@ export default function App() {
                             </div>
                           ) : null}
                           <div className="space-y-1 text-[10px] text-slate-500">
-                            {crimeSummary.mapLimited ? (
+                            {displayedCrimeSummary?.mapLimited ? (
                               <p>
-                                Showing {crimeSummary.incidentsOnMap.toLocaleString()} of{' '}
+                                Showing {displayedCrimeSummary.incidentsOnMap.toLocaleString()} of{' '}
                                 {crimeIncidentsCount.toLocaleString()} incidents on the map.
                               </p>
                             ) : null}
@@ -8303,7 +12122,7 @@ export default function App() {
                   collapsedSections.interestSplit ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -8321,53 +12140,48 @@ export default function App() {
                       knowledgeKey="interestSplit"
                     />
                   </div>
+                  {interestSplitExpanded ? (
+                    <button
+                      type="button"
+                      onClick={closeInterestSplitOverlay}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close interest split analysis"
+                    >
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setInterestSplitExpanded(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand interest split analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
-                {!collapsedSections.interestSplit ? (
-                  <div className="h-72 w-full">
-                    {hasInterestSplitData ? (
-                      <ResponsiveContainer>
-                        <AreaChart data={interestSplitChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
-                          <YAxis tickFormatter={(value) => currencyNoPence(value)} tick={{ fontSize: 11, fill: '#475569' }} width={110} />
-                          <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
-                          <Legend />
-                          <Area
-                            type="monotone"
-                            dataKey="interestPaid"
-                            name="Interest"
-                            stackId="payments"
-                            stroke="#f97316"
-                            fill="rgba(249,115,22,0.25)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="principalPaid"
-                            name="Principal"
-                            stackId="payments"
-                            stroke="#22c55e"
-                            fill="rgba(34,197,94,0.3)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
-                        Adjust the mortgage assumptions to model interest and principal payments.
-                      </div>
-                    )}
-                  </div>
-                ) : null}
+                {!collapsedSections.interestSplit ? renderInterestSplitChart() : null}
               </div>
               <div
                 className={`rounded-2xl bg-white p-3 shadow-sm ${
                   collapsedSections.leverage ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -8385,136 +12199,46 @@ export default function App() {
                       knowledgeKey="leverage"
                     />
                   </div>
+                  {leverageExpanded ? (
+                    <button
+                      type="button"
+                      onClick={closeLeverageOverlay}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close leverage analysis"
+                    >
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setLeverageExpanded(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand leverage analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
                 {!collapsedSections.leverage ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
                       Each point recalculates the deal using the same assumptions but with a different LTV. ROI reflects net wealth at exit versus cash invested.
                     </p>
-                    <div className="h-72 w-full">
-                      {hasLeverageData ? (
-                        <>
-                          <ResponsiveContainer>
-                            <LineChart data={leverageChartData} margin={{ top: 10, right: 24, left: 0, bottom: 0 }}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis
-                                dataKey="ltv"
-                                tickFormatter={(value) => formatPercent(value, 0)}
-                                tick={{ fontSize: 11, fill: '#475569' }}
-                                domain={[0.1, 0.95]}
-                                type="number"
-                                ticks={LEVERAGE_LTV_OPTIONS}
-                              />
-                              <YAxis
-                                yAxisId="left"
-                                tickFormatter={(value) => formatPercent(value, 0)}
-                                tick={{ fontSize: 11, fill: '#475569' }}
-                                width={80}
-                              />
-                              <YAxis
-                                yAxisId="right"
-                                orientation="right"
-                                tickFormatter={(value) => currencyThousands(value)}
-                                tick={{ fontSize: 11, fill: '#475569' }}
-                                width={72}
-                              />
-                              <Tooltip
-                                formatter={(value, name, { dataKey }) => {
-                                  if (dataKey === 'propertyNetAfterTax' || dataKey === 'efficiency') {
-                                    return [currency(value), name];
-                                  }
-                                  return [formatPercent(value), name];
-                                }}
-                                labelFormatter={(label) => `LTV ${formatPercent(label)}`}
-                              />
-                              <Legend
-                                content={(props) => (
-                                  <ChartLegend
-                                    {...props}
-                                    activeSeries={leverageSeriesActive}
-                                    onToggle={toggleLeverageSeries}
-                                  />
-                                )}
-                              />
-                              {LEVERAGE_MAX_LTV > LEVERAGE_SAFE_MAX_LTV ? (
-                                <ReferenceArea
-                                  x1={LEVERAGE_SAFE_MAX_LTV}
-                                  x2={LEVERAGE_MAX_LTV}
-                                  yAxisId="left"
-                                  y1="dataMin"
-                                  y2="dataMax"
-                                  strokeOpacity={0}
-                                  fill="#f1f5f9"
-                                  fillOpacity={0.35}
-                                />
-                              ) : null}
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="irr"
-                                name="IRR"
-                                yAxisId="left"
-                                stroke={SERIES_COLORS.irrSeries}
-                                strokeWidth={2}
-                                dot={{ r: 3 }}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.irr}
-                              />
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="roi"
-                                name="Total ROI"
-                                yAxisId="left"
-                                stroke="#0ea5e9"
-                                strokeWidth={2}
-                                strokeDasharray="4 2"
-                                dot={{ r: 3 }}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.roi}
-                              />
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="irrHurdle"
-                                name="IRR hurdle"
-                                yAxisId="left"
-                                stroke={SERIES_COLORS.irrHurdle}
-                                strokeWidth={2}
-                                strokeDasharray="4 4"
-                                dot={false}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.irrHurdle}
-                              />
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="propertyNetAfterTax"
-                                name={propertyNetAfterTaxLabel}
-                                yAxisId="right"
-                                stroke={SERIES_COLORS.propertyNetAfterTax}
-                                strokeWidth={2}
-                                dot={{ r: 3 }}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.propertyNetAfterTax}
-                              />
-                              <RechartsLine
-                                type="monotone"
-                                dataKey="efficiency"
-                                name="IRR × Profit"
-                                yAxisId="right"
-                                stroke="#8b5cf6"
-                                strokeWidth={2}
-                                strokeDasharray="6 3"
-                                dot={{ r: 3 }}
-                                isAnimationActive={false}
-                                hide={!leverageSeriesActive.efficiency}
-                              />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        </>
-                      ) : (
-                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-[11px] text-slate-500">
-                          Enter a purchase price and rent to explore leverage outcomes.
-                        </div>
-                      )}
-                    </div>
+                    {renderLeverageChart()}
                   </>
                 ) : null}
               </div>
@@ -8626,11 +12350,7 @@ export default function App() {
                   collapsedSections.cashflowDetail ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div
-                  className={`flex items-center justify-between gap-3 ${
-                    collapsedSections.cashflowDetail ? '' : 'mb-2'
-                  }`}
-                >
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -8643,18 +12363,58 @@ export default function App() {
                     </button>
                     <SectionTitle label="Annual cash flow detail" className="text-sm font-semibold text-slate-700" />
                   </div>
+                  {cashflowDetailExpanded ? (
+                    <button
+                      type="button"
+                      onClick={closeCashflowDetailOverlay}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close annual cash flow analysis"
+                    >
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setCashflowDetailExpanded(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand annual cash flow analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
                 {!collapsedSections.cashflowDetail ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">Per-year performance through exit.</p>
-                    <CashflowTable
-                      rows={cashflowTableRows}
-                      columns={selectedCashflowColumns}
-                      hiddenColumns={hiddenCashflowColumns}
-                      onRemoveColumn={handleRemoveCashflowColumn}
-                      onAddColumn={handleAddCashflowColumn}
-                      onExport={handleExportCashflowCsv}
-                    />
+                    {cashflowTableRows.length === 0 ? (
+                      <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-center text-[11px] text-slate-500">
+                        Cash flow data becomes available once a hold period is defined.
+                      </p>
+                    ) : (
+                      <CashflowTable
+                        rows={cashflowFilteredRows}
+                        columns={selectedCashflowColumns}
+                        hiddenColumns={hiddenCashflowColumns}
+                        onRemoveColumn={handleRemoveCashflowColumn}
+                        onAddColumn={handleAddCashflowColumn}
+                        onExport={handleExportCashflowCsv}
+                        emptyMessage="No rows match the current filters. Adjust the year range or cash flow view to see results."
+                      />
+                    )}
                   </>
                 ) : null}
               </div>
@@ -8706,8 +12466,8 @@ export default function App() {
                         </div>
                         <p className="text-[11px] leading-relaxed">{investmentProfile.summary}</p>
                       </div>
-                      {investmentProfile.chips.length > 0 ? (
-                        <div className="flex flex-wrap gap-2 text-[11px]">
+                      {investmentProfile.chips.length > 0 || investmentProfile.visuals.length > 0 ? (
+                        <div className="flex w-full flex-wrap items-center gap-2 text-[11px]">
                           {investmentProfile.chips.map((chip) => (
                             <span
                               key={`${chip.label}-${chip.value}`}
@@ -8719,16 +12479,56 @@ export default function App() {
                               <span className="text-slate-700">{chip.value}</span>
                             </span>
                           ))}
+                          {investmentProfile.visuals.length > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowInvestmentProfileDetails((prev) => !prev)}
+                              aria-expanded={showInvestmentProfileDetails}
+                              aria-controls="investment-profile-details"
+                              className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition hover:bg-slate-100"
+                              title={
+                                showInvestmentProfileDetails
+                                  ? 'Hide detailed scoring breakdown'
+                                  : 'Show detailed scoring breakdown'
+                              }
+                            >
+                              <span className="sr-only">
+                                {showInvestmentProfileDetails
+                                  ? 'Hide detailed scoring breakdown'
+                                  : 'Show detailed scoring breakdown'}
+                              </span>
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 20 20"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                className={`h-3.5 w-3.5 transition-transform ${
+                                  showInvestmentProfileDetails ? 'rotate-180' : ''
+                                }`}
+                                aria-hidden="true"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M5.5 7.5 10 12l4.5-4.5"
+                                />
+                              </svg>
+                            </button>
+                          ) : null}
                         </div>
                       ) : null}
-                      {investmentProfile.visuals.length > 0 ? (
-                        <div className="mt-4 space-y-2">
+                      {investmentProfile.visuals.length > 0 && showInvestmentProfileDetails ? (
+                        <div
+                          id="investment-profile-details"
+                          className="mt-4 grid gap-3 sm:grid-cols-2"
+                        >
                           {investmentProfile.visuals.map((visual) => (
                             <div
                               key={visual.key}
-                              className="group relative rounded-xl border border-slate-200 bg-slate-50 p-3 transition hover:border-slate-300"
+                              className="group relative flex h-full flex-col rounded-xl border border-slate-200 bg-slate-50 p-3 transition hover:border-slate-300"
                             >
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
                                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                                     {visual.label}
@@ -8846,6 +12646,13 @@ export default function App() {
                 className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
               >
                 Comparison
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowOptimizationModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-500"
+              >
+                Optimise this investment
               </button>
             </div>
             {showLoadPanel ? (
@@ -9336,10 +13143,9 @@ export default function App() {
                     {smallInput('exitYear', 'Exit year', 1)}
                     {pctInput('annualAppreciation', 'Capital growth %')}
                     {pctInput('rentGrowth', 'Rent growth %')}
-                    {pctInput('indexFundGrowth', 'Index fund growth %')}
                     {pctInput('sellingCostsPct', 'Selling costs %')}
-                    {pctInput('discountRate', 'Discount rate %', 0.001)}
-                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                    {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
+                    {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
                   </div>
                 </div>
                 <div>
@@ -9822,6 +13628,147 @@ export default function App() {
       </div>
     )}
 
+    {showOptimizationModal && (
+      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+        <div className="max-h-[85vh] w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-xl">
+          <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+            <div>
+              <h2 className="text-base font-semibold text-slate-800">Optimise this investment</h2>
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                Model alternative strategies using your current deal inputs, local market data, and lender coverage guardrails.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowOptimizationModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="max-h-[70vh] overflow-auto px-5 py-4">
+            <div className="space-y-5">
+              <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+                <span>Optimise for</span>
+                <select
+                  value={optimizationGoal}
+                  onChange={(event) => setOptimizationGoal(event.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+                >
+                  {OPTIMIZATION_GOAL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {optimizationModel?.status === 'ready' ? (
+                <div className="space-y-5 text-sm">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <h3 className="text-sm font-semibold text-slate-700">{optimizationModel.goal?.label}</h3>
+                    {optimizationModel.goal?.summary ? (
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                        {optimizationModel.goal.summary}
+                      </p>
+                    ) : null}
+                    <p className="mt-3 text-xs text-slate-500">
+                      Baseline {optimizationModel.goal?.metricLabel ?? 'metric'}:{' '}
+                      <span className="font-semibold text-slate-800">{optimizationModel.baseline?.formatted ?? '—'}</span>
+                    </p>
+                  </div>
+                  <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-800">Recommended optimisation</h3>
+                        {optimizationModel.recommendation?.description ? (
+                          <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                            {optimizationModel.recommendation.description}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="text-right text-xs text-slate-500">
+                        <div className="font-semibold">{optimizationModel.goal?.metricLabel}</div>
+                        <div className="text-base font-semibold text-emerald-600">
+                          {optimizationModel.recommendation?.formattedValue ?? '—'}
+                        </div>
+                        <div>{optimizationModel.recommendation?.formattedDelta ?? ''}</div>
+                      </div>
+                    </div>
+                    <ul className="list-disc space-y-1 pl-5 text-[11px] text-slate-600">
+                      {optimizationModel.recommendation?.adjustments?.map((line) => (
+                        <li key={line}>{line}</li>
+                      )) ?? <li>No changes to your current inputs.</li>}
+                    </ul>
+                    {optimizationModel.recommendation?.note ? (
+                      <p className="text-[11px] text-slate-500">{optimizationModel.recommendation.note}</p>
+                    ) : null}
+                    {optimizationModel.analysisNote ? (
+                      <p className="text-[11px] text-amber-600">{optimizationModel.analysisNote}</p>
+                    ) : null}
+                  </div>
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-800">Other opportunities</h3>
+                    {optimizationModel.additional && optimizationModel.additional.length > 0 ? (
+                      optimizationModel.additional.map((item) => (
+                        <div
+                          key={item.id}
+                          className="rounded-lg border border-slate-200 bg-white p-4"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                {item.label}
+                              </div>
+                              {item.description ? (
+                                <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                                  {item.description}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="text-right text-[11px] text-slate-500">
+                              <div className="font-semibold">{optimizationModel.goal?.metricLabel}</div>
+                              <div className="text-sm font-semibold text-slate-700">
+                                {item.formattedValue}
+                              </div>
+                              <div>{item.formattedDelta}</div>
+                            </div>
+                          </div>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-slate-600">
+                            {item.adjustments?.map((line) => (
+                              <li key={line}>{line}</li>
+                            )) ?? <li>No changes to your current inputs.</li>}
+                          </ul>
+                          {item.note ? (
+                            <p className="mt-2 text-[11px] text-slate-500">{item.note}</p>
+                          ) : null}
+                          {!item.feasible ? (
+                            <p className="mt-2 text-[11px] text-amber-600">
+                              Requires additional adjustments to satisfy lender or tax constraints.
+                            </p>
+                          ) : null}
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-[11px] text-slate-500">
+                        No additional opportunities identified beyond the recommended plan.
+                      </p>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Calculations reuse your scenario assumptions, regional appreciation data, and crime density scoring to stay aligned with the rest of the dashboard.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-[11px] text-slate-500">
+                  {optimizationModel?.message ?? 'Provide purchase price, rent, and financing inputs to generate optimisation ideas.'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
     {showTableModal && (
       <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
         <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
@@ -10110,6 +14057,284 @@ export default function App() {
 
       </div>
 
+      {interestSplitExpanded ? (
+        <div
+          className="no-print fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 px-4 py-8"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="interest-split-overlay-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeInterestSplitOverlay();
+            }
+          }}
+        >
+          <div
+            className="relative flex h-full max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2 id="interest-split-overlay-title" className="text-base font-semibold text-slate-900">
+                  Interest vs principal split
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Filter the repayment timeline to inspect how mortgage payments evolve across the hold period.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeInterestSplitOverlay}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-5">
+              <div className="mb-4 grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Start year</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(interestSplitRange.start)}
+                    onChange={(event) => handleInterestSplitRangeChange('start', event.target.value)}
+                  >
+                    {interestSplitYearOptions.map((year) => (
+                      <option key={`interest-overlay-start-${year}`} value={year}>
+                        Year {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">End year</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(interestSplitRange.end)}
+                    onChange={(event) => handleInterestSplitRangeChange('end', event.target.value)}
+                  >
+                    {interestSplitYearOptions.map((year) => (
+                      <option key={`interest-overlay-end-${year}`} value={year}>
+                        Year {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="self-end text-[11px] text-slate-500">
+                  Narrow the chart to inspect the transition from interest-heavy to principal-heavy payments.
+                </p>
+              </div>
+              {renderInterestSplitChart({
+                heightClass: 'h-[420px] w-full',
+                fallbackMessage: 'Adjust the filters above to populate the repayment chart.',
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {leverageExpanded ? (
+        <div
+          className="no-print fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 px-4 py-8"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="leverage-overlay-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeLeverageOverlay();
+            }
+          }}
+        >
+          <div
+            className="relative flex h-full max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2 id="leverage-overlay-title" className="text-base font-semibold text-slate-900">
+                  Leverage multiplier
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Compare outcomes across loan-to-value ratios and focus on the metrics that matter to your strategy.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeLeverageOverlay}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-5">
+              <div className="mb-4 grid gap-3 md:grid-cols-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Minimum LTV</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(leverageRange.min)}
+                    onChange={(event) => handleLeverageRangeChange('min', event.target.value)}
+                  >
+                    {LEVERAGE_LTV_OPTIONS.map((ltv) => (
+                      <option key={`leverage-overlay-min-${ltv}`} value={ltv}>
+                        {formatPercent(ltv, 0)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Maximum LTV</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(leverageRange.max)}
+                    onChange={(event) => handleLeverageRangeChange('max', event.target.value)}
+                  >
+                    {LEVERAGE_LTV_OPTIONS.map((ltv) => (
+                      <option key={`leverage-overlay-max-${ltv}`} value={ltv}>
+                        {formatPercent(ltv, 0)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex flex-col gap-1 md:col-span-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Show metrics</span>
+                  <div className="flex flex-wrap gap-2">
+                    {leverageMetricOptions.map((option) => (
+                      <label
+                        key={`leverage-overlay-series-${option.key}`}
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 ${
+                          leverageSeriesActive[option.key] === false
+                            ? 'border-slate-200 text-slate-400'
+                            : 'border-slate-300 text-slate-600'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-3 w-3 accent-slate-600"
+                          checked={leverageSeriesActive[option.key] !== false}
+                          onChange={() => toggleLeverageSeries(option.key)}
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <p className="md:col-span-3 text-[11px] text-slate-500">
+                  Focus the leverage curve on your preferred loan-to-value band and hide performance metrics that are less relevant.
+                </p>
+              </div>
+              {renderLeverageChart({
+                heightClass: 'h-[420px] w-full',
+                fallbackMessage: 'Adjust the LTV range or metrics above to refresh the leverage chart.',
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {cashflowDetailExpanded ? (
+        <div
+          className="no-print fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 px-4 py-8"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cashflow-overlay-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeCashflowDetailOverlay();
+            }
+          }}
+        >
+          <div
+            className="relative flex h-full max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2 id="cashflow-overlay-title" className="text-base font-semibold text-slate-900">
+                  Annual cash flow detail
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Choose the years and cash flow focus to review before exporting or comparing scenarios.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCashflowDetailOverlay}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-5">
+              <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">Start year</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(cashflowDetailRange.start)}
+                    onChange={(event) => handleCashflowRangeChange('start', event.target.value)}
+                  >
+                    {cashflowYearOptions.map((year) => (
+                      <option key={`cashflow-overlay-start-${year}`} value={year}>
+                        Year {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] font-semibold text-slate-700">End year</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={String(cashflowDetailRange.end)}
+                    onChange={(event) => handleCashflowRangeChange('end', event.target.value)}
+                  >
+                    {cashflowYearOptions.map((year) => (
+                      <option key={`cashflow-overlay-end-${year}`} value={year}>
+                        Year {year}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 lg:col-span-2">
+                  <span className="text-[11px] font-semibold text-slate-700">Cash flow filter</span>
+                  <select
+                    className="rounded-lg border border-slate-200 px-2 py-1 text-[11px] text-slate-700 transition focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                    value={cashflowDetailView}
+                    onChange={(event) => handleCashflowViewChange(event.target.value)}
+                  >
+                    {CASHFLOW_VIEW_OPTIONS.map((option) => (
+                      <option key={`cashflow-overlay-view-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="lg:col-span-4 text-[11px] text-slate-500">
+                  Refine the table, then export or copy the figures once you have the view you need.
+                </p>
+              </div>
+              {cashflowTableRows.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-center text-[11px] text-slate-500">
+                  Cash flow data becomes available once a hold period is defined.
+                </p>
+              ) : (
+                <div className="max-h-[480px] overflow-auto">
+                  <CashflowTable
+                    rows={cashflowFilteredRows}
+                    columns={selectedCashflowColumns}
+                    hiddenColumns={hiddenCashflowColumns}
+                    onRemoveColumn={handleRemoveCashflowColumn}
+                    onAddColumn={handleAddCashflowColumn}
+                    onExport={handleExportCashflowCsv}
+                    emptyMessage="No rows match the current filters. Adjust the year range or cash flow view to see results."
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <KnowledgeBaseOverlay
         open={knowledgeState.open}
         onClose={closeKnowledgeBase}
@@ -10327,11 +14552,16 @@ function CashflowTable({
   onAddColumn,
   hiddenColumns = [],
   onExport,
+  emptyMessage,
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
   if (!rows || rows.length === 0) {
-    return <p className="text-xs text-slate-600">Cash flow data becomes available once a hold period is defined.</p>;
+    return (
+      <p className="text-[11px] text-slate-600">
+        {emptyMessage || 'Cash flow data becomes available once a hold period is defined.'}
+      </p>
+    );
   }
 
   const handleAdd = (key) => {
@@ -11287,16 +15517,16 @@ function CollapsibleSection({ title, collapsed, onToggle, children, className })
     console.assert(approx(io, 500, 1e-6), `IO mismatch: ${io}`);
 
     const sdltBase = calcStampDuty(300000, 'individual', 0, false);
-    console.assert(approx(sdltBase, 4750, 1), `SDLT base mismatch: ${sdltBase}`);
+    console.assert(approx(sdltBase, 5000, 1), `SDLT base mismatch: ${sdltBase}`);
 
     const sdltAdd = calcStampDuty(300000, 'company', 0, false);
-    console.assert(approx(sdltAdd, 19750, 1), `SDLT add mismatch: ${sdltAdd}`);
+    console.assert(approx(sdltAdd, 20000, 1), `SDLT add mismatch: ${sdltAdd}`);
 
     const sdltIndividualOne = calcStampDuty(300000, 'individual', 1, false);
-    console.assert(approx(sdltIndividualOne, 4750, 1), `SDLT single extra mismatch: ${sdltIndividualOne}`);
+    console.assert(approx(sdltIndividualOne, 5000, 1), `SDLT single extra mismatch: ${sdltIndividualOne}`);
 
     const sdltIndividualTwo = calcStampDuty(300000, 'individual', 2, false);
-    console.assert(approx(sdltIndividualTwo, 19750, 1), `SDLT multiple mismatch: ${sdltIndividualTwo}`);
+    console.assert(approx(sdltIndividualTwo, 20000, 1), `SDLT multiple mismatch: ${sdltIndividualTwo}`);
 
     const sdltFtb = calcStampDuty(500000, 'individual', 0, true);
     console.assert(approx(sdltFtb, 10000, 1), `SDLT FTB mismatch: ${sdltFtb}`);
