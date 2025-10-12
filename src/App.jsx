@@ -1651,6 +1651,9 @@ const DEFAULT_OPTIMIZATION_VARIATION_FIELDS = [
   'mgmtPct',
   'repairsPct',
   'insurancePerYear',
+  'renovationCost',
+  'mortgageYears',
+  'buyerType',
 ];
 
 const OPTIMIZATION_GOAL_VARIATION_FIELDS = {
@@ -1662,6 +1665,9 @@ const OPTIMIZATION_GOAL_VARIATION_FIELDS = {
     'repairsPct',
     'insurancePerYear',
     'otherOpexPerYear',
+    'renovationCost',
+    'mortgageYears',
+    'buyerType',
   ],
   min_taxes: [
     'ownershipShare1',
@@ -1670,6 +1676,9 @@ const OPTIMIZATION_GOAL_VARIATION_FIELDS = {
     'interestRate',
     'insurancePerYear',
     'otherOpexPerYear',
+    'buyerType',
+    'mortgageYears',
+    'renovationCost',
   ],
   max_irr: [
     'purchasePrice',
@@ -1679,6 +1688,8 @@ const OPTIMIZATION_GOAL_VARIATION_FIELDS = {
     'renovationCost',
     'sellingCostsPct',
     'exitYear',
+    'mortgageYears',
+    'buyerType',
   ],
   max_purchase_price: [
     'monthlyRent',
@@ -1687,6 +1698,9 @@ const OPTIMIZATION_GOAL_VARIATION_FIELDS = {
     'depositPct',
     'mortgagePackageFee',
     'insurancePerYear',
+    'renovationCost',
+    'mortgageYears',
+    'buyerType',
   ],
   min_rent: [
     'purchasePrice',
@@ -1695,6 +1709,9 @@ const OPTIMIZATION_GOAL_VARIATION_FIELDS = {
     'depositPct',
     'insurancePerYear',
     'otherOpexPerYear',
+    'renovationCost',
+    'mortgageYears',
+    'buyerType',
   ],
   max_coc: [
     'purchasePrice',
@@ -1704,6 +1721,9 @@ const OPTIMIZATION_GOAL_VARIATION_FIELDS = {
     'repairsPct',
     'mortgagePackageFee',
     'insurancePerYear',
+    'renovationCost',
+    'mortgageYears',
+    'buyerType',
   ],
 };
 
@@ -1803,6 +1823,14 @@ const OPTIMIZATION_FIELD_CONFIG = {
     min: 0,
     step: 100,
   },
+  mortgageYears: {
+    key: 'mortgageYears',
+    label: 'Mortgage term (years)',
+    type: 'integer',
+    min: 5,
+    max: 40,
+    step: 1,
+  },
   interestRate: {
     key: 'interestRate',
     label: 'Interest rate',
@@ -1835,6 +1863,12 @@ const OPTIMIZATION_FIELD_CONFIG = {
     max: 0.9,
     step: 0.01,
   },
+  buyerType: {
+    key: 'buyerType',
+    label: 'Buyer type',
+    type: 'enum',
+    options: ['individual', 'company'],
+  },
 };
 
 const OPTIMIZATION_SCENARIO_KEY_FIELDS = [
@@ -1852,8 +1886,10 @@ const OPTIMIZATION_SCENARIO_KEY_FIELDS = [
   'sellingCostsPct',
   'mortgagePackageFee',
   'interestRate',
+  'mortgageYears',
   'exitYear',
   'loanType',
+  'buyerType',
   'ownershipShare1',
   'ownershipShare2',
 ];
@@ -1907,7 +1943,21 @@ const normalizeOwnershipShares = (scenario) => {
 };
 
 const createVariationValues = (baseValue, config, maxDeviation = 0.1) => {
-  const { type, min, max, step } = config;
+  const { type, min, max, step, options } = config;
+  if (type === 'enum') {
+    const enumOptions = Array.isArray(options) ? options.filter((option) => option !== undefined && option !== null) : [];
+    const base =
+      typeof baseValue === 'string' && baseValue.trim() !== ''
+        ? baseValue.trim()
+        : enumOptions.length > 0
+          ? enumOptions[0]
+          : '';
+    const values = new Set(enumOptions.length > 0 ? enumOptions : [base]);
+    if (base !== '') {
+      values.add(base);
+    }
+    return Array.from(values);
+  }
   const fallbackStep = OPTIMIZATION_VARIATION_DEFAULT_STEPS[type] ?? 1;
   const base = Number(baseValue);
   const safeBase = Number.isFinite(base)
@@ -1998,10 +2048,15 @@ const generateVariationCombos = (seed, fieldConfigs, fixedFieldKey, maxDeviation
     }
 
     const config = configs[index];
-    const baseValue = Number(seed.scenarioInputs?.[config.key]);
+    const baseRaw = seed.scenarioInputs?.[config.key];
+    const baseValue = Number(baseRaw);
     valueSets[index].forEach((value) => {
       const nextOverrides = { ...currentOverrides };
-      if (Number.isFinite(baseValue) && Math.abs(value - baseValue) < 1e-6) {
+      const matchesBase =
+        config.type === 'enum'
+          ? baseRaw === value
+          : Number.isFinite(baseValue) && Math.abs(Number(value) - baseValue) < 1e-6;
+      if (matchesBase) {
         delete nextOverrides[config.key];
       } else {
         nextOverrides[config.key] = value;
