@@ -5311,6 +5311,7 @@ export default function App() {
   const [optimizationProgress, setOptimizationProgress] = useState(0);
   const [optimizationProgressMessage, setOptimizationProgressMessage] = useState('');
   const optimizationRunRef = useRef(0);
+  const optimizationStatusRef = useRef('idle');
   const [scenarioScatterXAxis, setScenarioScatterXAxis] = useState(
     () => SCENARIO_RATIO_PERCENT_COLUMNS[0]?.key ?? 'cap'
   );
@@ -5531,6 +5532,10 @@ export default function App() {
   useOverlayEscape(showOptimizationModal, () => setShowOptimizationModal(false));
 
   useEffect(() => {
+    optimizationStatusRef.current = optimizationStatus;
+  }, [optimizationStatus]);
+
+  useEffect(() => {
     if (!showOptimizationModal) {
       optimizationRunRef.current += 1;
       setOptimizationStatus('idle');
@@ -5544,14 +5549,14 @@ export default function App() {
     if (!showOptimizationModal) {
       return;
     }
-    if (optimizationStatus === 'running') {
+    if (optimizationStatusRef.current === 'running') {
       return;
     }
     setOptimizationResult(null);
     setOptimizationProgress(0);
     setOptimizationProgressMessage('');
     setOptimizationStatus('idle');
-  }, [optimizationGoal, showOptimizationModal, optimizationStatus]);
+  }, [optimizationGoal, showOptimizationModal]);
 
   useEffect(() => {
     let cancelled = false;
@@ -10565,13 +10570,37 @@ export default function App() {
         ? 'Share link ready (short.io unavailable)'
         : 'Share link ready';
       let copiedToClipboard = false;
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      const canUseAsyncClipboard =
+        typeof window !== 'undefined' &&
+        window.isSecureContext &&
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard?.writeText;
+      if (canUseAsyncClipboard) {
         try {
           await navigator.clipboard.writeText(linkToCopy);
           setShareNotice(clipboardMessage);
           copiedToClipboard = true;
         } catch (clipboardError) {
-          console.error('Unable to copy share link to clipboard', clipboardError);
+          console.warn('Unable to copy share link to clipboard', clipboardError);
+        }
+      }
+      if (!copiedToClipboard && typeof document !== 'undefined') {
+        try {
+          const textarea = document.createElement('textarea');
+          textarea.value = linkToCopy;
+          textarea.setAttribute('readonly', '');
+          textarea.style.position = 'absolute';
+          textarea.style.left = '-9999px';
+          document.body.appendChild(textarea);
+          textarea.select();
+          const successful = document.execCommand('copy');
+          document.body.removeChild(textarea);
+          if (successful) {
+            setShareNotice(clipboardMessage);
+            copiedToClipboard = true;
+          }
+        } catch (clipboardError) {
+          console.warn('Fallback copy failed', clipboardError);
         }
       }
       if (!copiedToClipboard) {
@@ -10697,6 +10726,29 @@ export default function App() {
     };
     integrateScenario(scenario, { select: true });
   };
+
+  const handleApplyOptimizationScenario = useCallback(
+    (scenarioInputs) => {
+      if (!scenarioInputs || typeof scenarioInputs !== 'object') {
+        return;
+      }
+      const mergedInputs = { ...DEFAULT_INPUTS, ...scenarioInputs, ...extraSettings };
+      setInputs(mergedInputs);
+      const targetUrl = typeof mergedInputs.propertyUrl === 'string' ? mergedInputs.propertyUrl.trim() : '';
+      if (targetUrl) {
+        openPreviewForUrl(targetUrl, { force: true });
+      } else {
+        clearPreview();
+      }
+      optimizationRunRef.current += 1;
+      setOptimizationStatus('idle');
+      setOptimizationResult(null);
+      setOptimizationProgress(0);
+      setOptimizationProgressMessage('');
+      setShowOptimizationModal(false);
+    },
+    [extraSettings, openPreviewForUrl, clearPreview]
+  );
 
   const handleLoadScenario = (scenarioId, options = {}) => {
     const targetId = typeof scenarioId === 'string' && scenarioId ? scenarioId : selectedScenarioId;
@@ -14258,6 +14310,22 @@ export default function App() {
                     {optimizationResult.analysisNote ? (
                       <p className="text-[11px] text-amber-600">{optimizationResult.analysisNote}</p>
                     ) : null}
+                    {optimizationResult.recommendation?.scenarioInputs ? (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2">
+                        <span className="text-[11px] text-emerald-700">Load this plan into the main model to review the adjusted assumptions.</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleApplyOptimizationScenario(
+                              optimizationResult.recommendation?.scenarioInputs
+                            )
+                          }
+                          className="inline-flex items-center gap-2 rounded-full border border-emerald-500 px-3 py-1 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-100"
+                        >
+                          Load recommendation
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="space-y-3">
                     <h3 className="text-sm font-semibold text-slate-800">Other opportunities</h3>
@@ -14289,6 +14357,18 @@ export default function App() {
                             <p className="mt-2 text-[11px] text-amber-600">
                               Requires additional adjustments to satisfy lender or tax constraints.
                             </p>
+                          ) : null}
+                          {item.scenarioInputs ? (
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
+                              <span className="text-[11px] text-slate-500">Load this variation to inspect the full model inputs.</span>
+                              <button
+                                type="button"
+                                onClick={() => handleApplyOptimizationScenario(item.scenarioInputs)}
+                                className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                              >
+                                Load variation
+                              </button>
+                            </div>
                           ) : null}
                         </div>
                       ))
