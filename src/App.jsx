@@ -201,6 +201,7 @@ const SERIES_COLORS = {
   propertyNet: '#16a34a',
   propertyNetAfterTax: '#9333ea',
   combinedNetWealth: '#1e293b',
+  combinedNetWealthBeforeTax: '#0369a1',
   investedRent: '#0d9488',
   indexFund1_5x: '#fb7185',
   indexFund2x: '#ec4899',
@@ -208,7 +209,6 @@ const SERIES_COLORS = {
   cumulativeCash: '#10b981',
   cumulativeExternal: '#f97316',
   indexFundValue: '#fb923c',
-  totalNetWealthWithIndex: '#6366f1',
   capRate: '#1e293b',
   yieldRate: '#0369a1',
   cashOnCash: '#0f766e',
@@ -231,15 +231,15 @@ const SERIES_LABELS = {
   propertyGross: 'Property gross',
   propertyNet: 'Property net',
   propertyNetAfterTax: 'Property net after tax',
-  combinedNetWealth: 'Net wealth (property + cash)',
+  combinedNetWealth: 'Net wealth (after tax)',
+  combinedNetWealthBeforeTax: 'Net wealth (before tax)',
   investedRent: 'Invested rent',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
-  cumulativeCash: 'Cumulative cash',
+  cumulativeCash: 'Cumulative cash after tax',
   cumulativeExternal: 'External cash deployed',
   indexFundValue: 'Index fund value',
-  totalNetWealthWithIndex: 'Total net wealth incl. index',
   capRate: 'Cap rate',
   yieldRate: 'Yield rate',
   cashOnCash: 'Cash on cash',
@@ -1351,7 +1351,8 @@ const sanitizePlanItem = (item) => {
       ? item.createdAt
       : new Date().toISOString();
   const rawPurchaseYear = Math.round(Number(item.purchaseYear) || 0);
-  const purchaseYear = clamp(rawPurchaseYear, 0, PLAN_MAX_PURCHASE_YEAR);
+  const isPrimary = item.isPrimary === true;
+  const purchaseYear = isPrimary ? 0 : clamp(rawPurchaseYear, 0, PLAN_MAX_PURCHASE_YEAR);
   const include = item.include === false ? false : true;
   const useIncome = item.useIncomeForDeposit === true;
   const rawContribution = Number(item.incomeContribution);
@@ -1373,6 +1374,7 @@ const sanitizePlanItem = (item) => {
     useIncomeForDeposit: useIncome,
     incomeContribution,
     exitYearOverride,
+    isPrimary,
   };
 };
 
@@ -1389,6 +1391,8 @@ const PLAN_ANALYSIS_EMPTY_TOTALS = {
   finalExternalPosition: 0,
   finalIndexFundValue: 0,
   finalTotalNetWealth: 0,
+  averageRentalYield: 0,
+  averageCapRate: 0,
 };
 
 const clampPercentage = (value, min = 0, max = 1) => {
@@ -1482,9 +1486,14 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
 
     const requestedIncomeContribution = Math.max(0, Number(sanitized.incomeContribution) || 0);
     const valid = Boolean(metrics) && chart.length > 0;
+    const isPrimary = sanitized.isPrimary === true;
+    const purchaseYear = isPrimary ? 0 : sanitized.purchaseYear;
 
     return {
       ...sanitized,
+      include: isPrimary ? true : sanitized.include,
+      purchaseYear,
+      isPrimary,
       order: index,
       metrics,
       chart,
@@ -1523,7 +1532,26 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     };
   }
 
+  const totalPurchasePrice = includedItems.reduce(
+    (sum, item) => sum + (Number(item.inputs?.purchasePrice) || 0),
+    0
+  );
+  const totalGrossRentYear1 = includedItems.reduce(
+    (sum, item) => sum + (Number(item.metrics?.grossRentYear1) || 0),
+    0
+  );
+  const totalNoiYear1 = includedItems.reduce(
+    (sum, item) => sum + (Number(item.metrics?.noiYear1) || 0),
+    0
+  );
+
   const orderedIncluded = [...includedItems].sort((a, b) => {
+    if (a.isPrimary && !b.isPrimary) {
+      return -1;
+    }
+    if (!a.isPrimary && b.isPrimary) {
+      return 1;
+    }
     if (a.purchaseYear !== b.purchaseYear) {
       return a.purchaseYear - b.purchaseYear;
     }
@@ -1686,8 +1714,9 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     }
 
     const portfolioCashAdjustment = cumulativeCash - propertyCashflow;
-    const combinedNetWealth = propertyNetAfterTax + portfolioCashAdjustment;
-    const totalNetWealthWithIndex = combinedNetWealth + indexFundValue;
+    const combinedNetWealthBeforeTax = propertyNet + portfolioCashAdjustment;
+    const combinedNetWealthAfterTax = propertyNetAfterTax + portfolioCashAdjustment;
+    const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
 
     chart.push({
       year,
@@ -1697,7 +1726,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       propertyNetAfterTax,
       cashflow: propertyCashflow,
       investedRent: propertyInvestedRent,
-      combinedNetWealth,
+      combinedNetWealth: combinedNetWealthAfterTax,
+      combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
       cashFlow,
       cumulativeCash,
@@ -1714,7 +1744,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           propertyNet,
           propertyNetAfterTax,
           cashflow: propertyCashflow,
-          combinedNetWealth,
+          combinedNetWealth: combinedNetWealthAfterTax,
+          combinedNetWealthBeforeTax,
           cumulativeCash,
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
@@ -1771,6 +1802,10 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   };
 
   const lastPoint = chart[chart.length - 1] ?? null;
+  const averageRentalYield =
+    totalPurchasePrice > 0 ? totalGrossRentYear1 / totalPurchasePrice : 0;
+  const averageCapRate = totalPurchasePrice > 0 ? totalNoiYear1 / totalPurchasePrice : 0;
+
   const totals = {
     ...baseTotals,
     finalPropertyNetAfterTax:
@@ -1786,6 +1821,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     finalTotalNetWealth:
       lastPoint?.totalNetWealthWithIndex ??
       ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
+    averageRentalYield,
+    averageCapRate,
   };
 
   const planIrr = irr(planCashflows);
@@ -6224,9 +6261,9 @@ export default function App() {
     propertyNetAfterTax: true,
     investedRent: false,
     combinedNetWealth: true,
+    combinedNetWealthBeforeTax: false,
     cumulativeCash: true,
     cumulativeExternal: true,
-    totalNetWealthWithIndex: true,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
@@ -6433,6 +6470,7 @@ export default function App() {
   const chartOverlayRef = useRef(null);
   const chartModalContentRef = useRef(null);
   const planChartOverlayRef = useRef(null);
+  const planDragIdRef = useRef(null);
   const geocodeDebounceRef = useRef(null);
   const geocodeAbortRef = useRef(null);
   const crimeAbortRef = useRef(null);
@@ -11983,6 +12021,56 @@ export default function App() {
     setShowPlanModal(true);
   }, [futurePlan.length, inputs.propertyAddress, buildScenarioSnapshot]);
 
+  const handleOpenPlanModal = useCallback(() => {
+    const snapshot = buildScenarioSnapshot();
+    const snapshotData = snapshot?.data ?? {};
+    const addressLabel = (inputs.propertyAddress ?? '').trim();
+    const snapshotLabel =
+      typeof snapshotData.propertyDisplayName === 'string'
+        ? snapshotData.propertyDisplayName.trim()
+        : '';
+    const snapshotAddress =
+      typeof snapshotData.propertyAddress === 'string'
+        ? snapshotData.propertyAddress.trim()
+        : '';
+    const label = addressLabel || snapshotLabel || snapshotAddress || 'Current property';
+
+    setFuturePlan((prev) => {
+      const sanitizedPrev = prev.map((item) => sanitizePlanItem(item)).filter(Boolean);
+      const existingIndex = sanitizedPrev.findIndex((item) => item.isPrimary);
+      const existingPrimary = existingIndex >= 0 ? sanitizedPrev[existingIndex] : null;
+      const primaryId = existingPrimary?.id ?? 'plan-primary';
+      const exitOverride = Number.isFinite(existingPrimary?.exitYearOverride)
+        ? existingPrimary.exitYearOverride
+        : Number.isFinite(snapshotData.exitYear)
+          ? Math.max(0, Math.round(Number(snapshotData.exitYear)))
+          : DEFAULT_INPUTS.exitYear;
+
+      const primary = sanitizePlanItem({
+        ...(existingPrimary ?? {}),
+        id: primaryId,
+        name: existingPrimary?.name ?? label,
+        createdAt: existingPrimary?.createdAt ?? new Date().toISOString(),
+        inputs: snapshotData,
+        purchaseYear: 0,
+        include: true,
+        useIncomeForDeposit: existingPrimary?.useIncomeForDeposit === true,
+        incomeContribution: Number(existingPrimary?.incomeContribution) || 0,
+        exitYearOverride: exitOverride,
+        isPrimary: true,
+      });
+
+      const others = sanitizedPrev
+        .filter((item, index) => index !== existingIndex && item.id !== primary.id)
+        .map((item) => sanitizePlanItem(item))
+        .filter(Boolean);
+
+      return [primary, ...others];
+    });
+
+    setShowPlanModal(true);
+  }, [buildScenarioSnapshot, inputs.propertyAddress, setFuturePlan]);
+
   const handlePlanIncludeToggle = useCallback(
     (id, include) => {
       updatePlanItem(id, { include: Boolean(include) });
@@ -11992,11 +12080,16 @@ export default function App() {
 
   const handlePlanPurchaseYearChange = useCallback(
     (id, value) => {
+      const planItem = planAnalysis.items.find((entry) => entry.id === id);
+      if (planItem?.isPrimary) {
+        updatePlanItem(id, { purchaseYear: 0 });
+        return;
+      }
       const numeric = Math.round(Number(value));
       const clampedValue = clamp(Number.isFinite(numeric) ? numeric : 0, 0, PLAN_MAX_PURCHASE_YEAR);
       updatePlanItem(id, { purchaseYear: clampedValue });
     },
-    [updatePlanItem]
+    [planAnalysis.items, updatePlanItem]
   );
 
   const handlePlanIncomeToggle = useCallback(
@@ -12095,6 +12188,68 @@ export default function App() {
     [futurePlan, setFuturePlan, setPlanNotice]
   );
 
+  const handlePlanDragStart = useCallback((id, event) => {
+    planDragIdRef.current = id;
+    if (event?.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      try {
+        event.dataTransfer.setData('text/plain', id);
+      } catch (error) {
+        // ignore
+      }
+    }
+  }, []);
+
+  const handlePlanDragEnd = useCallback(() => {
+    planDragIdRef.current = null;
+  }, []);
+
+  const handlePlanDragOver = useCallback((event, targetId) => {
+    if (!planDragIdRef.current || planDragIdRef.current === targetId) {
+      return;
+    }
+    if (event?.preventDefault) {
+      event.preventDefault();
+    }
+    if (event?.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }, []);
+
+  const handlePlanDrop = useCallback(
+    (targetId) => {
+      const sourceId = planDragIdRef.current;
+      planDragIdRef.current = null;
+      if (!sourceId || sourceId === targetId) {
+        return;
+      }
+      setFuturePlan((prev) => {
+        const sanitized = prev.map((item) => sanitizePlanItem(item)).filter(Boolean);
+        const sourceIndex = sanitized.findIndex((entry) => entry.id === sourceId);
+        const targetIndex = sanitized.findIndex((entry) => entry.id === targetId);
+        if (sourceIndex === -1 || targetIndex === -1) {
+          return prev;
+        }
+        const sourceItem = sanitized[sourceIndex];
+        if (sourceItem.isPrimary) {
+          return prev;
+        }
+        const targetItem = sanitized[targetIndex];
+        let insertIndex = targetIndex;
+        if (targetItem?.isPrimary) {
+          insertIndex = Math.min(sanitized.length, targetIndex + 1);
+        }
+        const reordered = sanitized.filter((_, idx) => idx !== sourceIndex);
+        if (insertIndex > sourceIndex) {
+          insertIndex -= 1;
+        }
+        reordered.splice(insertIndex, 0, sourceItem);
+        return reordered;
+      });
+    },
+    [setFuturePlan]
+  );
+
   const updatePlanInputs = useCallback(
     (id, next) => {
       if (!next || typeof next !== 'object') {
@@ -12143,7 +12298,25 @@ export default function App() {
       if (!Array.isArray(plan) || plan.length === 0) {
         return;
       }
-      setFuturePlan(plan.map((item) => sanitizePlanItem(item)).filter(Boolean));
+      setFuturePlan((prev) => {
+        const sanitizedPlan = plan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+        const existingPrimary = prev
+          .map((entry) => sanitizePlanItem(entry))
+          .find((entry) => entry?.isPrimary);
+        if (sanitizedPlan.length > 0) {
+          const first = { ...sanitizedPlan[0] };
+          sanitizedPlan[0] = sanitizePlanItem({
+            ...first,
+            id: existingPrimary?.id ?? first.id ?? 'plan-primary',
+            name: first.name ?? existingPrimary?.name ?? 'Current property',
+            createdAt: existingPrimary?.createdAt ?? first.createdAt ?? new Date().toISOString(),
+            purchaseYear: 0,
+            include: true,
+            isPrimary: true,
+          });
+        }
+        return sanitizedPlan;
+      });
       if (message) {
         setPlanNotice(message);
       }
@@ -14931,17 +15104,10 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={handleSavePlanProperty}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-indigo-200 px-4 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
-              >
-                Save to future plan
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowPlanModal(true)}
+                onClick={handleOpenPlanModal}
                 className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
               >
-                Analyse plan
+                Optimise Multiple Investments
               </button>
             </div>
             {planNotice ? (
@@ -16361,7 +16527,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-200">
-                      {planAnalysis.items.map((item) => {
+                      {planAnalysis.items.map((item, index) => {
                         const createdLabel = item.createdAt
                           ? new Date(item.createdAt).toLocaleString()
                           : '';
@@ -16370,12 +16536,22 @@ export default function App() {
                           Math.round(item.depositRequirement ?? item.initialOutlay ?? 0)
                         );
                         const isExpanded = planExpandedRows[item.id] === true;
+                        const isPrimaryRow = item.isPrimary === true || index === 0;
                         const exitYearDisplay = Number.isFinite(Number(item.exitYearOverride))
                           ? Math.max(0, Math.round(Number(item.exitYearOverride)))
                           : Math.max(0, Math.round(Number(item.exitYear)));
                         return (
                           <Fragment key={item.id}>
-                            <tr className={`align-top ${isExpanded ? 'bg-slate-50/60' : ''}`}>
+                            <tr
+                              className={`align-top ${isExpanded ? 'bg-slate-50/60' : ''}`}
+                              onDragOver={(event) => handlePlanDragOver(event, item.id)}
+                              onDrop={(event) => {
+                                if (event?.preventDefault) {
+                                  event.preventDefault();
+                                }
+                                handlePlanDrop(item.id);
+                              }}
+                            >
                               <td className="px-3 py-3">
                                 <input
                                   type="checkbox"
@@ -16385,16 +16561,57 @@ export default function App() {
                               </td>
                               <td className="px-3 py-3">
                                 <div className="flex items-start justify-between gap-2">
-                                  <div>
-                                    <div className="font-semibold text-slate-700">{item.name}</div>
-                                    {createdLabel ? (
-                                      <div className="text-[10px] text-slate-500">Added {createdLabel}</div>
-                                    ) : null}
-                                    {item.valid ? null : (
-                                      <div className="mt-1 text-[10px] text-rose-600">
-                                        Missing inputs to project this deal. Load it in the dashboard and complete the purchase details.
-                                      </div>
+                                  <div className="flex items-start gap-2">
+                                    {isPrimaryRow ? (
+                                      <span
+                                        className="mt-0.5 text-slate-300"
+                                        title="Primary property order is locked"
+                                      >
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          viewBox="0 0 20 20"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          strokeWidth="1.5"
+                                          className="h-3.5 w-3.5"
+                                          aria-hidden="true"
+                                        >
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h12M4 10h12M4 14h12" />
+                                        </svg>
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="mt-0.5 cursor-move text-slate-400 transition hover:text-slate-600"
+                                        draggable
+                                        onDragStart={(event) => handlePlanDragStart(item.id, event)}
+                                        onDragEnd={handlePlanDragEnd}
+                                        title="Drag to reorder"
+                                      >
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          viewBox="0 0 20 20"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          strokeWidth="1.5"
+                                          className="h-3.5 w-3.5"
+                                          aria-hidden="true"
+                                        >
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h12M4 10h12M4 14h12" />
+                                        </svg>
+                                      </button>
                                     )}
+                                    <div>
+                                      <div className="font-semibold text-slate-700">{item.name}</div>
+                                      {createdLabel ? (
+                                        <div className="text-[10px] text-slate-500">Added {createdLabel}</div>
+                                      ) : null}
+                                      {item.valid ? null : (
+                                        <div className="mt-1 text-[10px] text-rose-600">
+                                          Missing inputs to project this deal. Load it in the dashboard and complete the purchase details.
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                   <button
                                     type="button"
@@ -16426,9 +16643,18 @@ export default function App() {
                                   max={PLAN_MAX_PURCHASE_YEAR}
                                   value={item.purchaseYear}
                                   onChange={(event) => handlePlanPurchaseYearChange(item.id, event.target.value)}
-                                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                                  disabled={isPrimaryRow}
+                                  className={`w-20 rounded-lg border px-2 py-1 text-xs ${
+                                    isPrimaryRow
+                                      ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
+                                      : 'border-slate-300'
+                                  }`}
                                 />
-                                <div className="mt-1 text-[10px] text-slate-500">Year {item.purchaseYear}</div>
+                                <div className="mt-1 text-[10px] text-slate-500">
+                                  {isPrimaryRow
+                                    ? 'Year 0 (current property)'
+                                    : `Year ${item.purchaseYear}`}
+                                </div>
                               </td>
                               <td className="px-3 py-3">
                                 <input
@@ -16549,6 +16775,28 @@ export default function App() {
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                     <div className="text-slate-500">Index fund value (exit)</div>
                     <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.finalIndexFundValue)}</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Plan IRR</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">
+                      {Number.isFinite(planAnalysis.irr) ? formatPercent(planAnalysis.irr) : '—'}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Average rental yield</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">
+                      {Number.isFinite(planAnalysis.totals.averageRentalYield)
+                        ? formatPercent(planAnalysis.totals.averageRentalYield)
+                        : '—'}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Average cap rate</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">
+                      {Number.isFinite(planAnalysis.totals.averageCapRate)
+                        ? formatPercent(planAnalysis.totals.averageCapRate)
+                        : '—'}
+                    </div>
                   </div>
                 </div>
                 {planAnalysis.chart.length > 0 ? (
@@ -16698,20 +16946,33 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="combinedNetWealth"
-                            name="Net wealth (property + cash)"
+                            name="Net wealth (after tax)"
                             stroke="#1e293b"
                             strokeWidth={2}
                             dot={false}
+                            isAnimationActive={false}
                             hide={planChartSeriesActive.combinedNetWealth === false}
                           />
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
+                            dataKey="combinedNetWealthBeforeTax"
+                            name="Net wealth (before tax)"
+                            stroke="#0369a1"
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.combinedNetWealthBeforeTax === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
                             dataKey="cumulativeCash"
-                            name="Cumulative cash"
+                            name="Cumulative cash after tax"
                             stroke="#10b981"
                             strokeWidth={2}
                             dot={false}
+                            isAnimationActive={false}
                             hide={planChartSeriesActive.cumulativeCash === false}
                           />
                           <RechartsLine
@@ -16723,22 +16984,32 @@ export default function App() {
                             strokeDasharray="4 4"
                             strokeWidth={2}
                             dot={false}
+                            isAnimationActive={false}
                             hide={planChartSeriesActive.cumulativeExternal === false}
-                          />
-                          <RechartsLine
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="totalNetWealthWithIndex"
-                            name="Total net wealth incl. index"
-                            stroke="#6366f1"
-                            strokeWidth={2}
-                            dot={false}
-                            strokeDasharray="4 2"
-                            hide={planChartSeriesActive.totalNetWealthWithIndex === false}
                           />
                         </ComposedChart>
                       </ResponsiveContainer>
                     </div>
+                    <PlanOptimizationControls
+                      selectId="plan-optimization-goal-inline"
+                      goal={planOptimizationGoal}
+                      goals={PLAN_OPTIMIZATION_GOALS}
+                      goalMap={PLAN_OPTIMIZATION_GOAL_MAP}
+                      onGoalChange={handlePlanOptimizationGoalChange}
+                      onStart={handlePlanOptimizationStart}
+                      status={planOptimizationStatus}
+                      holdExpanded={planOptimizationHoldExpanded}
+                      onHoldExpandedChange={(next) =>
+                        setPlanOptimizationHoldExpanded(Boolean(next))
+                      }
+                      holdOptions={PLAN_OPTIMIZATION_HOLD_OPTIONS}
+                      holdState={planOptimizationHold}
+                      onHoldToggle={handlePlanOptimizationHoldToggle}
+                      progress={planOptimizationProgress}
+                      message={planOptimizationMessage}
+                      result={planOptimizationResult}
+                      onApply={handleApplyPlanOptimization}
+                    />
                   </div>
                 ) : null}
               </div>
@@ -17155,9 +17426,9 @@ export default function App() {
                               'propertyNetAfterTax',
                               'investedRent',
                               'combinedNetWealth',
+                              'combinedNetWealthBeforeTax',
                               'cumulativeCash',
                               'cumulativeExternal',
-                              'totalNetWealthWithIndex',
                             ]
                               .filter(
                                 (key) =>
@@ -17259,20 +17530,33 @@ export default function App() {
                           yAxisId="currency"
                           type="monotone"
                           dataKey="combinedNetWealth"
-                          name="Net wealth (property + cash)"
+                          name="Net wealth (after tax)"
                           stroke="#1e293b"
                           strokeWidth={2}
                           dot={false}
+                          isAnimationActive={false}
                           hide={planChartSeriesActive.combinedNetWealth === false}
                         />
                         <RechartsLine
                           yAxisId="currency"
                           type="monotone"
+                          dataKey="combinedNetWealthBeforeTax"
+                          name="Net wealth (before tax)"
+                          stroke="#0369a1"
+                          strokeWidth={2}
+                          dot={false}
+                          isAnimationActive={false}
+                          hide={planChartSeriesActive.combinedNetWealthBeforeTax === false}
+                        />
+                        <RechartsLine
+                          yAxisId="currency"
+                          type="monotone"
                           dataKey="cumulativeCash"
-                          name="Cumulative cash"
+                          name="Cumulative cash after tax"
                           stroke="#10b981"
                           strokeWidth={2}
                           dot={false}
+                          isAnimationActive={false}
                           hide={planChartSeriesActive.cumulativeCash === false}
                         />
                         <RechartsLine
@@ -17284,18 +17568,8 @@ export default function App() {
                           strokeWidth={2}
                           strokeDasharray="4 4"
                           dot={false}
+                          isAnimationActive={false}
                           hide={planChartSeriesActive.cumulativeExternal === false}
-                        />
-                        <RechartsLine
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="totalNetWealthWithIndex"
-                          name="Total net wealth incl. index"
-                          stroke="#6366f1"
-                          strokeWidth={2}
-                          dot={false}
-                          strokeDasharray="4 2"
-                          hide={planChartSeriesActive.totalNetWealthWithIndex === false}
                         />
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -17317,200 +17591,26 @@ export default function App() {
                   <p className="text-[11px] text-slate-500">
                     Index fund contributions assume deposits funded from outside the portfolio are invested alongside the benchmark from the purchase year onward.
                   </p>
-                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
-                        <label htmlFor="plan-optimization-goal" className="sr-only">
-                          Optimisation goal
-                        </label>
-                        <select
-                          id="plan-optimization-goal"
-                          value={planOptimizationGoal}
-                          onChange={(event) => handlePlanOptimizationGoalChange(event.target.value)}
-                          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm focus:border-slate-500 focus:outline-none"
-                        >
-                          {PLAN_OPTIMIZATION_GOALS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={handlePlanOptimizationStart}
-                          disabled={planOptimizationStatus === 'running'}
-                          className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold transition ${
-                            planOptimizationStatus === 'running'
-                              ? 'cursor-wait border border-slate-200 bg-slate-100 text-slate-400'
-                              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
-                          }`}
-                        >
-                          {planOptimizationStatus === 'running' ? 'Optimising…' : 'Optimise'}
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setPlanOptimizationHoldExpanded((prev) => !prev)}
-                        aria-expanded={planOptimizationHoldExpanded}
-                        aria-controls="plan-optimization-hold"
-                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 20 20"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          className={`h-3 w-3 transition-transform ${planOptimizationHoldExpanded ? 'rotate-180' : ''}`}
-                          aria-hidden="true"
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
-                        </svg>
-                        <span>Factors to hold constant</span>
-                      </button>
-                    </div>
-                    {planOptimizationHoldExpanded ? (
-                      <div
-                        id="plan-optimization-hold"
-                        className="mt-3 flex flex-wrap gap-4 text-[11px] text-slate-600"
-                      >
-                        {PLAN_OPTIMIZATION_HOLD_OPTIONS.map((option) => (
-                          <label key={option.key} className="inline-flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={planOptimizationHold?.[option.key] === true}
-                              onChange={(event) =>
-                                handlePlanOptimizationHoldToggle(option.key, event.target.checked)
-                              }
-                            />
-                            <span>{option.label}</span>
-                          </label>
-                        ))}
-                      </div>
-                    ) : null}
-                    {planOptimizationStatus === 'running' ? (
-                      <div className="mt-3 space-y-2">
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-                          <div
-                            className="h-full rounded-full bg-slate-500 transition-all"
-                            style={{ width: `${Math.round(planOptimizationProgress * 100)}%` }}
-                          />
-                        </div>
-                        <p className="text-[11px] text-slate-500">
-                          {planOptimizationMessage || 'Benchmarking plan variations…'}
-                        </p>
-                      </div>
-                    ) : planOptimizationResult?.status === 'ready' && planOptimizationResult.best ? (
-                      <div className="mt-3 space-y-3">
-                        <div className="rounded-lg border border-slate-200 bg-white p-3">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                Recommended plan
-                              </div>
-                              <div className="text-sm font-semibold text-slate-800">
-                                {planOptimizationResult.best.label}
-                              </div>
-                              <div className="text-[11px] text-slate-500">
-                                Purchase in year {planOptimizationResult.best.purchaseYear} · hold for
-                                {' '}
-                                {planOptimizationResult.best.exitYear} year
-                                {planOptimizationResult.best.exitYear === 1 ? '' : 's'}
-                              </div>
-                            </div>
-                            <div className="text-right text-[11px] text-slate-500">
-                              <div className="text-sm font-semibold text-slate-700">
-                                {planOptimizationResult.best.formattedValue}
-                              </div>
-                              {planOptimizationResult.best.formattedDelta ? (
-                                <div>{planOptimizationResult.best.formattedDelta}</div>
-                              ) : null}
-                            </div>
-                          </div>
-                          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                            <span className="text-[11px] text-slate-500">
-                              Baseline {planOptimizationResult.goal?.label ?? 'value'}: {planOptimizationResult.baseline?.formattedValue ?? '—'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleApplyPlanOptimization(
-                                  planOptimizationResult.best.plan,
-                                  `Applied ${planOptimizationResult.goal?.label ?? 'plan'} optimisation.`
-                                )
-                              }
-                              className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                            >
-                              Load plan
-                            </button>
-                          </div>
-                        </div>
-                        {planOptimizationResult.alternatives?.length ? (
-                          <div className="space-y-2">
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                              Other opportunities
-                            </div>
-                            {planOptimizationResult.alternatives.map((alternative) => (
-                              <div key={`${alternative.id}-${alternative.purchaseYear}-${alternative.exitYear}`} className="rounded-lg border border-slate-200 bg-white p-3">
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                  <div>
-                                    <div className="text-sm font-semibold text-slate-800">
-                                      {alternative.label}
-                                    </div>
-                                    <div className="text-[11px] text-slate-500">
-                                      Purchase in year {alternative.purchaseYear} · hold for {alternative.exitYear} year
-                                      {alternative.exitYear === 1 ? '' : 's'}
-                                    </div>
-                                  </div>
-                                  <div className="text-right text-[11px] text-slate-500">
-                                    <div className="text-sm font-semibold text-slate-700">
-                                      {alternative.formattedValue}
-                                    </div>
-                                    {alternative.formattedDelta ? (
-                                      <div>{alternative.formattedDelta}</div>
-                                    ) : null}
-                                  </div>
-                                </div>
-                                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                                  <span className="text-[11px] text-slate-500">Δ vs baseline</span>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleApplyPlanOptimization(
-                                        alternative.plan,
-                                        `Loaded alternative ${planOptimizationResult.goal?.label ?? 'plan'} scenario.`
-                                      )
-                                    }
-                                    className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
-                                  >
-                                    Load plan
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : planOptimizationResult?.status === 'unavailable' ? (
-                      <p className="mt-3 text-[11px] text-slate-500">
-                        {planOptimizationResult.message ?? 'Unable to generate plan optimisation with the current inputs.'}
-                      </p>
-                    ) : planOptimizationResult?.status === 'error' ? (
-                      <p className="mt-3 text-[11px] text-rose-600">
-                        {planOptimizationResult.message ?? 'Unable to complete plan optimisation.'}
-                      </p>
-                    ) : planOptimizationResult?.status === 'baseline' ? (
-                      <p className="mt-3 text-[11px] text-slate-500">
-                        {planOptimizationResult.message ?? 'No alternative combinations improved on the baseline under current constraints.'}
-                      </p>
-                    ) : planOptimizationMessage ? (
-                      <p className="mt-3 text-[11px] text-slate-500">{planOptimizationMessage}</p>
-                    ) : (
-                      <p className="mt-3 text-[11px] text-slate-500">
-                        Select an optimisation goal and click optimise to benchmark purchase and exit timing.
-                      </p>
-                    )}
-                  </div>
+                  <PlanOptimizationControls
+                    selectId="plan-optimization-goal-overlay"
+                    goal={planOptimizationGoal}
+                    goals={PLAN_OPTIMIZATION_GOALS}
+                    goalMap={PLAN_OPTIMIZATION_GOAL_MAP}
+                    onGoalChange={handlePlanOptimizationGoalChange}
+                    onStart={handlePlanOptimizationStart}
+                    status={planOptimizationStatus}
+                    holdExpanded={planOptimizationHoldExpanded}
+                    onHoldExpandedChange={(next) =>
+                      setPlanOptimizationHoldExpanded(Boolean(next))
+                    }
+                    holdOptions={PLAN_OPTIMIZATION_HOLD_OPTIONS}
+                    holdState={planOptimizationHold}
+                    onHoldToggle={handlePlanOptimizationHoldToggle}
+                    progress={planOptimizationProgress}
+                    message={planOptimizationMessage}
+                    result={planOptimizationResult}
+                    onApply={handleApplyPlanOptimization}
+                  />
                 </div>
               )}
             </div>
@@ -18802,23 +18902,23 @@ function PlanWealthChartOverlay({
     },
     {
       key: 'combinedNetWealth',
-      label: SERIES_LABELS.combinedNetWealth ?? 'Net wealth (property + cash)',
+      label: SERIES_LABELS.combinedNetWealth ?? 'Net wealth (after tax)',
       value: point.combinedNetWealth,
     },
     {
+      key: 'combinedNetWealthBeforeTax',
+      label: SERIES_LABELS.combinedNetWealthBeforeTax ?? 'Net wealth (before tax)',
+      value: point.combinedNetWealthBeforeTax,
+    },
+    {
       key: 'cumulativeCash',
-      label: SERIES_LABELS.cumulativeCash ?? 'Cumulative cash',
+      label: SERIES_LABELS.cumulativeCash ?? 'Cumulative cash after tax',
       value: point.cumulativeCash,
     },
     {
       key: 'indexFund',
       label: SERIES_LABELS.indexFund ?? 'Index fund',
       value: point.indexFund ?? point.indexFundValue,
-    },
-    {
-      key: 'totalNetWealthWithIndex',
-      label: SERIES_LABELS.totalNetWealthWithIndex ?? 'Total net wealth incl. index',
-      value: point.totalNetWealthWithIndex,
     },
     {
       key: 'cumulativeExternal',
@@ -19030,6 +19130,257 @@ function PlanWealthChartOverlay({
           })
         )}
       </div>
+    </div>
+  );
+}
+
+function PlanOptimizationControls({
+  className = 'mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4',
+  selectId = 'plan-optimization-goal',
+  goal,
+  goals = [],
+  goalMap = {},
+  onGoalChange,
+  onStart,
+  status = 'idle',
+  holdExpanded = false,
+  onHoldExpandedChange,
+  holdOptions = [],
+  holdState = {},
+  onHoldToggle,
+  progress = 0,
+  message = '',
+  result = null,
+  onApply,
+}) {
+  const running = status === 'running';
+  const goalLabel = goalMap?.[goal]?.label ?? '';
+  const handleGoalChange = (event) => {
+    onGoalChange?.(event.target.value);
+  };
+  const handleOptimise = () => {
+    if (!running) {
+      onStart?.();
+    }
+  };
+  const toggleHoldExpanded = () => {
+    onHoldExpandedChange?.(!holdExpanded);
+  };
+  const readyResult = result && result.status === 'ready' ? result : null;
+  const bestRecommendation = readyResult?.best ?? null;
+  const alternatives = Array.isArray(readyResult?.alternatives)
+    ? readyResult.alternatives
+    : [];
+
+  const renderStatusMessage = () => {
+    if (running) {
+      return (
+        <div className="mt-3 space-y-2">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+            <div
+              className="h-full rounded-full bg-slate-500 transition-all"
+              style={{ width: `${Math.round(Math.max(0, Math.min(1, progress)) * 100)}%` }}
+            />
+          </div>
+          <p className="text-[11px] text-slate-500">
+            {message || 'Benchmarking plan variations…'}
+          </p>
+        </div>
+      );
+    }
+
+    if (readyResult && bestRecommendation) {
+      return (
+        <div className="mt-3 space-y-3">
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  Recommended plan
+                </div>
+                <div className="text-sm font-semibold text-slate-800">
+                  {bestRecommendation.label}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Purchase in year {bestRecommendation.purchaseYear} · hold for {bestRecommendation.exitYear} year
+                  {bestRecommendation.exitYear === 1 ? '' : 's'}
+                </div>
+              </div>
+              <div className="text-right text-[11px] text-slate-500">
+                <div className="text-sm font-semibold text-slate-700">
+                  {bestRecommendation.formattedValue}
+                </div>
+                {bestRecommendation.formattedDelta ? (
+                  <div>{bestRecommendation.formattedDelta}</div>
+                ) : null}
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] text-slate-500">
+                Baseline {readyResult.goal?.label ?? 'value'}: {readyResult.baseline?.formattedValue ?? '—'}
+              </span>
+              <button
+                type="button"
+                onClick={() => onApply?.(bestRecommendation.plan, `Applied ${readyResult.goal?.label ?? 'plan'} optimisation.`)}
+                className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Load plan
+              </button>
+            </div>
+          </div>
+          {alternatives.length ? (
+            <div className="space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Other opportunities
+              </div>
+              {alternatives.map((alternative) => (
+                <div
+                  key={`${alternative.id}-${alternative.purchaseYear}-${alternative.exitYear}`}
+                  className="rounded-lg border border-slate-200 bg-white p-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-800">{alternative.label}</div>
+                      <div className="text-[11px] text-slate-500">
+                        Purchase in year {alternative.purchaseYear} · hold for {alternative.exitYear} year
+                        {alternative.exitYear === 1 ? '' : 's'}
+                      </div>
+                    </div>
+                    <div className="text-right text-[11px] text-slate-500">
+                      <div className="text-sm font-semibold text-slate-700">{alternative.formattedValue}</div>
+                      {alternative.formattedDelta ? <div>{alternative.formattedDelta}</div> : null}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] text-slate-500">Δ vs baseline</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onApply?.(
+                          alternative.plan,
+                          `Loaded alternative ${readyResult.goal?.label ?? 'plan'} scenario.`
+                        )
+                      }
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    >
+                      Load plan
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    if (result?.status === 'unavailable') {
+      return (
+        <p className="mt-3 text-[11px] text-slate-500">
+          {result.message ?? 'Unable to generate plan optimisation with the current inputs.'}
+        </p>
+      );
+    }
+
+    if (result?.status === 'error') {
+      return (
+        <p className="mt-3 text-[11px] text-rose-600">
+          {result.message ?? 'Unable to complete plan optimisation.'}
+        </p>
+      );
+    }
+
+    if (result?.status === 'baseline') {
+      return (
+        <p className="mt-3 text-[11px] text-slate-500">
+          {result.message ?? 'No alternative combinations improved on the baseline under current constraints.'}
+        </p>
+      );
+    }
+
+    if (message) {
+      return <p className="mt-3 text-[11px] text-slate-500">{message}</p>;
+    }
+
+    return (
+      <p className="mt-3 text-[11px] text-slate-500">
+        Select an optimisation goal and click optimise to benchmark purchase and exit timing.
+      </p>
+    );
+  };
+
+  return (
+    <div className={className}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <label htmlFor={selectId} className="sr-only">
+            Optimisation goal
+          </label>
+          <select
+            id={selectId}
+            value={goal}
+            onChange={handleGoalChange}
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm focus:border-slate-500 focus:outline-none"
+          >
+            {goals.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={handleOptimise}
+            disabled={running}
+            title={goalLabel ? `Optimise for ${goalLabel}` : undefined}
+            className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+              running
+                ? 'cursor-wait border border-slate-200 bg-slate-100 text-slate-400'
+                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            {running ? 'Optimising…' : 'Optimise'}
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={toggleHoldExpanded}
+          aria-expanded={holdExpanded}
+          aria-controls={`${selectId}-hold-options`}
+          className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            className={`h-3 w-3 transition-transform ${holdExpanded ? 'rotate-180' : ''}`}
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
+          </svg>
+          <span>Factors to hold constant</span>
+        </button>
+      </div>
+      {holdExpanded ? (
+        <div
+          id={`${selectId}-hold-options`}
+          className="mt-3 flex flex-wrap gap-4 text-[11px] text-slate-600"
+        >
+          {holdOptions.map((option) => (
+            <label key={option.key} className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={holdState?.[option.key] === true}
+                onChange={(event) => onHoldToggle?.(option.key, event.target.checked)}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+      ) : null}
+      {renderStatusMessage()}
     </div>
   );
 }
