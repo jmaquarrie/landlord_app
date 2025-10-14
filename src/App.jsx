@@ -222,22 +222,24 @@ const SERIES_COLORS = {
   cumulativeDiscounted: '#0f172a',
   cumulativeUndiscounted: '#94a3b8',
   discountFactor: '#64748b',
+  cashflowAfterTax: '#10b981',
+  netWealthAfterTax: '#1e293b',
 };
 
 const SERIES_LABELS = {
-  indexFund: 'Index fund',
+  indexFund: 'Index fund value',
   cashflow: 'Cashflow',
   propertyValue: 'Property value',
   propertyGross: 'Property gross',
   propertyNet: 'Property net',
-  propertyNetAfterTax: 'Property net after tax',
+  propertyNetAfterTax: 'Property value after tax',
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
   investedRent: 'Invested rent',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
-  cumulativeCash: 'Cumulative cash after tax',
+  cumulativeCash: 'Cashflow after tax',
   cumulativeExternal: 'External cash deployed',
   indexFundValue: 'Index fund value',
   capRate: 'Cap rate',
@@ -253,6 +255,8 @@ const SERIES_LABELS = {
   cumulativeDiscounted: 'NPV to date',
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
+  cashflowAfterTax: 'Cashflow after tax',
+  netWealthAfterTax: 'Net wealth (after tax)',
 };
 
 const CASHFLOW_BAR_COLORS = {
@@ -1439,13 +1443,25 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         }
         const year = Math.max(0, Math.round(yearValue));
         const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue) || 0;
+        const cashflowGross = Number(point?.cashflow) || 0;
+        const cashflowNet = Number(
+          point?.meta?.cumulativeCashAfterTaxNet ??
+            point?.meta?.cumulativeCashAfterTaxKept ??
+            cashflowGross
+        );
+        const cashflowKept = Number(
+          point?.meta?.cumulativeCashAfterTaxKept ?? cashflowNet
+        );
         chartByYear.set(year, {
           year,
           propertyValue: Number(point?.propertyValue) || 0,
           propertyGross: Number(point?.propertyGross) || 0,
           propertyNet: Number(point?.propertyNet) || 0,
           propertyNetAfterTax: Number(point?.propertyNetAfterTax) || 0,
-          cashflow: Number(point?.cashflow) || 0,
+          cashflow: cashflowNet,
+          cashflowNet,
+          cashflowGross,
+          cashflowKept,
           indexFund: indexFundValue,
           investedRent: Number(point?.investedRent) || 0,
           reinvestFund: Number(point?.reinvestFund ?? point?.meta?.reinvestFundValue) || 0,
@@ -1586,7 +1602,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     let propertyGross = 0;
     let propertyNet = 0;
     let propertyNetAfterTax = 0;
-    let propertyCashflow = 0;
+    let propertyCashflowNet = 0;
+    let propertyCashflowGross = 0;
     let propertyInvestedRent = 0;
     let cashFlow = 0;
     let externalCashFlow = 0;
@@ -1631,7 +1648,10 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         propertyGross += Number(chartPoint.propertyGross) || 0;
         propertyNet += Number(chartPoint.propertyNet) || 0;
         propertyNetAfterTax += Number(chartPoint.propertyNetAfterTax) || 0;
-        propertyCashflow += Number(chartPoint.cashflow) || 0;
+        const netCashValue = Number(chartPoint.cashflowNet ?? chartPoint.cashflow) || 0;
+        const grossCashValue = Number(chartPoint.cashflowGross ?? chartPoint.cashflow) || 0;
+        propertyCashflowNet += netCashValue;
+        propertyCashflowGross += grossCashValue;
         propertyInvestedRent += Number(chartPoint.investedRent) || 0;
       }
 
@@ -1713,7 +1733,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cumulativeIndexFundContribution += indexFundContribution;
     }
 
-    const portfolioCashAdjustment = cumulativeCash - propertyCashflow;
+    const portfolioCashAdjustment = cumulativeCash - propertyCashflowNet;
     const combinedNetWealthBeforeTax = propertyNet + portfolioCashAdjustment;
     const combinedNetWealthAfterTax = propertyNetAfterTax + portfolioCashAdjustment;
     const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
@@ -1724,7 +1744,9 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       propertyGross,
       propertyNet,
       propertyNetAfterTax,
-      cashflow: propertyCashflow,
+      cashflow: propertyCashflowNet,
+      cashflowNet: propertyCashflowNet,
+      cashflowGross: propertyCashflowGross,
       investedRent: propertyInvestedRent,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
@@ -1743,7 +1765,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           propertyValue,
           propertyNet,
           propertyNetAfterTax,
-          cashflow: propertyCashflow,
+          cashflow: propertyCashflowNet,
           combinedNetWealth: combinedNetWealthAfterTax,
           combinedNetWealthBeforeTax,
           cumulativeCash,
@@ -6254,16 +6276,12 @@ export default function App() {
   const [planChartExpanded, setPlanChartExpanded] = useState(false);
   const [planChartSeriesActive, setPlanChartSeriesActive] = useState(() => ({
     indexFund: true,
-    cashflow: false,
-    propertyValue: false,
-    propertyGross: false,
-    propertyNet: false,
+    cumulativeCash: true,
+    propertyValue: true,
     propertyNetAfterTax: true,
-    investedRent: false,
     combinedNetWealth: true,
     combinedNetWealthBeforeTax: false,
-    cumulativeCash: true,
-    cumulativeExternal: true,
+    cumulativeExternal: false,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
@@ -6378,11 +6396,10 @@ export default function App() {
     indexFund1_5x: false,
     indexFund2x: false,
     indexFund4x: false,
-    propertyValue: false,
-    propertyGross: false,
-    propertyNet: false,
+    cashflowAfterTax: true,
+    propertyValue: true,
     propertyNetAfterTax: true,
-    cashflow: false,
+    netWealthAfterTax: true,
     investedRent: false,
   });
   const [rateSeriesActive, setRateSeriesActive] = useState({
@@ -8747,10 +8764,27 @@ export default function App() {
     }
     const startYear = Math.max(0, Math.min(chartRange.start, chartRange.end));
     const endYear = Math.max(startYear, chartRange.end);
-    return data.filter((point) => {
-      const year = Number(point?.year);
-      return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
-    });
+    return data
+      .filter((point) => {
+        const year = Number(point?.year);
+        return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
+      })
+      .map((point) => {
+        const cashflowAfterTax = Number(
+          point?.meta?.cumulativeCashAfterTaxNet ??
+            point?.meta?.cumulativeCashAfterTax ??
+            point?.cashflow ??
+            0
+        );
+        const netWealthAfterTax = Number(point?.propertyNetAfterTax) || 0;
+        const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue ?? 0);
+        return {
+          ...point,
+          cashflowAfterTax,
+          netWealthAfterTax,
+          indexFundValue,
+        };
+      });
   }, [equity.chart, chartRange]);
 
   const rateChartData = useMemo(() => {
@@ -13750,8 +13784,8 @@ export default function App() {
                         <Area
                           type="monotone"
                           dataKey="indexFund"
-                          name="Index fund"
-                          stroke="#f97316"
+                          name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                          stroke={SERIES_COLORS.indexFund}
                           fill="rgba(249,115,22,0.2)"
                           strokeWidth={2}
                           isAnimationActive={false}
@@ -13759,19 +13793,19 @@ export default function App() {
                         />
                         <Area
                           type="monotone"
-                          dataKey="cashflow"
-                          name="Cashflow"
-                          stroke="#facc15"
-                          fill="rgba(250,204,21,0.2)"
+                          dataKey="cashflowAfterTax"
+                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                          stroke={SERIES_COLORS.cashflowAfterTax}
+                          fill="rgba(16,185,129,0.18)"
                           strokeWidth={2}
                           isAnimationActive={false}
-                          hide={!activeSeries.cashflow}
+                          hide={!activeSeries.cashflowAfterTax}
                         />
                         <Area
                           type="monotone"
                           dataKey="propertyValue"
-                          name="Property value"
-                          stroke="#0ea5e9"
+                          name={SERIES_LABELS.propertyValue ?? 'Property value'}
+                          stroke={SERIES_COLORS.propertyValue}
                           fill="rgba(14,165,233,0.18)"
                           strokeWidth={2}
                           isAnimationActive={false}
@@ -13779,33 +13813,23 @@ export default function App() {
                         />
                         <Area
                           type="monotone"
-                          dataKey="propertyGross"
-                          name="Property gross"
-                          stroke="#2563eb"
-                          fill="rgba(37,99,235,0.2)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={!activeSeries.propertyGross}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="propertyNet"
-                          name="Property net"
-                          stroke="#16a34a"
-                          fill="rgba(22,163,74,0.25)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={!activeSeries.propertyNet}
-                        />
-                        <Area
-                          type="monotone"
                           dataKey="propertyNetAfterTax"
-                          name={propertyNetAfterTaxLabel}
-                          stroke="#9333ea"
+                          name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
+                          stroke={SERIES_COLORS.propertyNetAfterTax}
                           fill="rgba(147,51,234,0.2)"
                           strokeWidth={2}
                           isAnimationActive={false}
                           hide={!activeSeries.propertyNetAfterTax}
+                        />
+                        <RechartsLine
+                          type="monotone"
+                          dataKey="netWealthAfterTax"
+                          name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
+                          stroke={SERIES_COLORS.netWealthAfterTax}
+                          strokeWidth={2}
+                          dot={false}
+                          isAnimationActive={false}
+                          hide={!activeSeries.netWealthAfterTax}
                         />
                         <Area
                           type="monotone"
@@ -15461,8 +15485,8 @@ export default function App() {
                           <Area
                             type="monotone"
                             dataKey="indexFund"
-                            name="Index fund"
-                            stroke="#f97316"
+                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
@@ -15471,20 +15495,20 @@ export default function App() {
                           />
                           <Area
                             type="monotone"
-                            dataKey="cashflow"
-                            name="Cashflow"
-                            stroke="#facc15"
-                            fill="rgba(250,204,21,0.2)"
+                            dataKey="cashflowAfterTax"
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            stroke={SERIES_COLORS.cashflowAfterTax}
+                            fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
                             yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.cashflow}
+                            hide={!activeSeries.cashflowAfterTax}
                           />
                           <Area
                             type="monotone"
                             dataKey="propertyValue"
-                            name="Property value"
-                            stroke="#0ea5e9"
+                            name={SERIES_LABELS.propertyValue ?? 'Property value'}
+                            stroke={SERIES_COLORS.propertyValue}
                             fill="rgba(14,165,233,0.18)"
                             strokeWidth={2}
                             yAxisId="currency"
@@ -15493,36 +15517,25 @@ export default function App() {
                           />
                           <Area
                             type="monotone"
-                            dataKey="propertyGross"
-                            name="Property gross"
-                            stroke="#2563eb"
-                            fill="rgba(37,99,235,0.2)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.propertyGross}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="propertyNet"
-                            name="Property net"
-                            stroke="#16a34a"
-                            fill="rgba(22,163,74,0.25)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.propertyNet}
-                          />
-                          <Area
-                            type="monotone"
                             dataKey="propertyNetAfterTax"
-                            name={propertyNetAfterTaxLabel}
-                            stroke="#9333ea"
+                            name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
+                            stroke={SERIES_COLORS.propertyNetAfterTax}
                             fill="rgba(147,51,234,0.2)"
                             strokeWidth={2}
                             yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.propertyNetAfterTax}
+                          />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="netWealthAfterTax"
+                            name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
+                            stroke={SERIES_COLORS.netWealthAfterTax}
+                            strokeWidth={2}
+                            dot={false}
+                            yAxisId="currency"
+                            isAnimationActive={false}
+                            hide={!activeSeries.netWealthAfterTax}
                           />
                           <Area
                             type="monotone"
@@ -16868,8 +16881,8 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name="Index fund"
-                            stroke="#f97316"
+                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
                             isAnimationActive={false}
@@ -16878,20 +16891,20 @@ export default function App() {
                           <Area
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="cashflow"
-                            name="Cashflow"
-                            stroke="#facc15"
-                            fill="rgba(250,204,21,0.2)"
+                            dataKey="cumulativeCash"
+                            name={SERIES_LABELS.cumulativeCash ?? 'Cashflow after tax'}
+                            stroke={SERIES_COLORS.cumulativeCash}
+                            fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.cashflow === false}
+                            hide={planChartSeriesActive.cumulativeCash === false}
                           />
                           <Area
                             yAxisId="currency"
                             type="monotone"
                             dataKey="propertyValue"
-                            name="Property value"
-                            stroke="#0ea5e9"
+                            name={SERIES_LABELS.propertyValue ?? 'Property value'}
+                            stroke={SERIES_COLORS.propertyValue}
                             fill="rgba(14,165,233,0.18)"
                             strokeWidth={2}
                             isAnimationActive={false}
@@ -16900,54 +16913,20 @@ export default function App() {
                           <Area
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="propertyGross"
-                            name="Property gross"
-                            stroke="#2563eb"
-                            fill="rgba(37,99,235,0.2)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.propertyGross === false}
-                          />
-                          <Area
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="propertyNet"
-                            name="Property net"
-                            stroke="#16a34a"
-                            fill="rgba(22,163,74,0.25)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.propertyNet === false}
-                          />
-                          <Area
-                            yAxisId="currency"
-                            type="monotone"
                             dataKey="propertyNetAfterTax"
-                            name="Property net after tax"
-                            stroke="#9333ea"
+                            name={SERIES_LABELS.propertyNetAfterTax ?? 'Property value after tax'}
+                            stroke={SERIES_COLORS.propertyNetAfterTax}
                             fill="rgba(147,51,234,0.2)"
                             strokeWidth={2}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyNetAfterTax === false}
                           />
-                          <Area
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="investedRent"
-                            name="Invested rent"
-                            stroke="#0d9488"
-                            fill="rgba(13,148,136,0.15)"
-                            strokeWidth={2}
-                            strokeDasharray="5 3"
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.investedRent === false}
-                          />
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
                             dataKey="combinedNetWealth"
-                            name="Net wealth (after tax)"
-                            stroke="#1e293b"
+                            name={SERIES_LABELS.combinedNetWealth ?? 'Net wealth (after tax)'}
+                            stroke={SERIES_COLORS.combinedNetWealth}
                             strokeWidth={2}
                             dot={false}
                             isAnimationActive={false}
@@ -16963,17 +16942,6 @@ export default function App() {
                             dot={false}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.combinedNetWealthBeforeTax === false}
-                          />
-                          <RechartsLine
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="cumulativeCash"
-                            name="Cumulative cash after tax"
-                            stroke="#10b981"
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.cumulativeCash === false}
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -17448,122 +17416,77 @@ export default function App() {
                                 />
                               ))
                           : null}
-                        <Area
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="indexFund"
-                          name="Index fund"
-                          stroke="#f97316"
-                          fill="rgba(249,115,22,0.2)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.indexFund === false}
-                        />
-                        <Area
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="cashflow"
-                          name="Cashflow"
-                          stroke="#facc15"
-                          fill="rgba(250,204,21,0.2)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.cashflow === false}
-                        />
-                        <Area
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="propertyValue"
-                          name="Property value"
-                          stroke="#0ea5e9"
-                          fill="rgba(14,165,233,0.18)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.propertyValue === false}
-                        />
-                        <Area
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="propertyGross"
-                          name="Property gross"
-                          stroke="#2563eb"
-                          fill="rgba(37,99,235,0.2)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.propertyGross === false}
-                        />
-                        <Area
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="propertyNet"
-                          name="Property net"
-                          stroke="#16a34a"
-                          fill="rgba(22,163,74,0.25)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.propertyNet === false}
-                        />
-                        <Area
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="propertyNetAfterTax"
-                          name="Property net after tax"
-                          stroke="#9333ea"
-                          fill="rgba(147,51,234,0.2)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.propertyNetAfterTax === false}
-                        />
-                        <Area
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="investedRent"
-                          name="Invested rent"
-                          stroke="#0d9488"
-                          fill="rgba(13,148,136,0.15)"
-                          strokeWidth={2}
-                          strokeDasharray="5 3"
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.investedRent === false}
-                        />
-                        <RechartsLine
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="combinedNetWealth"
-                          name="Net wealth (after tax)"
-                          stroke="#1e293b"
-                          strokeWidth={2}
-                          dot={false}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.combinedNetWealth === false}
-                        />
-                        <RechartsLine
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="combinedNetWealthBeforeTax"
-                          name="Net wealth (before tax)"
-                          stroke="#0369a1"
-                          strokeWidth={2}
-                          dot={false}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.combinedNetWealthBeforeTax === false}
-                        />
-                        <RechartsLine
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="cumulativeCash"
-                          name="Cumulative cash after tax"
-                          stroke="#10b981"
-                          strokeWidth={2}
-                          dot={false}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.cumulativeCash === false}
-                        />
-                        <RechartsLine
-                          yAxisId="currency"
-                          type="monotone"
-                          dataKey="cumulativeExternal"
-                          name="External cash deployed"
+                          <Area
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="indexFund"
+                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            stroke={SERIES_COLORS.indexFund}
+                            fill="rgba(249,115,22,0.2)"
+                            strokeWidth={2}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.indexFund === false}
+                          />
+                          <Area
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="cumulativeCash"
+                            name={SERIES_LABELS.cumulativeCash ?? 'Cashflow after tax'}
+                            stroke={SERIES_COLORS.cumulativeCash}
+                            fill="rgba(16,185,129,0.18)"
+                            strokeWidth={2}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.cumulativeCash === false}
+                          />
+                          <Area
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyValue"
+                            name={SERIES_LABELS.propertyValue ?? 'Property value'}
+                            stroke={SERIES_COLORS.propertyValue}
+                            fill="rgba(14,165,233,0.18)"
+                            strokeWidth={2}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.propertyValue === false}
+                          />
+                          <Area
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyNetAfterTax"
+                            name={SERIES_LABELS.propertyNetAfterTax ?? 'Property value after tax'}
+                            stroke={SERIES_COLORS.propertyNetAfterTax}
+                            fill="rgba(147,51,234,0.2)"
+                            strokeWidth={2}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.propertyNetAfterTax === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="combinedNetWealth"
+                            name={SERIES_LABELS.combinedNetWealth ?? 'Net wealth (after tax)'}
+                            stroke={SERIES_COLORS.combinedNetWealth}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.combinedNetWealth === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="combinedNetWealthBeforeTax"
+                            name="Net wealth (before tax)"
+                            stroke="#0369a1"
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.combinedNetWealthBeforeTax === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="cumulativeExternal"
+                            name="External cash deployed"
                           stroke="#f97316"
                           strokeWidth={2}
                           strokeDasharray="4 4"
@@ -18886,19 +18809,14 @@ function PlanWealthChartOverlay({
       value: point.propertyValue,
     },
     {
-      key: 'propertyNet',
-      label: SERIES_LABELS.propertyNet ?? 'Property net',
-      value: point.propertyNet,
-    },
-    {
       key: 'propertyNetAfterTax',
-      label: SERIES_LABELS.propertyNetAfterTax ?? 'Property net after tax',
+      label: SERIES_LABELS.propertyNetAfterTax ?? 'Property value after tax',
       value: point.propertyNetAfterTax,
     },
     {
-      key: 'cashflow',
-      label: SERIES_LABELS.cashflow ?? 'Cashflow',
-      value: point.cashflow,
+      key: 'cumulativeCash',
+      label: SERIES_LABELS.cumulativeCash ?? 'Cashflow after tax',
+      value: point.cumulativeCash,
     },
     {
       key: 'combinedNetWealth',
@@ -18906,18 +18824,8 @@ function PlanWealthChartOverlay({
       value: point.combinedNetWealth,
     },
     {
-      key: 'combinedNetWealthBeforeTax',
-      label: SERIES_LABELS.combinedNetWealthBeforeTax ?? 'Net wealth (before tax)',
-      value: point.combinedNetWealthBeforeTax,
-    },
-    {
-      key: 'cumulativeCash',
-      label: SERIES_LABELS.cumulativeCash ?? 'Cumulative cash after tax',
-      value: point.cumulativeCash,
-    },
-    {
       key: 'indexFund',
-      label: SERIES_LABELS.indexFund ?? 'Index fund',
+      label: SERIES_LABELS.indexFund ?? 'Index fund value',
       value: point.indexFund ?? point.indexFundValue,
     },
     {
