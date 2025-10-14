@@ -1771,8 +1771,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
-      netWealthAfterTax: totalNetWealthWithIndex,
-      netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+      netWealthAfterTax: combinedNetWealthAfterTax,
+      netWealthBeforeTax: combinedNetWealthBeforeTax,
       cashFlow,
       cumulativeCash,
       externalCashFlow,
@@ -1791,8 +1791,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           cashflowAfterTax: cumulativeCash,
           combinedNetWealth: combinedNetWealthAfterTax,
           combinedNetWealthBeforeTax,
-          netWealthAfterTax: totalNetWealthWithIndex,
-          netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+          netWealthAfterTax: combinedNetWealthAfterTax,
+          netWealthBeforeTax: combinedNetWealthBeforeTax,
           cumulativeCash,
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
@@ -1869,6 +1869,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     finalNetWealth:
       lastPoint?.combinedNetWealth ??
       lastPoint?.netWealthAfterTax ??
+      lastPoint?.meta?.totals?.combinedNetWealth ??
       lastPoint?.meta?.totals?.propertyNetAfterTax ??
       lastPoint?.propertyNetAfterTax ??
       0,
@@ -1880,9 +1881,12 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
     finalIndexFundValue: lastPoint?.indexFundValue ?? lastPoint?.indexFund ?? 0,
     finalTotalNetWealth:
+      lastPoint?.combinedNetWealth ??
       lastPoint?.netWealthAfterTax ??
-      lastPoint?.totalNetWealthWithIndex ??
-      ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
+      lastPoint?.meta?.totals?.combinedNetWealth ??
+      lastPoint?.meta?.totals?.propertyNetAfterTax ??
+      lastPoint?.propertyNetAfterTax ??
+      0,
     averageRentalYield,
     averageCapRate,
   };
