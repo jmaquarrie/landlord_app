@@ -6477,19 +6477,6 @@ export default function App() {
   }, [planChartExpanded]);
 
   useEffect(() => {
-    if (!Number.isFinite(planChartFocusYear)) {
-      return;
-    }
-    const year = Math.max(0, Math.round(Number(planChartFocusYear)));
-    const exists = planAnalysis.chart.some((point) => Number(point?.year) === year);
-    if (!exists) {
-      setPlanChartFocusYear(null);
-      setPlanChartFocusLocked(false);
-      setPlanChartExpandedDetails({});
-    }
-  }, [planAnalysis.chart, planChartFocusYear]);
-
-  useEffect(() => {
     optimizationStatusRef.current = optimizationStatus;
   }, [optimizationStatus]);
 
@@ -8159,6 +8146,19 @@ export default function App() {
         data: planChartFocusPoint,
       }
     : null;
+
+  useEffect(() => {
+    if (!Number.isFinite(planChartFocusYear)) {
+      return;
+    }
+    const year = Math.max(0, Math.round(Number(planChartFocusYear)));
+    const exists = planAnalysis.chart.some((point) => Number(point?.year) === year);
+    if (!exists) {
+      setPlanChartFocusYear(null);
+      setPlanChartFocusLocked(false);
+      setPlanChartExpandedDetails({});
+    }
+  }, [planAnalysis.chart, planChartFocusYear]);
 
   const handlePlanChartHover = useCallback(
     (event) => {
