@@ -6422,9 +6422,7 @@ export default function App() {
     indexFund: true,
     cashflowAfterTax: true,
     propertyValue: true,
-    propertyNetAfterTax: true,
     netWealthAfterTax: true,
-    netWealthBeforeTax: false,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
@@ -17064,17 +17062,6 @@ export default function App() {
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyValue === false}
                           />
-                          <Area
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="propertyNetAfterTax"
-                            name={SERIES_LABELS.propertyNetAfterTax ?? 'Property value after tax'}
-                            stroke={SERIES_COLORS.propertyNetAfterTax}
-                            fill="rgba(147,51,234,0.2)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.propertyNetAfterTax === false}
-                          />
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
@@ -17085,17 +17072,6 @@ export default function App() {
                             dot={false}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.netWealthAfterTax === false}
-                          />
-                          <RechartsLine
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="netWealthBeforeTax"
-                            name={SERIES_LABELS.netWealthBeforeTax ?? 'Net wealth (before tax)'}
-                            stroke={SERIES_COLORS.netWealthBeforeTax}
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.netWealthBeforeTax === false}
                           />
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -17531,12 +17507,7 @@ export default function App() {
                               'indexFund',
                               'cashflowAfterTax',
                               'propertyValue',
-                              'propertyGross',
-                              'propertyNet',
-                              'propertyNetAfterTax',
-                              'investedRent',
                               'netWealthAfterTax',
-                              'netWealthBeforeTax',
                             ]
                               .filter(
                                 (key) =>
@@ -17589,17 +17560,6 @@ export default function App() {
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyValue === false}
                           />
-                          <Area
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="propertyNetAfterTax"
-                            name={SERIES_LABELS.propertyNetAfterTax ?? 'Property value after tax'}
-                            stroke={SERIES_COLORS.propertyNetAfterTax}
-                            fill="rgba(147,51,234,0.2)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.propertyNetAfterTax === false}
-                          />
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
@@ -17610,17 +17570,6 @@ export default function App() {
                             dot={false}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.netWealthAfterTax === false}
-                          />
-                          <RechartsLine
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="netWealthBeforeTax"
-                            name={SERIES_LABELS.netWealthBeforeTax ?? 'Net wealth (before tax)'}
-                            stroke={SERIES_COLORS.netWealthBeforeTax}
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.netWealthBeforeTax === false}
                           />
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -18976,14 +18925,14 @@ function PlanWealthChartOverlay({
 
   const summaryMetrics = [
     {
+      key: 'indexFund',
+      label: SERIES_LABELS.indexFund ?? 'Index fund value',
+      value: point.indexFund ?? point.indexFundValue,
+    },
+    {
       key: 'propertyValue',
       label: SERIES_LABELS.propertyValue ?? 'Property value',
       value: point.propertyValue,
-    },
-    {
-      key: 'propertyNetAfterTax',
-      label: SERIES_LABELS.propertyNetAfterTax ?? 'Property value after tax',
-      value: point.propertyNetAfterTax,
     },
     {
       key: 'cashflowAfterTax',
@@ -18994,11 +18943,6 @@ function PlanWealthChartOverlay({
       key: 'netWealthAfterTax',
       label: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
       value: point.netWealthAfterTax ?? point.combinedNetWealth,
-    },
-    {
-      key: 'indexFund',
-      label: SERIES_LABELS.indexFund ?? 'Index fund value',
-      value: point.indexFund ?? point.indexFundValue,
     },
   ].filter((metric) => Number.isFinite(metric.value));
 
