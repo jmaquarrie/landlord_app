@@ -151,6 +151,8 @@ const useOverlayEscape = (open, onClose) => {
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
+const FUTURE_PLAN_STORAGE_KEY = 'qc_future_plan_v1';
+const PLAN_MAX_PURCHASE_YEAR = 20;
 const {
   VITE_SCENARIO_API_URL,
   VITE_CHAT_API_URL,
@@ -1307,6 +1309,74 @@ const loadStoredExtraSettings = () => {
   } catch (error) {
     console.warn('Unable to read extra settings from storage:', error);
     return defaults;
+  }
+};
+
+const sanitizePlanInputs = (inputs) => {
+  if (!inputs || typeof inputs !== 'object') {
+    return JSON.parse(JSON.stringify({ ...DEFAULT_INPUTS }));
+  }
+  return JSON.parse(
+    JSON.stringify({
+      ...DEFAULT_INPUTS,
+      ...inputs,
+    })
+  );
+};
+
+const sanitizePlanItem = (item) => {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+  const id =
+    typeof item.id === 'string' && item.id.trim() !== ''
+      ? item.id.trim()
+      : `plan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const name =
+    typeof item.name === 'string' && item.name.trim() !== ''
+      ? item.name.trim()
+      : 'Saved plan property';
+  const createdAt =
+    typeof item.createdAt === 'string' && item.createdAt.trim() !== ''
+      ? item.createdAt
+      : new Date().toISOString();
+  const rawPurchaseYear = Math.round(Number(item.purchaseYear) || 0);
+  const purchaseYear = clamp(rawPurchaseYear, 0, PLAN_MAX_PURCHASE_YEAR);
+  const include = item.include === false ? false : true;
+  const useIncome = item.useIncomeForDeposit === true;
+  const rawContribution = Number(item.incomeContribution);
+  const incomeContribution =
+    Number.isFinite(rawContribution) && rawContribution > 0 ? rawContribution : 0;
+  const inputs = sanitizePlanInputs(item.inputs);
+  return {
+    id,
+    name,
+    createdAt,
+    inputs,
+    purchaseYear,
+    include,
+    useIncomeForDeposit: useIncome,
+    incomeContribution,
+  };
+};
+
+const loadStoredFuturePlan = () => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(FUTURE_PLAN_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map((item) => sanitizePlanItem(item)).filter(Boolean);
+  } catch (error) {
+    console.warn('Unable to read future plan from storage:', error);
+    return [];
   }
 };
 
@@ -5645,10 +5715,12 @@ export default function App() {
   const [propertyPriceState, setPropertyPriceState] = useState({ status: 'idle', data: null, error: '' });
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
+  const [futurePlan, setFuturePlan] = useState(() => loadStoredFuturePlan());
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
   const [showOptimizationModal, setShowOptimizationModal] = useState(false);
+  const [showPlanModal, setShowPlanModal] = useState(false);
   const [optimizationGoal, setOptimizationGoal] = useState(DEFAULT_OPTIMIZATION_GOAL);
   const [optimizationLockedFields, setOptimizationLockedFields] = useState(() => {
     const requiredField = OPTIMIZATION_GOAL_FIXED_FIELDS[DEFAULT_OPTIMIZATION_GOAL] ?? null;
@@ -5840,6 +5912,7 @@ export default function App() {
   const [knowledgeChatError, setKnowledgeChatError] = useState('');
   const [performanceYear, setPerformanceYear] = useState(1);
   const [shareNotice, setShareNotice] = useState('');
+  const [planNotice, setPlanNotice] = useState('');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const pageRef = useRef(null);
   const iframeRef = useRef(null);
@@ -5881,6 +5954,7 @@ export default function App() {
   useOverlayEscape(leverageExpanded, closeLeverageOverlay);
   useOverlayEscape(cashflowDetailExpanded, closeCashflowDetailOverlay);
   useOverlayEscape(showOptimizationModal, () => setShowOptimizationModal(false));
+  useOverlayEscape(showPlanModal, () => setShowPlanModal(false));
 
   useEffect(() => {
     optimizationStatusRef.current = optimizationStatus;
@@ -7463,6 +7537,16 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
+      const sanitized = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+      window.localStorage.setItem(FUTURE_PLAN_STORAGE_KEY, JSON.stringify(sanitized));
+    } catch (error) {
+      console.warn('Unable to persist future plan:', error);
+    }
+  }, [futurePlan]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
       const sanitized = sanitizeCashflowColumns(cashflowColumnKeys);
       window.localStorage.setItem(CASHFLOW_COLUMNS_STORAGE_KEY, JSON.stringify(sanitized));
     } catch (error) {
@@ -7475,6 +7559,12 @@ export default function App() {
     const timeout = window.setTimeout(() => setShareNotice(''), 3000);
     return () => window.clearTimeout(timeout);
   }, [shareNotice]);
+
+  useEffect(() => {
+    if (!planNotice || typeof window === 'undefined') return;
+    const timeout = window.setTimeout(() => setPlanNotice(''), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [planNotice]);
 
   const equityInputs = useMemo(() => {
     const derivedRate = Number.isFinite(derivedHistoricalRate) ? derivedHistoricalRate : null;
@@ -7513,6 +7603,176 @@ export default function App() {
   ]);
 
   const equity = useMemo(() => calculateEquity(equityInputs), [equityInputs]);
+
+  const planAnalysis = useMemo(() => {
+    const emptyTotals = {
+      properties: 0,
+      savedProperties: 0,
+      totalInitialOutlay: 0,
+      totalExternalCash: 0,
+      totalIncomeFunding: 0,
+      finalNetWealth: 0,
+      finalCashPosition: 0,
+      finalExternalPosition: 0,
+    };
+    if (!Array.isArray(futurePlan) || futurePlan.length === 0) {
+      return {
+        status: 'empty',
+        items: [],
+        includedItems: [],
+        chart: [],
+        maxYear: 0,
+        totals: emptyTotals,
+      };
+    }
+
+    const items = futurePlan.map((rawItem) => {
+      const sanitized = sanitizePlanItem(rawItem);
+      let metrics = null;
+      try {
+        metrics = calculateEquity(sanitized.inputs);
+      } catch (error) {
+        console.warn('Unable to evaluate future plan item:', sanitized?.name ?? sanitized?.id ?? 'item', error);
+      }
+      const chartByYear = new Map();
+      if (metrics && Array.isArray(metrics.chart)) {
+        metrics.chart.forEach((point) => {
+          const yearValue = Number(point?.year);
+          if (!Number.isFinite(yearValue)) {
+            return;
+          }
+          const year = Math.max(0, Math.round(yearValue));
+          chartByYear.set(year, {
+            year,
+            propertyValue: Number(point?.propertyValue) || 0,
+            propertyGross: Number(point?.propertyGross) || 0,
+            propertyNet: Number(point?.propertyNet) || 0,
+            propertyNetAfterTax: Number(point?.propertyNetAfterTax) || 0,
+          });
+        });
+      }
+      const chart = Array.from(chartByYear.values()).sort((a, b) => a.year - b.year);
+      const exitYearFromChart = chart.length > 0 ? chart[chart.length - 1].year : 0;
+      const metricsExitYear = Math.max(0, Math.round(Number(metrics?.exitYear) || 0));
+      const exitYear = Math.max(exitYearFromChart, metricsExitYear);
+      const annualCashflows = Array.isArray(metrics?.annualCashflowsAfterTax)
+        ? metrics.annualCashflowsAfterTax.map((value) => (Number.isFinite(Number(value)) ? Number(value) : 0))
+        : [];
+      const initialOutlay = Math.max(0, Number(metrics?.initialCashOutlay) || 0);
+      const exitProceeds = Number(metrics?.exitNetSaleProceeds) || 0;
+      const appliedIncomeContribution = sanitized.useIncomeForDeposit
+        ? Math.min(initialOutlay, sanitized.incomeContribution)
+        : 0;
+      const externalOutlay = Math.max(0, initialOutlay - appliedIncomeContribution);
+      const valid = Boolean(metrics) && chart.length > 0;
+      return {
+        ...sanitized,
+        metrics,
+        chart,
+        chartByYear,
+        exitYear,
+        annualCashflows,
+        initialOutlay,
+        exitProceeds,
+        appliedIncomeContribution,
+        externalOutlay,
+        valid,
+      };
+    });
+
+    const includedItems = items.filter((item) => item.include && item.valid);
+    const baseTotals = {
+      properties: includedItems.length,
+      savedProperties: items.length,
+      totalInitialOutlay: includedItems.reduce((sum, item) => sum + item.initialOutlay, 0),
+      totalExternalCash: includedItems.reduce((sum, item) => sum + item.externalOutlay, 0),
+      totalIncomeFunding: includedItems.reduce((sum, item) => sum + item.appliedIncomeContribution, 0),
+    };
+    if (includedItems.length === 0) {
+      return {
+        status: 'no-selection',
+        items,
+        includedItems,
+        chart: [],
+        maxYear: 0,
+        totals: { ...baseTotals, finalNetWealth: 0, finalCashPosition: 0, finalExternalPosition: 0 },
+      };
+    }
+
+    const maxYear = includedItems.reduce(
+      (acc, item) => Math.max(acc, item.purchaseYear + Math.max(0, item.exitYear)),
+      0
+    );
+
+    const chart = [];
+    let cumulativeCash = 0;
+    let cumulativeExternal = 0;
+    for (let year = 0; year <= maxYear; year++) {
+      let propertyValue = 0;
+      let propertyGross = 0;
+      let propertyNet = 0;
+      let propertyNetAfterTax = 0;
+      let cashFlow = 0;
+      let externalCashFlow = 0;
+
+      includedItems.forEach((item) => {
+        const propertyYear = year - item.purchaseYear;
+        if (propertyYear < 0) {
+          return;
+        }
+        const chartPoint = item.chartByYear.get(propertyYear);
+        if (chartPoint) {
+          propertyValue += chartPoint.propertyValue;
+          propertyGross += chartPoint.propertyGross;
+          propertyNet += chartPoint.propertyNet;
+          propertyNetAfterTax += chartPoint.propertyNetAfterTax;
+        }
+        if (propertyYear === 0) {
+          cashFlow -= item.initialOutlay;
+          externalCashFlow += item.externalOutlay;
+        } else if (propertyYear > 0) {
+          const cashIndex = propertyYear - 1;
+          const annualCash = item.annualCashflows[cashIndex] ?? 0;
+          cashFlow += annualCash;
+          if (propertyYear === item.exitYear) {
+            cashFlow += item.exitProceeds;
+          }
+        }
+      });
+
+      cumulativeCash += cashFlow;
+      cumulativeExternal += externalCashFlow;
+      chart.push({
+        year,
+        propertyValue,
+        propertyGross,
+        propertyNet,
+        propertyNetAfterTax,
+        cashFlow,
+        cumulativeCash,
+        externalCashFlow,
+        cumulativeExternal,
+      });
+    }
+
+    const totals = {
+      ...baseTotals,
+      finalNetWealth: chart[chart.length - 1]?.propertyNetAfterTax ?? 0,
+      finalCashPosition: chart[chart.length - 1]?.cumulativeCash ?? 0,
+      finalExternalPosition: chart[chart.length - 1]?.cumulativeExternal ?? 0,
+    };
+
+    return {
+      status: 'ready',
+      items,
+      includedItems,
+      chart,
+      maxYear,
+      totals,
+    };
+  }, [futurePlan]);
+
+  const planTooltipFormatter = useCallback((value) => currency(value), []);
 
   const computeOptimizationProjection = useCallback(
     (item, selectionOverrides) => {
@@ -11041,7 +11301,7 @@ export default function App() {
     };
   }
 
-  const buildScenarioSnapshot = () => {
+  function buildScenarioSnapshot() {
     const sanitizedInputs = JSON.parse(
       JSON.stringify({
         ...inputs,
@@ -11058,7 +11318,7 @@ export default function App() {
       cashflowColumns: sanitizeCashflowColumns(cashflowColumnKeys),
       uiState: captureUiState(),
     };
-  };
+  }
 
   const handleShareScenario = async () => {
     if (typeof window === 'undefined') return;
@@ -11190,6 +11450,90 @@ export default function App() {
     setAuthError('');
     setAuthStatus('pending');
   };
+
+  const updatePlanItem = useCallback(
+    (id, updater) => {
+      setFuturePlan((prev) =>
+        prev.map((item) => {
+          if (item.id !== id) {
+            return item;
+          }
+          const next =
+            typeof updater === 'function'
+              ? updater(item)
+              : { ...item, ...updater };
+          return sanitizePlanItem({ ...item, ...next });
+        })
+      );
+    },
+    [setFuturePlan]
+  );
+
+  const handleSavePlanProperty = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const snapshot = buildScenarioSnapshot();
+    const addressLabel = (inputs.propertyAddress ?? '').trim();
+    const fallbackLabel = `Plan property ${futurePlan.length + 1}`;
+    const defaultLabel = addressLabel !== '' ? addressLabel : fallbackLabel;
+    let label = defaultLabel;
+    const nameInput = window.prompt('Name this plan property', defaultLabel);
+    if (nameInput === null) {
+      return;
+    }
+    const trimmed = nameInput.trim();
+    if (trimmed !== '') {
+      label = trimmed;
+    }
+    const newItem = sanitizePlanItem({
+      id: `plan-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      name: label,
+      createdAt: new Date().toISOString(),
+      inputs: snapshot.data,
+      purchaseYear: 0,
+      include: true,
+      useIncomeForDeposit: false,
+      incomeContribution: 0,
+    });
+    setFuturePlan((prev) => [...prev, newItem]);
+    setPlanNotice(`Added "${label}" to your future plan.`);
+    setShowPlanModal(true);
+  }, [futurePlan.length, inputs.propertyAddress, buildScenarioSnapshot]);
+
+  const handlePlanIncludeToggle = useCallback(
+    (id, include) => {
+      updatePlanItem(id, { include: Boolean(include) });
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanPurchaseYearChange = useCallback(
+    (id, value) => {
+      const numeric = Math.round(Number(value));
+      const clampedValue = clamp(Number.isFinite(numeric) ? numeric : 0, 0, PLAN_MAX_PURCHASE_YEAR);
+      updatePlanItem(id, { purchaseYear: clampedValue });
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanIncomeToggle = useCallback(
+    (id, enabled) => {
+      updatePlanItem(id, { useIncomeForDeposit: Boolean(enabled) });
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanIncomeAmountChange = useCallback(
+    (id, value) => {
+      const numeric = Number(value);
+      const sanitizedValue = Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+      updatePlanItem(id, { incomeContribution: sanitizedValue });
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanRemove = useCallback((id) => {
+    setFuturePlan((prev) => prev.filter((item) => item.id !== id));
+  }, []);
 
   const handleSaveScenario = async () => {
     if (typeof window === 'undefined') return;
@@ -13744,7 +14088,24 @@ export default function App() {
               >
                 Optimise this investment
               </button>
+              <button
+                type="button"
+                onClick={handleSavePlanProperty}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-indigo-200 px-4 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50"
+              >
+                Save to future plan
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowPlanModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Analyse plan
+              </button>
             </div>
+            {planNotice ? (
+              <p className="mt-2 text-xs font-semibold text-emerald-600">{planNotice}</p>
+            ) : null}
             {showLoadPanel ? (
               <div className="mt-3 space-y-3">
                 {savedScenarios.length === 0 ? (
@@ -15114,6 +15475,218 @@ export default function App() {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showPlanModal && (
+      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+        <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
+          <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+            <div>
+              <h2 className="text-base font-semibold text-slate-800">Future plan analysis</h2>
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                Combine saved deals to plan staggered acquisitions, reuse cash flow for deposits, and visualise portfolio wealth over time.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowPlanModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="max-h-[70vh] overflow-auto px-5 py-4">
+            {futurePlan.length === 0 ? (
+              <p className="text-sm text-slate-600">
+                Save scenarios to your future plan from the dashboard to start modelling multi-property strategies.
+              </p>
+            ) : (
+              <div className="space-y-5 text-sm">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-200 text-left text-[11px] text-slate-600">
+                    <thead className="bg-slate-50 text-slate-500">
+                      <tr>
+                        <th scope="col" className="px-3 py-2 font-semibold">Include</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Property</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Purchase year</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Deposit funding</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Initial cash outlay</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">External cash</th>
+                        <th scope="col" className="px-3 py-2 font-semibold text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {planAnalysis.items.map((item) => {
+                        const createdLabel = item.createdAt
+                          ? new Date(item.createdAt).toLocaleString()
+                          : '';
+                        const maxContribution = Math.max(0, Math.round(item.initialOutlay || 0));
+                        return (
+                          <tr key={item.id} className="align-top">
+                            <td className="px-3 py-3">
+                              <input
+                                type="checkbox"
+                                checked={item.include}
+                                onChange={(event) => handlePlanIncludeToggle(item.id, event.target.checked)}
+                              />
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="font-semibold text-slate-700">{item.name}</div>
+                              {createdLabel ? (
+                                <div className="text-[10px] text-slate-500">Added {createdLabel}</div>
+                              ) : null}
+                              {item.valid ? null : (
+                                <div className="mt-1 text-[10px] text-rose-600">
+                                  Missing inputs to project this deal. Load it in the dashboard and complete the purchase details.
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-3">
+                              <input
+                                type="number"
+                                min={0}
+                                max={PLAN_MAX_PURCHASE_YEAR}
+                                value={item.purchaseYear}
+                                onChange={(event) => handlePlanPurchaseYearChange(item.id, event.target.value)}
+                                className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                              />
+                              <div className="mt-1 text-[10px] text-slate-500">Year {item.purchaseYear}</div>
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={item.useIncomeForDeposit}
+                                  onChange={(event) => handlePlanIncomeToggle(item.id, event.target.checked)}
+                                />
+                                <span>Use cash flow</span>
+                              </div>
+                              <input
+                                type="number"
+                                min={0}
+                                max={maxContribution || undefined}
+                                step={100}
+                                value={item.incomeContribution}
+                                disabled={!item.useIncomeForDeposit}
+                                onChange={(event) => handlePlanIncomeAmountChange(item.id, event.target.value)}
+                                className={`mt-2 w-32 rounded-lg border px-2 py-1 text-xs ${
+                                  item.useIncomeForDeposit
+                                    ? 'border-slate-300'
+                                    : 'border-slate-200 bg-slate-100 text-slate-400'
+                                }`}
+                              />
+                              <div className="mt-1 text-[10px] text-slate-500">
+                                Cap contributions at {currency(maxContribution)} (initial cash outlay).
+                              </div>
+                            </td>
+                            <td className="px-3 py-3 text-slate-700">{currency(item.initialOutlay)}</td>
+                            <td className="px-3 py-3 text-slate-700">{currency(item.externalOutlay)}</td>
+                            <td className="px-3 py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handlePlanRemove(item.id)}
+                                className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {planAnalysis.status === 'no-selection' ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-[11px] text-amber-800">
+                    Select at least one property with complete projections to plot the combined wealth trajectory.
+                  </div>
+                ) : null}
+                <div className="grid gap-4 text-xs text-slate-500 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Properties analysed</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">{planAnalysis.totals.properties}</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Saved to plan</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">{planAnalysis.totals.savedProperties}</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">External cash required</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.totalExternalCash)}</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Funded by cash flow</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.totalIncomeFunding)}</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Portfolio net wealth (exit)</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.finalNetWealth)}</div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Cash position (exit)</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.finalCashPosition)}</div>
+                  </div>
+                </div>
+                {planAnalysis.chart.length > 0 ? (
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-sm font-semibold text-slate-800">Combined wealth trajectory</h3>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Aggregates portfolio value, net wealth, and cumulative cash across all included deals with their chosen purchase years.
+                    </p>
+                    <div className="mt-4 h-72 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart data={planAnalysis.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="year" tickFormatter={(value) => `Y${value}`} tick={{ fontSize: 11, fill: '#475569' }} />
+                          <YAxis
+                            yAxisId="currency"
+                            tickFormatter={(value) => currencyNoPence(value)}
+                            tick={{ fontSize: 11, fill: '#475569' }}
+                            width={110}
+                          />
+                          <Tooltip
+                            formatter={(value) => planTooltipFormatter(value)}
+                            labelFormatter={(value) => `Year ${value}`}
+                          />
+                          <Legend />
+                          <Area
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyNetAfterTax"
+                            name="Net wealth (after tax)"
+                            stroke="#2563eb"
+                            fill="#93c5fd"
+                            fillOpacity={0.35}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="cumulativeCash"
+                            name="Cumulative cash"
+                            stroke="#16a34a"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="cumulativeExternal"
+                            name="External cash deployed"
+                            stroke="#f97316"
+                            strokeDasharray="4 4"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
         </div>
       </div>
