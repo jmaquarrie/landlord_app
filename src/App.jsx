@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
+import propertyPriceDataUrl from '../Average-prices-Property-Type-2025-07.csv?url';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
 const currencyNoPence = (value) =>
@@ -145,6 +146,39 @@ const CASHFLOW_BAR_COLORS = {
   mortgagePayments: '#7c3aed',
   netCashflow: '#10b981',
 };
+
+const PROPERTY_TYPE_OPTIONS = [
+  { value: 'detached', label: 'Detached house', column: 'Detached_Average_Price' },
+  { value: 'semi_detached', label: 'Semi-detached house', column: 'Semi_Detached_Average_Price' },
+  { value: 'terraced', label: 'Terraced house', column: 'Terraced_Average_Price' },
+  { value: 'flat_maisonette', label: 'Flats / maisonette', column: 'Flat_Average_Price' },
+];
+
+const PROPERTY_TYPE_COLUMN_LOOKUP = PROPERTY_TYPE_OPTIONS.reduce((acc, option) => {
+  acc[option.value] = option.column;
+  return acc;
+}, {});
+
+const COUNTRY_REGION_SYNONYMS = {
+  uk: 'united kingdom',
+  'u.k.': 'united kingdom',
+  gb: 'united kingdom',
+  'great britain': 'united kingdom',
+  britain: 'united kingdom',
+  'united kingdom of great britain and northern ireland': 'united kingdom',
+  'gb-eng': 'england',
+  'gb-wls': 'wales',
+  'gb-sct': 'scotland',
+  'gb-nir': 'northern ireland',
+};
+
+const PROPERTY_APPRECIATION_WINDOWS = [1, 5, 10, 20];
+const DEFAULT_APPRECIATION_WINDOW = 5;
+const UK_ANNUAL_CRIME_PER_1000 = 79.2;
+const CRIME_SEARCH_RADIUS_KM = 1.60934;
+const UK_AVG_POP_DENSITY_PER_KM2 = 281;
+const CRIME_SEARCH_AREA_POPULATION_ESTIMATE =
+  Math.PI * CRIME_SEARCH_RADIUS_KM * CRIME_SEARCH_RADIUS_KM * UK_AVG_POP_DENSITY_PER_KM2;
 
 const ROI_HEATMAP_OFFSETS = [-0.02, -0.01, 0, 0.01, 0.02];
 const HEATMAP_COLOR_START = [248, 113, 113];
@@ -400,6 +434,7 @@ const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
   const state = getAddressComponent(address, ['state']);
   const postcode = getAddressComponent(address, ['postcode']);
   const country = getAddressComponent(address, ['country']);
+  const countryCode = getAddressComponent(address, ['country_code']);
 
   const propertyLine = [building, road].filter(Boolean).join(' ').trim();
   const localityLine = locality ? locality : '';
@@ -447,7 +482,17 @@ const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
   const summary = summaryParts.length > 0 ? summaryParts.join(', ') : summaryFallback;
   const query = queryParts.length > 0 ? queryParts.join(', ') : summary || summaryFallback;
 
-  return { summary, query, bounds, postcode, city, county };
+  return {
+    summary,
+    query,
+    bounds,
+    postcode,
+    city,
+    county,
+    state,
+    country,
+    countryCode,
+  };
 };
 
 const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, signal }) => {
@@ -941,6 +986,7 @@ const DEFAULT_INPUTS = {
   propertyLatitude: null,
   propertyLongitude: null,
   propertyDisplayName: '',
+  propertyType: PROPERTY_TYPE_OPTIONS[0].value,
   bedrooms: 3,
   bathrooms: 1,
   purchasePrice: 70000,
@@ -960,6 +1006,8 @@ const DEFAULT_INPUTS = {
   insurancePerYear: 500,
   otherOpexPerYear: 300,
   annualAppreciation: 0.03,
+  useHistoricalAppreciation: false,
+  historicalAppreciationWindow: DEFAULT_APPRECIATION_WINDOW,
   rentGrowth: 0.02,
   exitYear: 20,
   sellingCostsPct: 0.02,
@@ -977,7 +1025,7 @@ const DEFAULT_INPUTS = {
   reinvestPct: 0.5,
 };
 
-const EXTRA_SETTING_KEYS = ['discountRate', 'irrHurdle'];
+const EXTRA_SETTING_KEYS = ['discountRate', 'irrHurdle', 'indexFundGrowth'];
 const EXTRA_SETTINGS_STORAGE_KEY = 'landlord-extra-settings-v1';
 
 const getDefaultExtraSettings = () => {
@@ -1083,7 +1131,7 @@ const decodeSharePayload = (value) => {
 
 const SCORE_TOOLTIPS = {
   overall:
-    'Score blends IRR strength, performance versus your hurdle, cash-on-cash return, year-one after-tax cash flow, total cash invested, and discounted net present value into a 0-100 composite.',
+    'Score blends return strength (IRR, hurdle gap, cash-on-cash, year-one cash, invested capital, and discounted NPV) with resilience and location levers (cap rate, DSCR, long-run market growth, and crime relative to UK averages) into a 0-100 composite.',
   delta:
     'Wealth delta compares property net proceeds plus cumulative cash flow and any reinvested fund to the index alternative at exit.',
   deltaAfterTax:
@@ -1091,12 +1139,16 @@ const SCORE_TOOLTIPS = {
 };
 
 const SCORE_COMPONENT_CONFIG = {
-  irr: { label: 'IRR', maxPoints: 25 },
-  irrHurdle: { label: 'IRR hurdle', maxPoints: 15 },
-  cashOnCash: { label: 'Cash-on-cash', maxPoints: 20 },
-  cashflow: { label: 'Year 1 after-tax cash', maxPoints: 10 },
-  cashInvested: { label: 'Cash invested', maxPoints: 10 },
-  npv: { label: 'NPV', maxPoints: 20 },
+  irr: { label: 'IRR', maxPoints: 18 },
+  irrHurdle: { label: 'IRR hurdle', maxPoints: 10 },
+  cashOnCash: { label: 'Cash-on-cash', maxPoints: 14 },
+  cashflow: { label: 'Year 1 after-tax cash', maxPoints: 8 },
+  cashInvested: { label: 'Cash invested', maxPoints: 8 },
+  npv: { label: 'NPV', maxPoints: 12 },
+  capRate: { label: 'Cap rate strength', maxPoints: 8 },
+  dscr: { label: 'Debt coverage', maxPoints: 6 },
+  propertyGrowth: { label: 'Market growth tailwind', maxPoints: 10 },
+  crimeSafety: { label: 'Crime safety', maxPoints: 6 },
 };
 
 const TOTAL_SCORE_MAX = Object.values(SCORE_COMPONENT_CONFIG).reduce(
@@ -1952,6 +2004,15 @@ function scoreDeal({
   cashInvested,
   purchasePrice,
   npv,
+  capRate,
+  dscr,
+  propertyGrowth20Year,
+  propertyGrowthWindowRate,
+  propertyGrowthWindowYears,
+  propertyGrowthSource,
+  propertyTypeLabel,
+  localCrimeRatePerThousand,
+  ukCrimeRatePerThousand,
 }) {
   const components = {};
   let total = 0;
@@ -2176,6 +2237,150 @@ function scoreDeal({
     explanation: npvExplanation,
   });
 
+  const capRateConfig = SCORE_COMPONENT_CONFIG.capRate;
+  if (capRateConfig) {
+    let capPoints = 0;
+    let capExplanation = 'Cap rate not available.';
+    if (Number.isFinite(capRate)) {
+      const capValue = capRate;
+      if (capValue >= 0.07) {
+        capPoints = capRateConfig.maxPoints;
+      } else if (capValue >= 0.06) {
+        capPoints = capRateConfig.maxPoints * 0.85;
+      } else if (capValue >= 0.05) {
+        capPoints = capRateConfig.maxPoints * 0.65;
+      } else if (capValue >= 0.04) {
+        capPoints = capRateConfig.maxPoints * 0.45;
+      } else if (capValue > 0) {
+        capPoints = capRateConfig.maxPoints * 0.25;
+      }
+      capExplanation = `Year-one cap rate of ${formatPercent(capValue)} benchmarks income strength versus purchase price.`;
+    }
+    addComponent('capRate', {
+      points: capPoints,
+      value: capRate,
+      displayValue: formatPercent(capRate),
+      explanation: capExplanation,
+    });
+  }
+
+  const dscrConfig = SCORE_COMPONENT_CONFIG.dscr;
+  if (dscrConfig) {
+    let dscrPoints = 0;
+    let dscrExplanation = 'DSCR not available.';
+    if (Number.isFinite(dscr) && dscr > 0) {
+      if (dscr >= 1.6) {
+        dscrPoints = dscrConfig.maxPoints;
+      } else if (dscr >= 1.4) {
+        dscrPoints = dscrConfig.maxPoints * 0.85;
+      } else if (dscr >= 1.25) {
+        dscrPoints = dscrConfig.maxPoints * 0.7;
+      } else if (dscr >= 1.15) {
+        dscrPoints = dscrConfig.maxPoints * 0.45;
+      } else if (dscr >= 1.0) {
+        dscrPoints = dscrConfig.maxPoints * 0.25;
+      } else {
+        dscrPoints = 0;
+      }
+      dscrExplanation = `Year-one DSCR of ${Number(dscr).toFixed(2)} captures income headroom after servicing debt.`;
+    }
+    addComponent('dscr', {
+      points: dscrPoints,
+      value: dscr,
+      displayValue: Number.isFinite(dscr) ? Number(dscr).toFixed(2) : '—',
+      explanation: dscrExplanation,
+    });
+  }
+
+  const growthConfig = SCORE_COMPONENT_CONFIG.propertyGrowth;
+  if (growthConfig) {
+    const longRunRate = Number.isFinite(propertyGrowth20Year) ? propertyGrowth20Year : null;
+    let growthPoints = 0;
+    let growthExplanation = 'Historical growth data unavailable.';
+    if (longRunRate !== null) {
+      if (longRunRate >= 0.04) {
+        growthPoints = growthConfig.maxPoints;
+      } else if (longRunRate >= 0.035) {
+        growthPoints = growthConfig.maxPoints * 0.85;
+      } else if (longRunRate >= 0.03) {
+        growthPoints = growthConfig.maxPoints * 0.7;
+      } else if (longRunRate >= 0.02) {
+        growthPoints = growthConfig.maxPoints * 0.45;
+      } else if (longRunRate > 0) {
+        growthPoints = growthConfig.maxPoints * 0.25;
+      }
+      const windowYears = Number.isFinite(propertyGrowthWindowYears)
+        ? propertyGrowthWindowYears
+        : DEFAULT_APPRECIATION_WINDOW;
+      const windowRate = Number.isFinite(propertyGrowthWindowRate) ? propertyGrowthWindowRate : null;
+      const windowPart =
+        windowRate !== null
+          ? ` Recent ${windowYears}-year CAGR sits at ${formatPercent(windowRate)}.`
+          : '';
+      const growthSource = propertyGrowthSource || 'Historical market data';
+      growthExplanation = `${growthSource} shows a ${formatPercent(longRunRate)} CAGR for ${
+        propertyTypeLabel || 'this property type'
+      } over the past 20 years.${windowPart}`;
+    }
+    addComponent('propertyGrowth', {
+      points: growthPoints,
+      value: longRunRate,
+      displayValue: formatPercent(longRunRate),
+      explanation: growthExplanation,
+    });
+  }
+
+  const crimeConfig = SCORE_COMPONENT_CONFIG.crimeSafety;
+  if (crimeConfig) {
+    const ukAverage = Number.isFinite(ukCrimeRatePerThousand) && ukCrimeRatePerThousand > 0
+      ? ukCrimeRatePerThousand
+      : UK_ANNUAL_CRIME_PER_1000;
+    const localRate = Number.isFinite(localCrimeRatePerThousand)
+      ? Math.max(0, localCrimeRatePerThousand)
+      : null;
+    let crimePoints = 0;
+    let crimeExplanation = 'Local crime benchmark unavailable.';
+    let crimeTone = undefined;
+    if (localRate === 0) {
+      crimePoints = crimeConfig.maxPoints * 0.9;
+      crimeExplanation =
+        'Police API reported no incidents for the latest month, indicating minimal recorded crime near the property.';
+      crimeTone = 'positive';
+    } else if (localRate !== null) {
+      const ratio = ukAverage > 0 ? localRate / ukAverage : 1;
+      if (ratio <= 0.5) {
+        crimePoints = crimeConfig.maxPoints;
+        crimeTone = 'positive';
+      } else if (ratio <= 0.7) {
+        crimePoints = crimeConfig.maxPoints * 0.85;
+        crimeTone = 'positive';
+      } else if (ratio <= 0.9) {
+        crimePoints = crimeConfig.maxPoints * 0.7;
+        crimeTone = 'neutral';
+      } else if (ratio <= 1.1) {
+        crimePoints = crimeConfig.maxPoints * 0.45;
+        crimeTone = 'warning';
+      } else if (ratio <= 1.3) {
+        crimePoints = crimeConfig.maxPoints * 0.25;
+        crimeTone = 'warning';
+      } else {
+        crimePoints = 0;
+        crimeTone = 'negative';
+      }
+      crimeExplanation = `Local annualised crime rate is ${localRate.toFixed(0)} per 1k residents versus the UK average of ${ukAverage.toFixed(
+        0
+      )} per 1k (${formatPercent(ratio - 1, 1)} vs national).`;
+    }
+    addComponent('crimeSafety', {
+      points: crimePoints,
+      value: localRate,
+      displayValue:
+        localRate === null ? '—' : `${localRate.toFixed(localRate >= 100 ? 0 : 1)} per 1k`,
+      explanation: crimeExplanation,
+      tone: crimeTone,
+    });
+  }
+
   return {
     total: clamp(total, 0, TOTAL_SCORE_MAX),
     max: TOTAL_SCORE_MAX,
@@ -2214,6 +2419,347 @@ function csvEscape(value) {
     return `"${stringValue.replace(/"/g, '""')}"`;
   }
   return stringValue;
+}
+
+const parseNumber = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const numeric = Number.parseFloat(String(value).replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+function parsePropertyPriceCsv(text) {
+  if (!text || typeof text !== 'string') {
+    return [];
+  }
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return [];
+  }
+  const lines = trimmed.split(/\r?\n/);
+  if (lines.length <= 1) {
+    return [];
+  }
+  const header = lines[0].split(',');
+  const dateIndex = header.indexOf('Date');
+  const regionIndex = header.indexOf('Region_Name');
+  const columnIndices = {
+    detached: header.indexOf(PROPERTY_TYPE_COLUMN_LOOKUP.detached),
+    semi_detached: header.indexOf(PROPERTY_TYPE_COLUMN_LOOKUP.semi_detached),
+    terraced: header.indexOf(PROPERTY_TYPE_COLUMN_LOOKUP.terraced),
+    flat_maisonette: header.indexOf(PROPERTY_TYPE_COLUMN_LOOKUP.flat_maisonette),
+  };
+  const rows = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line) continue;
+    const values = line.split(',');
+    if (
+      dateIndex === -1 ||
+      regionIndex === -1 ||
+      values.length < Math.max(...Object.values(columnIndices).filter((index) => index >= 0)) + 1
+    ) {
+      continue;
+    }
+    const dateString = values[dateIndex];
+    const region = values[regionIndex] ?? '';
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) {
+      continue;
+    }
+    const entry = {
+      date,
+      region,
+      values: {},
+    };
+    Object.entries(columnIndices).forEach(([key, index]) => {
+      if (index >= 0 && index < values.length) {
+        const price = parseNumber(values[index]);
+        if (price !== null && price > 0) {
+          entry.values[key] = price;
+        }
+      }
+    });
+    rows.push(entry);
+  }
+  return rows;
+}
+
+function calculatePropertyCagr(series, years) {
+  if (!Array.isArray(series) || series.length === 0) {
+    return null;
+  }
+  const latest = series[series.length - 1];
+  if (!latest || !Number.isFinite(latest.price) || latest.price <= 0) {
+    return null;
+  }
+  const target = new Date(latest.date.getTime());
+  target.setFullYear(target.getFullYear() - years);
+  let baseline = null;
+  for (let index = series.length - 1; index >= 0; index -= 1) {
+    const entry = series[index];
+    if (entry.date <= target) {
+      baseline = entry;
+      break;
+    }
+  }
+  if (!baseline) {
+    baseline = series[0];
+  }
+  if (!baseline || !Number.isFinite(baseline.price) || baseline.price <= 0) {
+    return null;
+  }
+  const yearSpan = (latest.date.getTime() - baseline.date.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+  if (!Number.isFinite(yearSpan) || yearSpan <= 0 || yearSpan < years * 0.6) {
+    return null;
+  }
+  const ratio = latest.price / baseline.price;
+  if (!Number.isFinite(ratio) || ratio <= 0) {
+    return null;
+  }
+  return Math.pow(ratio, 1 / yearSpan) - 1;
+}
+
+function normalizeRegionKey(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.trim().toLowerCase();
+}
+
+function canonicalizeRegionKey(value) {
+  const normalized = normalizeRegionKey(value);
+  if (!normalized) {
+    return '';
+  }
+  return COUNTRY_REGION_SYNONYMS[normalized] ?? normalized;
+}
+
+const REGION_ALIAS_LEADING_PATTERNS = [
+  /^city and county of\s+/,
+  /^city of\s+/,
+  /^county of\s+/,
+  /^county borough of\s+/,
+  /^royal borough of\s+/,
+  /^metropolitan borough of\s+/,
+  /^london borough of\s+/,
+  /^metropolitan county of\s+/,
+  /^metropolitan district of\s+/,
+];
+
+const REGION_ALIAS_TRAILING_PATTERNS = [
+  /\s+county council$/,
+  /\s+county$/,
+  /\s+city council$/,
+  /\s+city$/,
+  /\s+council area$/,
+  /\s+council$/,
+  /\s+district council$/,
+  /\s+district$/,
+  /\s+unitary authority$/,
+  /\s+metropolitan borough$/,
+  /\s+metropolitan county$/,
+  /\s+metropolitan district$/,
+  /\s+principal area$/,
+  /\s+borough$/,
+];
+
+const collapseWhitespace = (value) => value.replace(/\s+/g, ' ').trim();
+
+const stripNonAlphanumeric = (value) => value.replace(/[^a-z0-9]+/g, ' ');
+
+function buildRegionAliasKeys(value) {
+  const normalized = normalizeRegionKey(value);
+  if (!normalized) {
+    return [];
+  }
+  const aliasSet = new Set();
+  const addAlias = (candidate) => {
+    const canonical = normalizeRegionKey(candidate);
+    if (canonical) {
+      aliasSet.add(canonical);
+      const collapsed = canonical.replace(/[^a-z0-9]/g, '');
+      if (collapsed) {
+        aliasSet.add(collapsed);
+      }
+    }
+  };
+
+  const whitespaceNormalized = collapseWhitespace(normalized);
+  addAlias(normalized);
+  addAlias(whitespaceNormalized);
+  addAlias(collapseWhitespace(stripNonAlphanumeric(whitespaceNormalized)));
+
+  REGION_ALIAS_LEADING_PATTERNS.forEach((pattern) => {
+    if (pattern.test(whitespaceNormalized)) {
+      const stripped = whitespaceNormalized.replace(pattern, '');
+      if (stripped) {
+        addAlias(stripped);
+        addAlias(collapseWhitespace(stripNonAlphanumeric(stripped)));
+      }
+    }
+  });
+
+  REGION_ALIAS_TRAILING_PATTERNS.forEach((pattern) => {
+    if (pattern.test(whitespaceNormalized)) {
+      const stripped = whitespaceNormalized.replace(pattern, '');
+      if (stripped) {
+        addAlias(stripped);
+        addAlias(collapseWhitespace(stripNonAlphanumeric(stripped)));
+      }
+    }
+  });
+
+  whitespaceNormalized
+    .split(/[,/]/)
+    .map((part) => collapseWhitespace(part))
+    .filter(Boolean)
+    .forEach((part) => {
+      addAlias(part);
+      addAlias(collapseWhitespace(stripNonAlphanumeric(part)));
+    });
+
+  return Array.from(aliasSet).filter(Boolean);
+}
+
+function createEmptyPropertySeries() {
+  return PROPERTY_TYPE_OPTIONS.reduce((acc, option) => {
+    acc[option.value] = [];
+    return acc;
+  }, {});
+}
+
+function computePropertyStatsFromSeries(seriesByType) {
+  if (!seriesByType || typeof seriesByType !== 'object') {
+    return {};
+  }
+  const stats = {};
+  Object.entries(seriesByType).forEach(([key, rawSeries]) => {
+    if (!Array.isArray(rawSeries) || rawSeries.length === 0) {
+      return;
+    }
+    const sortedSeries = rawSeries
+      .filter((entry) => entry && entry.date instanceof Date && Number.isFinite(entry.price) && entry.price > 0)
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+    if (sortedSeries.length === 0) {
+      return;
+    }
+    const latest = sortedSeries[sortedSeries.length - 1];
+    const cagr = {};
+    PROPERTY_APPRECIATION_WINDOWS.forEach((years) => {
+      const rate = calculatePropertyCagr(sortedSeries, years);
+      if (rate !== null) {
+        cagr[years] = rate;
+      }
+    });
+    stats[key] = { series: sortedSeries, latest, cagr };
+  });
+  return stats;
+}
+
+function buildPropertyGrowthStatsIndex(records) {
+  if (!Array.isArray(records) || records.length === 0) {
+    return { regions: {}, global: { label: '', stats: {} } };
+  }
+
+  const regionSeriesMap = new Map();
+  const totalsByDate = new Map();
+
+  records.forEach((row) => {
+    if (!row || !(row.date instanceof Date)) {
+      return;
+    }
+    const regionKey = typeof row.region === 'string' ? row.region.trim() : '';
+    if (regionKey) {
+      const canonicalKey = canonicalizeRegionKey(regionKey);
+      if (canonicalKey) {
+        let seriesByType = regionSeriesMap.get(canonicalKey);
+        if (!seriesByType) {
+          seriesByType = { label: regionKey, series: createEmptyPropertySeries() };
+          regionSeriesMap.set(canonicalKey, seriesByType);
+        }
+        PROPERTY_TYPE_OPTIONS.forEach((option) => {
+          const price = row.values?.[option.value];
+          if (Number.isFinite(price) && price > 0) {
+            seriesByType.series[option.value].push({ date: row.date, price });
+          }
+        });
+      }
+    }
+
+    const dateKey = row.date.getTime();
+    let totals = totalsByDate.get(dateKey);
+    if (!totals) {
+      totals = {
+        date: row.date,
+        sums: {},
+        counts: {},
+      };
+      totalsByDate.set(dateKey, totals);
+    }
+    PROPERTY_TYPE_OPTIONS.forEach((option) => {
+      const price = row.values?.[option.value];
+      if (Number.isFinite(price) && price > 0) {
+        totals.sums[option.value] = (totals.sums[option.value] ?? 0) + price;
+        totals.counts[option.value] = (totals.counts[option.value] ?? 0) + 1;
+      }
+    });
+  });
+
+  const regionEntries = [];
+  regionSeriesMap.forEach((entry, canonicalKey) => {
+    const stats = computePropertyStatsFromSeries(entry.series);
+    if (Object.keys(stats).length > 0) {
+      const aliases = buildRegionAliasKeys(entry.label || canonicalKey);
+      if (!aliases.includes(canonicalKey)) {
+        aliases.push(canonicalKey);
+      }
+      regionEntries.push({ key: canonicalKey, label: entry.label, stats, aliases });
+    }
+  });
+
+  const regions = {};
+  const aliasLookup = {};
+  regionEntries.forEach(({ key, label, stats, aliases }) => {
+    regions[key] = { label, stats, aliases };
+    const aliasSet = new Set([key, ...aliases]);
+    aliasSet.forEach((alias) => {
+      if (!alias) {
+        return;
+      }
+      if (!aliasLookup[alias]) {
+        aliasLookup[alias] = [];
+      }
+      if (!aliasLookup[alias].includes(key)) {
+        aliasLookup[alias].push(key);
+      }
+    });
+  });
+
+  const averageSeries = createEmptyPropertySeries();
+  totalsByDate.forEach(({ date, sums, counts }) => {
+    PROPERTY_TYPE_OPTIONS.forEach((option) => {
+      const count = counts[option.value] ?? 0;
+      if (count > 0) {
+        averageSeries[option.value].push({
+          date,
+          price: sums[option.value] / count,
+        });
+      }
+    });
+  });
+
+  const globalStats = computePropertyStatsFromSeries(averageSeries);
+
+  return {
+    regions,
+    aliases: aliasLookup,
+    global: {
+      label: 'Dataset average',
+      stats: globalStats,
+    },
+  };
 }
 
 function getControlDisplayValue(node) {
@@ -2743,6 +3289,26 @@ function calculateEquity(rawInputs) {
     cashInvested: cashIn,
     purchasePrice: inputs.purchasePrice,
     npv: npvValue,
+    capRate: cap,
+    dscr,
+    propertyGrowth20Year: Number.isFinite(inputs.propertyGrowth20Year)
+      ? inputs.propertyGrowth20Year
+      : null,
+    propertyGrowthWindowRate: Number.isFinite(inputs.propertyGrowthWindowRate)
+      ? inputs.propertyGrowthWindowRate
+      : null,
+    propertyGrowthWindowYears: Number.isFinite(inputs.propertyGrowthWindowYears)
+      ? inputs.propertyGrowthWindowYears
+      : null,
+    propertyGrowthSource:
+      typeof inputs.propertyGrowthSource === 'string' ? inputs.propertyGrowthSource : '',
+    propertyTypeLabel: typeof inputs.propertyTypeLabel === 'string' ? inputs.propertyTypeLabel : '',
+    localCrimeRatePerThousand: Number.isFinite(inputs.localCrimeRatePerThousand)
+      ? inputs.localCrimeRatePerThousand
+      : null,
+    ukCrimeRatePerThousand: Number.isFinite(inputs.ukCrimeRatePerThousand)
+      ? inputs.ukCrimeRatePerThousand
+      : UK_ANNUAL_CRIME_PER_1000,
   });
   const score = scoreResult.total;
 
@@ -2819,11 +3385,32 @@ function calculateEquity(rawInputs) {
     annualPrincipal,
     irr: irrValue,
     irrHurdle: irrHurdleValue,
+    propertyType: typeof inputs.propertyType === 'string' ? inputs.propertyType : PROPERTY_TYPE_OPTIONS[0].value,
+    propertyTypeLabel: typeof inputs.propertyTypeLabel === 'string' ? inputs.propertyTypeLabel : '',
+    propertyGrowthWindowYears: Number.isFinite(inputs.propertyGrowthWindowYears)
+      ? inputs.propertyGrowthWindowYears
+      : null,
+    propertyGrowthWindowRate: Number.isFinite(inputs.propertyGrowthWindowRate)
+      ? inputs.propertyGrowthWindowRate
+      : null,
+    propertyGrowth20Year: Number.isFinite(inputs.propertyGrowth20Year)
+      ? inputs.propertyGrowth20Year
+      : null,
+    localCrimeRatePerThousand: Number.isFinite(inputs.localCrimeRatePerThousand)
+      ? inputs.localCrimeRatePerThousand
+      : null,
+    ukCrimeRatePerThousand: Number.isFinite(inputs.ukCrimeRatePerThousand)
+      ? inputs.ukCrimeRatePerThousand
+      : UK_ANNUAL_CRIME_PER_1000,
   };
 }
 
 export default function App() {
   const [extraSettings, setExtraSettings] = useState(() => loadStoredExtraSettings());
+  const [pendingExtraSettings, setPendingExtraSettings] = useState(() => ({
+    ...loadStoredExtraSettings(),
+  }));
+  const [propertyPriceState, setPropertyPriceState] = useState({ status: 'idle', data: null, error: '' });
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
   const [showLoadPanel, setShowLoadPanel] = useState(false);
@@ -2987,6 +3574,51 @@ export default function App() {
   const [crimeState, setCrimeState] = useState(INITIAL_CRIME_STATE);
   const [urlSyncReady, setUrlSyncReady] = useState(false);
   const urlSyncLastValueRef = useRef('');
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const load = async () => {
+      setPropertyPriceState((prev) =>
+        prev.status === 'success' ? prev : { status: 'loading', data: null, error: '' }
+      );
+      try {
+        const response = await fetch(propertyPriceDataUrl, {
+          signal: controller.signal,
+          headers: { Accept: 'text/csv,application/octet-stream;q=0.9,*/*;q=0.8' },
+        });
+        if (!response.ok) {
+          throw new Error('Unable to load property price history.');
+        }
+        const text = await response.text();
+        if (cancelled) {
+          return;
+        }
+        const parsed = parsePropertyPriceCsv(text);
+        const statsIndex = buildPropertyGrowthStatsIndex(parsed);
+        setPropertyPriceState({ status: 'success', data: { records: parsed, statsIndex }, error: '' });
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          return;
+        }
+        console.warn('Unable to load property price history:', error);
+        setPropertyPriceState({
+          status: 'error',
+          data: null,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : 'Unable to load property price history.',
+        });
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
   const propertyAddress = (inputs.propertyAddress ?? '').trim();
   const hasPropertyAddress = propertyAddress !== '';
   const geocodeLat = Number(geocodeState.data?.lat);
@@ -3000,7 +3632,232 @@ export default function App() {
   const geocodeAddressQuery = geocodeAddressDetails.query;
   const geocodeBounds = geocodeAddressDetails.bounds;
   const geocodePostcode = geocodeAddressDetails.postcode;
+  const geocodeCountyName = geocodeAddressDetails.county;
+  const geocodeCityName = geocodeAddressDetails.city;
+  const geocodeStateName = geocodeAddressDetails.state;
+  const geocodeCountry = geocodeAddressDetails.country;
+  const geocodeCountryCode = geocodeAddressDetails.countryCode;
 
+  const propertyPriceStatsSelection = useMemo(() => {
+    if (propertyPriceState.status !== 'success') {
+      return { stats: {}, label: '', fallback: true };
+    }
+    const statsIndex = propertyPriceState.data?.statsIndex;
+    if (!statsIndex || typeof statsIndex !== 'object') {
+      return { stats: {}, label: '', fallback: true };
+    }
+    const regions = statsIndex.regions ?? {};
+    const aliasLookup = statsIndex.aliases ?? {};
+    const globalEntry = statsIndex.global ?? { label: '', stats: {} };
+    const seen = new Set();
+    const candidates = [];
+    const pushCandidate = (value) => {
+      if (typeof value !== 'string') {
+        return;
+      }
+      const raw = value.trim();
+      if (!raw) {
+        return;
+      }
+      const canonical = canonicalizeRegionKey(raw);
+      const dedupeKey = canonical || normalizeRegionKey(raw);
+      if (!dedupeKey || seen.has(dedupeKey)) {
+        return;
+      }
+      seen.add(dedupeKey);
+      candidates.push({ raw, canonical });
+    };
+    if (geocodeCountyName) {
+      pushCandidate(geocodeCountyName);
+    }
+    if (geocodeCityName) {
+      pushCandidate(geocodeCityName);
+    }
+    if (geocodeStateName) {
+      pushCandidate(geocodeStateName);
+    }
+    if (geocodeCountryCode) {
+      pushCandidate(geocodeCountryCode);
+      const mapped = COUNTRY_REGION_SYNONYMS[normalizeRegionKey(geocodeCountryCode)];
+      if (mapped) {
+        pushCandidate(mapped);
+      }
+    }
+    if (geocodeCountry) {
+      pushCandidate(geocodeCountry);
+    }
+    const findRegionMatch = ({ raw, canonical }) => {
+      if (canonical && regions[canonical]?.stats && Object.keys(regions[canonical].stats).length > 0) {
+        return { key: canonical, entry: regions[canonical] };
+      }
+      const aliasKeys = buildRegionAliasKeys(raw);
+      const aliasCandidates = [];
+      if (canonical) {
+        aliasCandidates.push(canonical);
+      }
+      aliasKeys.forEach((alias) => {
+        if (!aliasCandidates.includes(alias)) {
+          aliasCandidates.push(alias);
+        }
+      });
+      for (const alias of aliasCandidates) {
+        const mapped = aliasLookup[alias];
+        if (Array.isArray(mapped)) {
+          for (const regionKey of mapped) {
+            const regionEntry = regions[regionKey];
+            if (regionEntry?.stats && Object.keys(regionEntry.stats).length > 0) {
+              return { key: regionKey, entry: regionEntry };
+            }
+          }
+        }
+      }
+      let fallback = null;
+      aliasCandidates.forEach((alias) => {
+        const cleanedAlias = alias.replace(/[^a-z0-9]/g, '');
+        Object.entries(regions).forEach(([regionKey, regionEntry]) => {
+          if (!regionEntry?.stats || Object.keys(regionEntry.stats).length === 0) {
+            return;
+          }
+          const regionAliases = Array.isArray(regionEntry.aliases) ? regionEntry.aliases : [];
+          if (regionAliases.includes(alias)) {
+            fallback = { key: regionKey, entry: regionEntry, score: cleanedAlias.length };
+            return;
+          }
+          regionAliases.forEach((regionAlias) => {
+            if (!regionAlias) {
+              return;
+            }
+            const cleanedRegion = regionAlias.replace(/[^a-z0-9]/g, '');
+            if (!cleanedAlias || !cleanedRegion) {
+              return;
+            }
+            if (cleanedAlias === cleanedRegion) {
+              fallback = { key: regionKey, entry: regionEntry, score: cleanedAlias.length };
+              return;
+            }
+            if (
+              cleanedAlias.length > 3 &&
+              cleanedRegion.length > 3 &&
+              (cleanedAlias.startsWith(cleanedRegion) || cleanedRegion.startsWith(cleanedAlias))
+            ) {
+              if (!fallback || cleanedRegion.length > fallback.score) {
+                fallback = { key: regionKey, entry: regionEntry, score: cleanedRegion.length };
+              }
+            }
+          });
+        });
+      });
+      return fallback ? { key: fallback.key, entry: fallback.entry } : null;
+    };
+
+    for (const candidate of candidates) {
+      const match = findRegionMatch(candidate);
+      if (match) {
+        return {
+          stats: match.entry.stats,
+          label: match.entry.label ?? match.key,
+          fallback: false,
+        };
+      }
+    }
+    return {
+      stats: globalEntry?.stats ?? {},
+      label: globalEntry?.label ?? '',
+      fallback: true,
+    };
+  }, [
+    propertyPriceState,
+    geocodeCityName,
+    geocodeCountyName,
+    geocodeCountry,
+    geocodeCountryCode,
+    geocodeStateName,
+  ]);
+
+  const propertyPriceStats = propertyPriceStatsSelection.stats;
+  const propertyGrowthRegionLabel = propertyPriceStatsSelection.label;
+  const propertyGrowthRegionIsFallback = propertyPriceStatsSelection.fallback;
+
+  const propertyTypeOption = useMemo(() => {
+    const selectedValue = typeof inputs.propertyType === 'string' ? inputs.propertyType : '';
+    return (
+      PROPERTY_TYPE_OPTIONS.find((option) => option.value === selectedValue) || PROPERTY_TYPE_OPTIONS[0]
+    );
+  }, [inputs.propertyType]);
+
+  const propertyTypeValue = propertyTypeOption.value;
+  const propertyTypeLabel = propertyTypeOption.label;
+  const propertyTypeGrowth = propertyPriceStats[propertyTypeValue] ?? null;
+  const rawHistoricalWindow = Number(inputs.historicalAppreciationWindow);
+  const sanitizedHistoricalWindow = PROPERTY_APPRECIATION_WINDOWS.includes(rawHistoricalWindow)
+    ? rawHistoricalWindow
+    : DEFAULT_APPRECIATION_WINDOW;
+  const derivedHistoricalRate = propertyTypeGrowth?.cagr?.[sanitizedHistoricalWindow] ?? null;
+  const longTermGrowthRate = propertyTypeGrowth?.cagr?.[20] ?? null;
+  const propertyGrowthLatestDate = propertyTypeGrowth?.latest?.date ?? null;
+  const propertyGrowthLatestPrice = propertyTypeGrowth?.latest?.price ?? null;
+  const propertyGrowthWindowRateValue = Number.isFinite(derivedHistoricalRate) ? derivedHistoricalRate : null;
+  const propertyGrowth20YearValue = Number.isFinite(longTermGrowthRate) ? longTermGrowthRate : null;
+  const propertyGrowthStatus = propertyPriceState.status;
+  const propertyGrowthLoading = propertyGrowthStatus === 'loading';
+  const propertyGrowthError = propertyGrowthStatus === 'error' ? propertyPriceState.error || '' : '';
+  const propertyGrowthRegionSummary = (() => {
+    if (propertyGrowthRegionIsFallback) {
+      return propertyGrowthRegionLabel || 'Dataset average';
+    }
+    if (propertyGrowthRegionLabel) {
+      return `${propertyGrowthRegionLabel} market data`;
+    }
+    return '';
+  })();
+  const propertyGrowthLatestLabel = propertyGrowthLatestDate
+    ? propertyGrowthLatestDate.toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
+    : '';
+  const propertyGrowthLatestPriceLabel = Number.isFinite(propertyGrowthLatestPrice)
+    ? currencyNoPence(propertyGrowthLatestPrice)
+    : '';
+  const manualAppreciationRate = Number.isFinite(inputs.annualAppreciation)
+    ? Number(inputs.annualAppreciation)
+    : 0;
+  const useHistoricalAppreciation = Boolean(inputs.useHistoricalAppreciation);
+  const historicalToggleDisabled = propertyGrowthLoading || propertyGrowthWindowRateValue === null;
+  const historicalToggleChecked = useHistoricalAppreciation && propertyGrowthWindowRateValue !== null;
+  const crimeSummaryData = crimeState.data;
+  const localCrimeAnnualRatePerThousand = useMemo(() => {
+    if (!crimeSummaryData) {
+      return null;
+    }
+    const incidents = Number(crimeSummaryData.totalIncidents);
+    if (!Number.isFinite(incidents)) {
+      return null;
+    }
+    if (incidents <= 0) {
+      return 0;
+    }
+    if (!Number.isFinite(CRIME_SEARCH_AREA_POPULATION_ESTIMATE) || CRIME_SEARCH_AREA_POPULATION_ESTIMATE <= 0) {
+      return null;
+    }
+    return (incidents * 12 * 1000) / CRIME_SEARCH_AREA_POPULATION_ESTIMATE;
+  }, [crimeSummaryData]);
+
+  const effectiveAnnualAppreciation = useMemo(() => {
+    if (useHistoricalAppreciation && Number.isFinite(derivedHistoricalRate)) {
+      return derivedHistoricalRate;
+    }
+    return manualAppreciationRate;
+  }, [useHistoricalAppreciation, derivedHistoricalRate, manualAppreciationRate]);
+
+  useEffect(() => {
+    if (
+      inputs.useHistoricalAppreciation &&
+      !propertyGrowthLoading &&
+      propertyGrowthWindowRateValue === null
+    ) {
+      setInputs((prev) =>
+        prev.useHistoricalAppreciation ? { ...prev, useHistoricalAppreciation: false } : prev
+      );
+    }
+  }, [inputs.useHistoricalAppreciation, propertyGrowthLoading, propertyGrowthWindowRateValue, setInputs]);
   const remoteAvailable = remoteEnabled && authStatus === 'ready';
 
   function applyUiState(uiState) {
@@ -3237,6 +4094,23 @@ export default function App() {
     } catch (error) {
       console.warn('Unable to persist extra settings:', error);
     }
+  }, [extraSettings]);
+
+  useEffect(() => {
+    setPendingExtraSettings((prev) => {
+      const defaults = getDefaultExtraSettings();
+      const next = {};
+      EXTRA_SETTING_KEYS.forEach((key) => {
+        const value = Number(extraSettings[key]);
+        next[key] = Number.isFinite(value) ? value : defaults[key];
+      });
+      const previous = prev ?? {};
+      const changed = EXTRA_SETTING_KEYS.some((key) => next[key] !== previous[key]);
+      if (!changed) {
+        return prev ?? next;
+      }
+      return next;
+    });
   }, [extraSettings]);
 
   useEffect(() => {
@@ -3879,7 +4753,37 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [shareNotice]);
 
-  const equity = useMemo(() => calculateEquity(inputs), [inputs]);
+  const equityInputs = useMemo(() => {
+    const derivedRate = Number.isFinite(derivedHistoricalRate) ? derivedHistoricalRate : null;
+    const longRunRate = Number.isFinite(longTermGrowthRate) ? longTermGrowthRate : null;
+    const crimeRateValue = Number.isFinite(localCrimeAnnualRatePerThousand)
+      ? localCrimeAnnualRatePerThousand
+      : null;
+    return {
+      ...inputs,
+      propertyType: propertyTypeValue,
+      annualAppreciation: effectiveAnnualAppreciation,
+      propertyGrowthWindowYears: sanitizedHistoricalWindow,
+      propertyGrowthWindowRate: derivedRate,
+      propertyGrowth20Year: longRunRate,
+      propertyTypeLabel,
+      propertyGrowthSource: propertyGrowthRegionSummary,
+      localCrimeRatePerThousand: crimeRateValue,
+      ukCrimeRatePerThousand: UK_ANNUAL_CRIME_PER_1000,
+    };
+  }, [
+    inputs,
+    propertyTypeValue,
+    effectiveAnnualAppreciation,
+    sanitizedHistoricalWindow,
+    derivedHistoricalRate,
+    longTermGrowthRate,
+    propertyTypeLabel,
+    propertyGrowthRegionSummary,
+    localCrimeAnnualRatePerThousand,
+  ]);
+
+  const equity = useMemo(() => calculateEquity(equityInputs), [equityInputs]);
 
   const scenarioTableData = useMemo(
     () =>
@@ -4405,7 +5309,9 @@ export default function App() {
 
 
   const exitYears = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
-  const appreciationRate = Number(inputs.annualAppreciation) || 0;
+  const appreciationRate = Number.isFinite(effectiveAnnualAppreciation)
+    ? effectiveAnnualAppreciation
+    : 0;
   const sellingCostsRate = Number(inputs.sellingCostsPct) || 0;
   const appreciationFactor = 1 + appreciationRate;
   const appreciationFactorDisplay = appreciationFactor.toFixed(4);
@@ -5320,7 +6226,9 @@ export default function App() {
     const roiValue = totalCashRequiredValue > 0 ? propertyNetValue / totalCashRequiredValue - 1 : 0;
     const efficiencyValue =
       Number.isFinite(irrValue) && Number.isFinite(propertyNetAfterTaxValue) ? irrValue * propertyNetAfterTaxValue : 0;
-    const appreciationRateValue = Number(inputs.annualAppreciation) || 0;
+    const appreciationRateValue = Number.isFinite(effectiveAnnualAppreciation)
+      ? effectiveAnnualAppreciation
+      : 0;
     const rentGrowthRateValue = Number(inputs.rentGrowth) || 0;
     const scoreValue = Number(equity.score) || 0;
     const scoreMaxValue = Number.isFinite(equity.scoreMax) ? Number(equity.scoreMax) : TOTAL_SCORE_MAX;
@@ -5429,7 +6337,7 @@ export default function App() {
     equity.annualPrincipal,
     equity.annualDebtService,
     inputs.depositPct,
-    inputs.annualAppreciation,
+    effectiveAnnualAppreciation,
     inputs.rentGrowth,
     propertyNetAfterTaxLabel,
     rentalTaxLabel,
@@ -5447,6 +6355,17 @@ export default function App() {
     const afterTaxCashValue = Number(equity.cashflowYear1AfterTax);
     const discountRateValue = Number(inputs.discountRate);
     const scoreValueRaw = Number(equity.score);
+    const capRateValue = Number(equity.cap);
+    const dscrValue = Number(equity.dscr);
+    const propertyGrowth20YearValue = Number(equity.propertyGrowth20Year);
+    const propertyGrowthWindowRateValue = Number(equity.propertyGrowthWindowRate);
+    const propertyGrowthWindowYearsValue = Number(equity.propertyGrowthWindowYears);
+    const propertyTypeName =
+      typeof equity.propertyTypeLabel === 'string' && equity.propertyTypeLabel.trim() !== ''
+        ? equity.propertyTypeLabel
+        : propertyTypeLabel;
+    const localCrimeRateValue = Number(equity.localCrimeRatePerThousand);
+    const ukCrimeRateValue = Number(equity.ukCrimeRatePerThousand);
     const scoreMax = Number.isFinite(equity.scoreMax) ? Number(equity.scoreMax) : TOTAL_SCORE_MAX;
     const scoreComponents = equity.scoreComponents || {};
     const hasSignals =
@@ -5516,6 +6435,38 @@ export default function App() {
       sentences.push(`Discounting cash flows at ${rateText} yields an NPV of ${currency(npvValue)}, ${direction}.`);
     }
 
+    if (Number.isFinite(propertyGrowth20YearValue)) {
+      const windowRateText = Number.isFinite(propertyGrowthWindowRateValue)
+        ? ` (recent ${
+            Number.isFinite(propertyGrowthWindowYearsValue) && propertyGrowthWindowYearsValue > 0
+              ? propertyGrowthWindowYearsValue
+              : sanitizedHistoricalWindow
+          }-year CAGR ${formatPercent(propertyGrowthWindowRateValue)})`
+        : '';
+      sentences.push(
+        `${propertyTypeName} prices have compounded at ${formatPercent(
+          propertyGrowth20YearValue
+        )} annually over the past 20 years${windowRateText}.`
+      );
+    }
+
+    if (Number.isFinite(localCrimeRateValue)) {
+      if (Number.isFinite(ukCrimeRateValue) && ukCrimeRateValue > 0) {
+        const ratio = localCrimeRateValue / ukCrimeRateValue;
+        const deltaPercent = formatPercent(Math.abs(ratio - 1), 1);
+        const direction = ratio <= 1 ? `${deltaPercent} below` : `${deltaPercent} above`;
+        sentences.push(
+          `Latest month recorded ${localCrimeRateValue.toFixed(0)} crimes per 1k residents (${direction} the UK average of ${ukCrimeRateValue.toFixed(
+            0
+          )}).`
+        );
+      } else {
+        sentences.push(
+          `Latest month recorded ${localCrimeRateValue.toFixed(0)} crimes per 1k residents near the property.`
+        );
+      }
+    }
+
     sentences.push(
       `Overall these signals point to a ${ratingLabel} profile with an investment score of ${Math.round(
         scoreValue
@@ -5579,7 +6530,64 @@ export default function App() {
       });
     }
 
-    const visuals = ['irr', 'irrHurdle', 'cashOnCash', 'cashflow', 'cashInvested', 'npv']
+    const capComponent = componentFor('capRate');
+    if (Number.isFinite(capRateValue)) {
+      chips.push({
+        label: 'Cap rate',
+        value: capComponent?.displayValue ?? formatPercent(capRateValue),
+        className: toneToClass(capComponent?.tone ?? 'neutral'),
+      });
+    }
+
+    const dscrComponent = componentFor('dscr');
+    if (Number.isFinite(dscrValue)) {
+      chips.push({
+        label: 'DSCR',
+        value: dscrComponent?.displayValue ?? dscrValue.toFixed(2),
+        className: toneToClass(
+          dscrComponent?.tone ?? (dscrValue >= 1.25 ? 'positive' : dscrValue >= 1 ? 'warning' : 'negative')
+        ),
+      });
+    }
+
+    const growthComponent = componentFor('propertyGrowth');
+    if (Number.isFinite(propertyGrowth20YearValue)) {
+      chips.push({
+        label: '20-yr growth',
+        value: growthComponent?.displayValue ?? formatPercent(propertyGrowth20YearValue),
+        className: toneToClass(growthComponent?.tone ?? 'neutral'),
+      });
+    }
+
+    const crimeComponent = componentFor('crimeSafety');
+    if (Number.isFinite(localCrimeRateValue)) {
+      const displayRate =
+        crimeComponent?.displayValue ??
+        `${localCrimeRateValue.toFixed(localCrimeRateValue >= 100 ? 0 : 1)} /1k`;
+      chips.push({
+        label: 'Crime rate',
+        value: displayRate,
+        className: toneToClass(
+          crimeComponent?.tone ??
+            (Number.isFinite(ukCrimeRateValue) && ukCrimeRateValue > 0 && localCrimeRateValue <= ukCrimeRateValue
+              ? 'positive'
+              : 'warning')
+        ),
+      });
+    }
+
+    const visuals = [
+      'irr',
+      'irrHurdle',
+      'cashOnCash',
+      'cashflow',
+      'cashInvested',
+      'npv',
+      'capRate',
+      'dscr',
+      'propertyGrowth',
+      'crimeSafety',
+    ]
       .map((key) => {
         const component = componentFor(key);
         if (!component) {
@@ -5613,7 +6621,16 @@ export default function App() {
       chips,
       visuals,
     };
-  }, [equity, equity.score, equity.scoreComponents, equity.scoreMax, inputs.discountRate, inputs.irrHurdle]);
+  }, [
+    equity,
+    equity.score,
+    equity.scoreComponents,
+    equity.scoreMax,
+    inputs.discountRate,
+    inputs.irrHurdle,
+    propertyTypeLabel,
+    sanitizedHistoricalWindow,
+  ]);
 
   const knowledgeMetricList = useMemo(
     () =>
@@ -5940,7 +6957,14 @@ export default function App() {
       `Loan: ${inputs.loanType} over ${inputs.mortgageYears} years at ${formatPercent(inputs.interestRate)}`,
       `Rent: ${currency(inputs.monthlyRent)} /mo; vacancy: ${formatPercent(inputs.vacancyPct)}; management: ${formatPercent(inputs.mgmtPct)}; repairs: ${formatPercent(inputs.repairsPct)}`,
       `Insurance: ${currency(inputs.insurancePerYear)}; other OpEx: ${currency(inputs.otherOpexPerYear)}`,
-      `Growth assumptions: appreciation ${formatPercent(inputs.annualAppreciation)}, rent growth ${formatPercent(inputs.rentGrowth)}, index fund ${formatPercent(inputs.indexFundGrowth)}`,
+      `Growth assumptions: appreciation ${formatPercent(effectiveAnnualAppreciation)}, rent growth ${formatPercent(inputs.rentGrowth)}, index fund ${formatPercent(inputs.indexFundGrowth)}`,
+      `Property type: ${propertyTypeLabel}; UK 20-year CAGR ${
+        propertyGrowth20YearValue !== null ? formatPercent(propertyGrowth20YearValue) : 'n/a'
+      }; local crime ${
+        Number.isFinite(localCrimeAnnualRatePerThousand)
+          ? `${localCrimeAnnualRatePerThousand.toFixed(0)} per 1k`
+          : 'n/a'
+      } (UK avg ${UK_ANNUAL_CRIME_PER_1000.toFixed(0)} per 1k)`,
       `Exit year: ${inputs.exitYear}; selling costs: ${formatPercent(inputs.sellingCostsPct)}; discount rate: ${formatPercent(inputs.discountRate)}`,
       `Household incomes: ${currency(inputs.incomePerson1)} (${share1}%) and ${currency(inputs.incomePerson2)} (${share2}%)`,
       `Reinvest after-tax cash flow: ${inputs.reinvestIncome ? `${formatPercent(inputs.reinvestPct)} of after-tax cash` : 'No reinvestment'}`,
@@ -5975,6 +6999,11 @@ export default function App() {
           propertyNetWealthAtExit: equity.propertyNetWealthAtExit,
           propertyNetWealthAfterTax: equity.propertyNetWealthAfterTax,
           exitYear: equity.exitYear,
+          propertyType: equity.propertyTypeLabel || propertyTypeLabel,
+          propertyGrowth20Year: equity.propertyGrowth20Year,
+          propertyGrowthWindowRate: equity.propertyGrowthWindowRate,
+          crimeRatePerThousand: equity.localCrimeRatePerThousand,
+          ukCrimeRatePerThousand: equity.ukCrimeRatePerThousand,
           indexFundGrowth: inputs.indexFundGrowth,
         },
         extraSummary,
@@ -6229,6 +7258,43 @@ export default function App() {
     window.URL.revokeObjectURL(url);
   };
 
+  const handlePendingExtraSettingChange = (key, value, decimals = 4) => {
+    if (!EXTRA_SETTING_KEYS.includes(key)) {
+      return;
+    }
+    const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
+    setPendingExtraSettings((prev) => {
+      if (prev[key] === rounded) {
+        return prev;
+      }
+      return { ...prev, [key]: rounded };
+    });
+    setInputs((prev) => ({ ...prev, [key]: rounded }));
+  };
+
+  const handleSaveExtraSettings = () => {
+    if (!extraSettingsDirty) {
+      return;
+    }
+    const defaults = getDefaultExtraSettings();
+    const payload = {};
+    EXTRA_SETTING_KEYS.forEach((key) => {
+      const value = Number(pendingExtraSettings?.[key]);
+      payload[key] = Number.isFinite(value) ? value : defaults[key];
+    });
+    setExtraSettings(payload);
+  };
+
+  const extraSettingsDirty = useMemo(() => {
+    return EXTRA_SETTING_KEYS.some((key) => {
+      const pendingValue = Number(pendingExtraSettings?.[key]);
+      const savedValue = Number(extraSettings?.[key]);
+      const pending = Number.isFinite(pendingValue) ? pendingValue : 0;
+      const saved = Number.isFinite(savedValue) ? savedValue : 0;
+      return Math.abs(pending - saved) > 1e-6;
+    });
+  }, [extraSettings, pendingExtraSettings]);
+
   const onNum = (key, value, decimals = 2) => {
     const rounded = Number.isFinite(value) ? roundTo(value, decimals) : 0;
     if (EXTRA_SETTING_KEYS.includes(key)) {
@@ -6325,6 +7391,25 @@ export default function App() {
           {icon}
         </span>
       </button>
+    );
+  };
+
+  const extraSettingPctInput = (key, label, step = 0.005) => {
+    const rawValue = pendingExtraSettings?.[key];
+    const value = Number.isFinite(rawValue) ? rawValue : 0;
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-medium text-slate-600">{label}</label>
+        <input
+          type="number"
+          value={Number.isFinite(value) ? roundTo(value * 100, 2) : ''}
+          onChange={(event) =>
+            handlePendingExtraSettingChange(key, Number(event.target.value) / 100, 4)
+          }
+          step={step * 100}
+          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+        />
+      </div>
     );
   };
 
@@ -6941,6 +8026,10 @@ export default function App() {
                     <li>Year-one after-tax cash flow (up to {SCORE_COMPONENT_CONFIG.cashflow.maxPoints} points).</li>
                     <li>Cash invested efficiency (up to {SCORE_COMPONENT_CONFIG.cashInvested.maxPoints} points).</li>
                     <li>Discounted NPV contribution (up to {SCORE_COMPONENT_CONFIG.npv.maxPoints} points).</li>
+                    <li>Cap rate resilience (up to {SCORE_COMPONENT_CONFIG.capRate.maxPoints} points).</li>
+                    <li>Debt service coverage ratio (up to {SCORE_COMPONENT_CONFIG.dscr.maxPoints} points).</li>
+                    <li>20-year market growth tailwind (up to {SCORE_COMPONENT_CONFIG.propertyGrowth.maxPoints} points).</li>
+                    <li>Crime safety versus UK averages (up to {SCORE_COMPONENT_CONFIG.crimeSafety.maxPoints} points).</li>
                   </ul>
                   <p className="mt-2 text-slate-500">
                     Points are summed across the components and clipped between 0 and {TOTAL_SCORE_MAX}.
@@ -7000,6 +8089,40 @@ export default function App() {
                 >
                   <div className="grid gap-2 md:grid-cols-2">
                     <div className="md:col-span-2">{textInput('propertyAddress', 'Property address')}</div>
+                    <div className="md:col-span-2">
+                      <label className="text-xs font-medium text-slate-600">Property type</label>
+                      <select
+                        value={propertyTypeValue}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            propertyType: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+                      >
+                        {PROPERTY_TYPE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {propertyGrowthLoading
+                          ? 'Loading market data…'
+                          : propertyGrowthError
+                          ? `Market data unavailable: ${propertyGrowthError}`
+                          : propertyGrowth20YearValue !== null
+                          ? `${propertyGrowthRegionSummary || 'Market data'}${
+                              propertyGrowthLatestLabel ? ` (${propertyGrowthLatestLabel})` : ''
+                            } 20-year CAGR: ${formatPercent(propertyGrowth20YearValue)}${
+                              propertyGrowthWindowRateValue !== null
+                                ? ` · ${sanitizedHistoricalWindow}-year CAGR: ${formatPercent(propertyGrowthWindowRateValue)}`
+                                : ''
+                            }${propertyGrowthLatestPriceLabel ? ` · Latest avg price ${propertyGrowthLatestPriceLabel}` : ''}.`
+                          : 'Historical growth data not available for this property type.'}
+                      </p>
+                    </div>
                     <div>{stepperInput('bedrooms', 'Bedrooms', { min: 0, step: 1 })}</div>
                     <div>{stepperInput('bathrooms', 'Bathrooms', { min: 0, step: 1 })}</div>
                     <div className="flex flex-col gap-1 md:col-span-2">
@@ -7287,9 +8410,65 @@ export default function App() {
                   {pctInput('repairsPct', 'Repairs/CapEx %')}
                   {moneyInput('insurancePerYear', 'Insurance (£/yr)', 50)}
                   {moneyInput('otherOpexPerYear', 'Other OpEx (£/yr)', 50)}
-                  {pctInput('annualAppreciation', 'Appreciation %')}
+                  <div className="col-span-2 rounded-xl border border-slate-200 p-3">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-slate-600">Appreciation %</label>
+                        <input
+                          type="number"
+                          value={Number.isFinite(manualAppreciationRate) ? roundTo(manualAppreciationRate * 100, 2) : ''}
+                          onChange={(event) => onNum('annualAppreciation', Number(event.target.value) / 100, 4)}
+                          step={0.25}
+                          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+                          disabled={historicalToggleChecked}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-slate-600">Historical window</label>
+                        <select
+                          value={sanitizedHistoricalWindow}
+                          onChange={(event) =>
+                            setInputs((prev) => ({
+                              ...prev,
+                              historicalAppreciationWindow: Number(event.target.value) || DEFAULT_APPRECIATION_WINDOW,
+                            }))
+                          }
+                          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+                          disabled={propertyGrowthLoading}
+                        >
+                          {PROPERTY_APPRECIATION_WINDOWS.map((years) => (
+                            <option key={years} value={years}>
+                              {years} year{years === 1 ? '' : 's'} average
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <label className="mt-3 flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={historicalToggleChecked}
+                        onChange={(event) =>
+                          setInputs((prev) => ({
+                            ...prev,
+                            useHistoricalAppreciation: event.target.checked,
+                          }))
+                        }
+                        disabled={historicalToggleDisabled}
+                      />
+                      <span>Use UK {sanitizedHistoricalWindow}-year average</span>
+                    </label>
+                    {propertyGrowthLoading || propertyGrowthError || propertyGrowthWindowRateValue === null ? (
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {propertyGrowthLoading
+                          ? 'Loading appreciation averages…'
+                          : propertyGrowthError
+                          ? `Cannot apply historical average: ${propertyGrowthError}`
+                          : 'Historical data unavailable for the selected window.'}
+                      </p>
+                    ) : null}
+                  </div>
                   {pctInput('rentGrowth', 'Rent growth %')}
-                  {pctInput('indexFundGrowth', 'Index fund growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
@@ -7323,9 +8502,28 @@ export default function App() {
                   collapsed={collapsedSections.extraSettings}
                   onToggle={() => toggleSection('extraSettings')}
                 >
-                  <div className="grid grid-cols-2 gap-2">
-                    {pctInput('discountRate', 'Discount rate %', 0.001)}
-                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
+                    {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                    {extraSettingPctInput('indexFundGrowth', 'Index fund growth %')}
+                  </div>
+                  <div className="mt-3 flex flex-col gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-[11px] text-slate-600">
+                      Save to apply these assumptions across every scenario.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleSaveExtraSettings}
+                      disabled={!extraSettingsDirty}
+                      aria-disabled={!extraSettingsDirty}
+                      className={`inline-flex items-center justify-center rounded-full px-3 py-1 text-xs font-semibold transition ${
+                        extraSettingsDirty
+                          ? 'bg-indigo-600 text-white hover:bg-indigo-500'
+                          : 'cursor-not-allowed bg-slate-200 text-slate-500'
+                      }`}
+                    >
+                      Save global settings
+                    </button>
                   </div>
                 </CollapsibleSection>
 
@@ -7356,35 +8554,37 @@ export default function App() {
                   value={currency(inputs.renovationCost)}
                   knowledgeKey="renovationCost"
                 />
-                {equity.bridgingLoanAmount > 0 ? (
-                  <Line
-                    label="Bridging loan (deposit financed)"
-                    value={currency(-equity.bridgingLoanAmount)}
-                    knowledgeKey="bridgingLoanAmount"
-                  />
-                ) : null}
                 <hr className="my-2" />
-                <Line
-                  label={
-                    equity.bridgingLoanAmount > 0
-                      ? 'Net cash in (after bridging)'
-                      : 'Total cash in'
-                  }
-                  value={currency(
-                    Number.isFinite(equity.initialCashOutlay)
-                      ? equity.initialCashOutlay
-                      : equity.cashIn
-                  )}
-                  bold
-                  knowledgeKey="netCashIn"
-                />
                 {equity.bridgingLoanAmount > 0 ? (
+                  <>
+                    <Line
+                      label="Total cash required"
+                      value={currency(equity.cashIn)}
+                      knowledgeKey="totalCashRequired"
+                    />
+                    <Line
+                      label="Cash required from investor"
+                      value={currency(
+                        Number.isFinite(equity.initialCashOutlay)
+                          ? equity.initialCashOutlay
+                          : equity.cashIn
+                      )}
+                      bold
+                      knowledgeKey="netCashIn"
+                    />
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      Deposit funded via bridging facility of {currency(equity.bridgingLoanAmount)};
+                      mortgage payments resume after the bridge period.
+                    </p>
+                  </>
+                ) : (
                   <Line
-                    label="Total cash required"
+                    label="Total cash in"
                     value={currency(equity.cashIn)}
-                    knowledgeKey="totalCashRequired"
+                    bold
+                    knowledgeKey="netCashIn"
                   />
-                ) : null}
+                )}
               </SummaryCard>
 
               <SummaryCard
@@ -9336,10 +10536,9 @@ export default function App() {
                     {smallInput('exitYear', 'Exit year', 1)}
                     {pctInput('annualAppreciation', 'Capital growth %')}
                     {pctInput('rentGrowth', 'Rent growth %')}
-                    {pctInput('indexFundGrowth', 'Index fund growth %')}
                     {pctInput('sellingCostsPct', 'Selling costs %')}
-                    {pctInput('discountRate', 'Discount rate %', 0.001)}
-                    {pctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                    {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
+                    {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
                   </div>
                 </div>
                 <div>
