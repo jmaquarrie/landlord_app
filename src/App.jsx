@@ -1773,8 +1773,13 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   const lastPoint = chart[chart.length - 1] ?? null;
   const totals = {
     ...baseTotals,
-    finalPropertyNetAfterTax: lastPoint?.propertyNetAfterTax ?? 0,
-    finalNetWealth: lastPoint?.combinedNetWealth ?? lastPoint?.propertyNetAfterTax ?? 0,
+    finalPropertyNetAfterTax:
+      lastPoint?.meta?.totals?.propertyNetAfterTax ?? lastPoint?.propertyNetAfterTax ?? 0,
+    finalNetWealth:
+      lastPoint?.combinedNetWealth ??
+      lastPoint?.meta?.totals?.propertyNetAfterTax ??
+      lastPoint?.propertyNetAfterTax ??
+      0,
     finalCashPosition: lastPoint?.cumulativeCash ?? 0,
     finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
     finalIndexFundValue: lastPoint?.indexFundValue ?? 0,
