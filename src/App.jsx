@@ -206,7 +206,6 @@ const SERIES_COLORS = {
   indexFund1_5x: '#fb7185',
   indexFund2x: '#ec4899',
   indexFund4x: '#c026d3',
-  cumulativeCash: '#10b981',
   cumulativeExternal: '#f97316',
   indexFundValue: '#fb923c',
   capRate: '#1e293b',
@@ -224,6 +223,7 @@ const SERIES_COLORS = {
   discountFactor: '#64748b',
   cashflowAfterTax: '#10b981',
   netWealthAfterTax: '#1e293b',
+  netWealthBeforeTax: '#0369a1',
 };
 
 const SERIES_LABELS = {
@@ -239,7 +239,6 @@ const SERIES_LABELS = {
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
-  cumulativeCash: 'Cashflow after tax',
   cumulativeExternal: 'External cash deployed',
   indexFundValue: 'Index fund value',
   capRate: 'Cap rate',
@@ -257,6 +256,7 @@ const SERIES_LABELS = {
   discountFactor: 'Discount factor',
   cashflowAfterTax: 'Cashflow after tax',
   netWealthAfterTax: 'Net wealth (after tax)',
+  netWealthBeforeTax: 'Net wealth (before tax)',
 };
 
 const CASHFLOW_BAR_COLORS = {
@@ -1443,14 +1443,31 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         }
         const year = Math.max(0, Math.round(yearValue));
         const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue) || 0;
-        const cashflowGross = Number(point?.cashflow) || 0;
-        const cashflowNet = Number(
-          point?.meta?.cumulativeCashAfterTaxNet ??
-            point?.meta?.cumulativeCashAfterTaxKept ??
-            cashflowGross
-        );
         const cashflowKept = Number(
-          point?.meta?.cumulativeCashAfterTaxKept ?? cashflowNet
+          point?.meta?.cumulativeCashAfterTaxKeptRealized ??
+            point?.cashflow ??
+            point?.meta?.cumulativeCashAfterTaxKept ??
+            0
+        );
+        const cashflowNet = Number(
+          point?.meta?.cumulativeCashAfterTaxNetRealized ??
+            point?.cashflowNet ??
+            point?.meta?.cumulativeCashAfterTaxNet ??
+            cashflowKept
+        );
+        const cashflowGross = Number(
+          point?.meta?.cumulativeCashAfterTaxRealized ??
+            point?.cashflowGross ??
+            point?.meta?.cumulativeCashAfterTax ??
+            cashflowKept
+        );
+        const netWealthAfterTaxValue = Number(
+          point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ??
+            (Number(point?.propertyNetAfterTax) || 0) + indexFundValue
+        );
+        const netWealthBeforeTaxValue = Number(
+          point?.netWealthBeforeTax ?? point?.meta?.netWealthBeforeTax ??
+            (Number(point?.propertyNet) || 0) + indexFundValue
         );
         chartByYear.set(year, {
           year,
@@ -1465,6 +1482,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           indexFund: indexFundValue,
           investedRent: Number(point?.investedRent) || 0,
           reinvestFund: Number(point?.reinvestFund ?? point?.meta?.reinvestFundValue) || 0,
+          netWealthAfterTax: netWealthAfterTaxValue,
+          netWealthBeforeTax: netWealthBeforeTaxValue,
         });
       });
     }
@@ -1747,10 +1766,13 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cashflow: propertyCashflowNet,
       cashflowNet: propertyCashflowNet,
       cashflowGross: propertyCashflowGross,
+      cashflowAfterTax: cumulativeCash,
       investedRent: propertyInvestedRent,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
+      netWealthAfterTax: totalNetWealthWithIndex,
+      netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
       cashFlow,
       cumulativeCash,
       externalCashFlow,
@@ -1766,8 +1788,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           propertyNet,
           propertyNetAfterTax,
           cashflow: propertyCashflowNet,
+          cashflowAfterTax: cumulativeCash,
           combinedNetWealth: combinedNetWealthAfterTax,
           combinedNetWealthBeforeTax,
+          netWealthAfterTax: totalNetWealthWithIndex,
+          netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
           cumulativeCash,
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
@@ -1777,6 +1802,15 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     });
 
     planCashflows.push(cashFlow);
+  }
+
+  if (chart.length > 0) {
+    const lastPoint = chart[chart.length - 1];
+    const extensionYear = (Number(lastPoint?.year) || maxYear) + 1;
+    chart.push({
+      ...lastPoint,
+      year: extensionYear,
+    });
   }
 
   orderedIncluded.forEach((item) => {
@@ -1834,13 +1868,19 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       lastPoint?.meta?.totals?.propertyNetAfterTax ?? lastPoint?.propertyNetAfterTax ?? 0,
     finalNetWealth:
       lastPoint?.combinedNetWealth ??
+      lastPoint?.netWealthAfterTax ??
       lastPoint?.meta?.totals?.propertyNetAfterTax ??
       lastPoint?.propertyNetAfterTax ??
       0,
-    finalCashPosition: lastPoint?.cumulativeCash ?? 0,
+    finalCashPosition:
+      lastPoint?.cashflowAfterTax ??
+      lastPoint?.meta?.totals?.cashflowAfterTax ??
+      lastPoint?.cumulativeCash ??
+      0,
     finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
-    finalIndexFundValue: lastPoint?.indexFundValue ?? 0,
+    finalIndexFundValue: lastPoint?.indexFundValue ?? lastPoint?.indexFund ?? 0,
     finalTotalNetWealth:
+      lastPoint?.netWealthAfterTax ??
       lastPoint?.totalNetWealthWithIndex ??
       ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
     averageRentalYield,
@@ -5167,6 +5207,8 @@ function calculateEquity(rawInputs) {
     yieldRate: null,
     cashOnCash: null,
     irrSeries: null,
+    netWealthAfterTax: initialNetEquity + indexVal,
+    netWealthBeforeTax: initialNetEquity + indexVal,
     meta: {
       propertyValue: initialSaleValue,
       saleValue: initialSaleValue,
@@ -5179,6 +5221,8 @@ function calculateEquity(rawInputs) {
       cumulativeCashAfterTaxNet: 0,
       cumulativeCashAfterTaxKept: 0,
       cumulativeCashPreTaxKept: 0,
+      cumulativeCashAfterTaxRealized: 0,
+      cumulativeCashAfterTaxNetRealized: 0,
       cumulativePropertyTax: 0,
       reinvestFundValue: 0,
       cumulativeReinvested: 0,
@@ -5199,6 +5243,9 @@ function calculateEquity(rawInputs) {
       bridgingLoanTermMonths,
       bridgingLoanInterestRate: bridgingMonthlyRate,
       initialOutlay,
+      realizedSaleProceeds: 0,
+      netWealthAfterTax: initialNetEquity + indexVal,
+      netWealthBeforeTax: initialNetEquity + indexVal,
       yearly: {
         gross: 0,
         operatingExpenses: 0,
@@ -5297,6 +5344,7 @@ function calculateEquity(rawInputs) {
 
     let yearCashflowForCf = cash;
     let yearCashflowForNpv = afterTaxCash;
+    let realizedSaleProceeds = 0;
     if (y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
@@ -5310,6 +5358,7 @@ function calculateEquity(rawInputs) {
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
       exitNetSaleProceeds = netSaleProceeds;
+      realizedSaleProceeds = netSaleProceeds;
     }
     cf.push(yearCashflowForCf);
     npvCashflows.push(yearCashflowForNpv);
@@ -5322,8 +5371,15 @@ function calculateEquity(rawInputs) {
     const cumulativeCashPreTaxKept = shouldReinvest
       ? cumulativeCashPreTax - cumulativeReinvested
       : cumulativeCashPreTax;
+    const cumulativeCashAfterTaxRealized = cumulativeCashAfterTax + realizedSaleProceeds;
+    const cumulativeCashAfterTaxNetRealized = cumulativeCashAfterTaxNet + realizedSaleProceeds;
+    const cumulativeCashAfterTaxKeptRealized = cumulativeCashAfterTaxKept + realizedSaleProceeds;
     const reinvestFundGrowth = Math.max(0, reinvestFundValue - cumulativeReinvested);
     const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
+
+    const propertyValueForChart = y === inputs.exitYear ? 0 : vt;
+    const netWealthAfterTaxValue = propertyNetAfterTaxValue + indexVal;
+    const netWealthBeforeTaxValue = propertyNetValue + indexVal;
 
     chart.push({
       year: y,
@@ -5331,12 +5387,14 @@ function calculateEquity(rawInputs) {
       indexFund1_5x: indexVal * 1.5,
       indexFund2x: indexVal * 2,
       indexFund4x: indexVal * 4,
-      propertyValue: vt,
+      propertyValue: propertyValueForChart,
       propertyGross: propertyGrossValue,
       propertyNet: propertyNetValue,
       propertyNetAfterTax: propertyNetAfterTaxValue,
       reinvestFund: reinvestFundValue,
-      cashflow: cumulativeCashAfterTax,
+      cashflow: cumulativeCashAfterTaxKeptRealized,
+      cashflowNet: cumulativeCashAfterTaxNetRealized,
+      cashflowGross: cumulativeCashAfterTaxRealized,
       investedRent: shouldReinvest ? investedRentValue : null,
       capRate: capRateYear,
       yieldRate: yieldRateYear,
@@ -5344,6 +5402,8 @@ function calculateEquity(rawInputs) {
       irrSeries: irrToDate,
       irrHurdle: irrHurdleValue,
       npvToDate,
+      netWealthAfterTax: netWealthAfterTaxValue,
+      netWealthBeforeTax: netWealthBeforeTaxValue,
       meta: {
         propertyValue: vt,
         saleValue: vt,
@@ -5356,6 +5416,9 @@ function calculateEquity(rawInputs) {
         cumulativeCashAfterTaxNet,
         cumulativeCashAfterTaxKept,
         cumulativeCashPreTaxKept,
+        cumulativeCashAfterTaxRealized,
+        cumulativeCashAfterTaxNetRealized,
+        cumulativeCashAfterTaxKeptRealized,
         cumulativePropertyTax,
         reinvestFundValue,
         cumulativeReinvested,
@@ -5367,6 +5430,9 @@ function calculateEquity(rawInputs) {
         indexBasis,
         reinvestShare,
         shouldReinvest,
+        realizedSaleProceeds,
+        netWealthAfterTax: netWealthAfterTaxValue,
+        netWealthBeforeTax: netWealthBeforeTaxValue,
         purchasePrice: inputs.purchasePrice,
         projectCost,
         cashInvested: cashIn,
@@ -5395,6 +5461,84 @@ function calculateEquity(rawInputs) {
     });
 
     rent *= 1 + inputs.rentGrowth;
+  }
+
+  if (chart.length > 0) {
+    const lastPoint = chart[chart.length - 1] ?? {};
+    const lastMeta = (lastPoint && typeof lastPoint.meta === 'object' && lastPoint.meta) || {};
+    const lastYear = Number(lastPoint.year);
+    const extensionYear = Number.isFinite(lastYear) ? lastYear + 1 : inputs.exitYear + 1;
+    const extensionIndexFund = Number(lastPoint.indexFund) || 0;
+    const extensionReinvestFund = Number(
+      lastPoint.reinvestFund ?? lastMeta.reinvestFundValue ?? 0
+    );
+    const extensionCashflowKept = Number(
+      lastMeta.cumulativeCashAfterTaxKeptRealized ??
+        lastPoint.cashflow ??
+        lastMeta.cumulativeCashAfterTaxKept ??
+        0
+    );
+    const extensionCashflowNet = Number(
+      lastMeta.cumulativeCashAfterTaxNetRealized ??
+        lastPoint.cashflowNet ??
+        lastMeta.cumulativeCashAfterTaxNet ??
+        extensionCashflowKept
+    );
+    const extensionCashflowGross = Number(
+      lastMeta.cumulativeCashAfterTaxRealized ??
+        lastPoint.cashflowGross ??
+        lastMeta.cumulativeCashAfterTax ??
+        extensionCashflowKept
+    );
+    const extensionPropertyNet = Number(lastPoint.propertyNet) || 0;
+    const extensionPropertyNetAfterTax = Number(lastPoint.propertyNetAfterTax) || 0;
+    const extensionNetWealthAfterTax = Number(
+      lastPoint.netWealthAfterTax ?? extensionPropertyNetAfterTax + extensionIndexFund
+    );
+    const extensionNetWealthBeforeTax = Number(
+      lastPoint.netWealthBeforeTax ?? extensionPropertyNet + extensionIndexFund
+    );
+    const extensionPropertyGross = Number(lastPoint.propertyGross) || extensionPropertyNet;
+    chart.push({
+      year: extensionYear,
+      indexFund: extensionIndexFund,
+      indexFund1_5x: extensionIndexFund * 1.5,
+      indexFund2x: extensionIndexFund * 2,
+      indexFund4x: extensionIndexFund * 4,
+      propertyValue: 0,
+      propertyGross: extensionPropertyGross,
+      propertyNet: extensionPropertyNet,
+      propertyNetAfterTax: extensionPropertyNetAfterTax,
+      reinvestFund: extensionReinvestFund,
+      cashflow: extensionCashflowKept,
+      cashflowNet: extensionCashflowNet,
+      cashflowGross: extensionCashflowGross,
+      investedRent: lastPoint.investedRent ?? null,
+      capRate: null,
+      yieldRate: null,
+      cashOnCash: null,
+      irrSeries: lastPoint.irrSeries ?? null,
+      irrHurdle: lastPoint.irrHurdle ?? irrHurdleValue,
+      npvToDate: lastPoint.npvToDate ?? null,
+      netWealthAfterTax: extensionNetWealthAfterTax,
+      netWealthBeforeTax: extensionNetWealthBeforeTax,
+      meta: {
+        ...lastMeta,
+        propertyValue: 0,
+        saleValue: 0,
+        remainingLoan: 0,
+        netSaleIfSold: 0,
+        cumulativeCashAfterTaxRealized: extensionCashflowGross,
+        cumulativeCashAfterTaxNetRealized: extensionCashflowNet,
+        cumulativeCashAfterTaxKeptRealized: extensionCashflowKept,
+        indexFundValue: extensionIndexFund,
+        reinvestFundValue: extensionReinvestFund,
+        realizedSaleProceeds: 0,
+        netWealthAfterTax: extensionNetWealthAfterTax,
+        netWealthBeforeTax: extensionNetWealthBeforeTax,
+        extension: true,
+      },
+    });
   }
 
   const npvValue = npv(inputs.discountRate, npvCashflows);
@@ -6276,12 +6420,11 @@ export default function App() {
   const [planChartExpanded, setPlanChartExpanded] = useState(false);
   const [planChartSeriesActive, setPlanChartSeriesActive] = useState(() => ({
     indexFund: true,
-    cumulativeCash: true,
+    cashflowAfterTax: true,
     propertyValue: true,
     propertyNetAfterTax: true,
-    combinedNetWealth: true,
-    combinedNetWealthBeforeTax: false,
-    cumulativeExternal: false,
+    netWealthAfterTax: true,
+    netWealthBeforeTax: false,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
@@ -8771,13 +8914,18 @@ export default function App() {
       })
       .map((point) => {
         const cashflowAfterTax = Number(
-          point?.meta?.cumulativeCashAfterTaxNet ??
-            point?.meta?.cumulativeCashAfterTax ??
+          point?.meta?.cumulativeCashAfterTaxKeptRealized ??
             point?.cashflow ??
+            point?.meta?.cumulativeCashAfterTaxNetRealized ??
+            point?.meta?.cumulativeCashAfterTaxNet ??
+            point?.meta?.cumulativeCashAfterTax ??
             0
         );
-        const netWealthAfterTax = Number(point?.propertyNetAfterTax) || 0;
         const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue ?? 0);
+        const propertyNetAfterTaxValue = Number(point?.propertyNetAfterTax) || 0;
+        const netWealthAfterTax = Number(
+          point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ?? propertyNetAfterTaxValue + indexFundValue
+        );
         return {
           ...point,
           cashflowAfterTax,
@@ -12204,6 +12352,12 @@ export default function App() {
         id: `plan-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
         name: cloneLabel,
         createdAt: new Date().toISOString(),
+        isPrimary: false,
+        include: sanitizedSource.include,
+        purchaseYear:
+          sanitizedSource.isPrimary && (!sanitizedSource.purchaseYear || sanitizedSource.purchaseYear === 0)
+            ? 1
+            : sanitizedSource.purchaseYear,
       });
       if (!clone) {
         return;
@@ -16891,13 +17045,13 @@ export default function App() {
                           <Area
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="cumulativeCash"
-                            name={SERIES_LABELS.cumulativeCash ?? 'Cashflow after tax'}
-                            stroke={SERIES_COLORS.cumulativeCash}
+                            dataKey="cashflowAfterTax"
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.cumulativeCash === false}
+                            hide={planChartSeriesActive.cashflowAfterTax === false}
                           />
                           <Area
                             yAxisId="currency"
@@ -16924,36 +17078,24 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="combinedNetWealth"
-                            name={SERIES_LABELS.combinedNetWealth ?? 'Net wealth (after tax)'}
-                            stroke={SERIES_COLORS.combinedNetWealth}
+                            dataKey="netWealthAfterTax"
+                            name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
+                            stroke={SERIES_COLORS.netWealthAfterTax}
                             strokeWidth={2}
                             dot={false}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.combinedNetWealth === false}
+                            hide={planChartSeriesActive.netWealthAfterTax === false}
                           />
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="combinedNetWealthBeforeTax"
-                            name="Net wealth (before tax)"
-                            stroke="#0369a1"
+                            dataKey="netWealthBeforeTax"
+                            name={SERIES_LABELS.netWealthBeforeTax ?? 'Net wealth (before tax)'}
+                            stroke={SERIES_COLORS.netWealthBeforeTax}
                             strokeWidth={2}
                             dot={false}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.combinedNetWealthBeforeTax === false}
-                          />
-                          <RechartsLine
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="cumulativeExternal"
-                            name="External cash deployed"
-                            stroke="#f97316"
-                            strokeDasharray="4 4"
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.cumulativeExternal === false}
+                            hide={planChartSeriesActive.netWealthBeforeTax === false}
                           />
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -17387,16 +17529,14 @@ export default function App() {
                         {planChartFocus && planChartFocus.data
                           ? [
                               'indexFund',
-                              'cashflow',
+                              'cashflowAfterTax',
                               'propertyValue',
                               'propertyGross',
                               'propertyNet',
                               'propertyNetAfterTax',
                               'investedRent',
-                              'combinedNetWealth',
-                              'combinedNetWealthBeforeTax',
-                              'cumulativeCash',
-                              'cumulativeExternal',
+                              'netWealthAfterTax',
+                              'netWealthBeforeTax',
                             ]
                               .filter(
                                 (key) =>
@@ -17430,13 +17570,13 @@ export default function App() {
                           <Area
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="cumulativeCash"
-                            name={SERIES_LABELS.cumulativeCash ?? 'Cashflow after tax'}
-                            stroke={SERIES_COLORS.cumulativeCash}
+                            dataKey="cashflowAfterTax"
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.cumulativeCash === false}
+                            hide={planChartSeriesActive.cashflowAfterTax === false}
                           />
                           <Area
                             yAxisId="currency"
@@ -17463,37 +17603,25 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="combinedNetWealth"
-                            name={SERIES_LABELS.combinedNetWealth ?? 'Net wealth (after tax)'}
-                            stroke={SERIES_COLORS.combinedNetWealth}
+                            dataKey="netWealthAfterTax"
+                            name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
+                            stroke={SERIES_COLORS.netWealthAfterTax}
                             strokeWidth={2}
                             dot={false}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.combinedNetWealth === false}
+                            hide={planChartSeriesActive.netWealthAfterTax === false}
                           />
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="combinedNetWealthBeforeTax"
-                            name="Net wealth (before tax)"
-                            stroke="#0369a1"
+                            dataKey="netWealthBeforeTax"
+                            name={SERIES_LABELS.netWealthBeforeTax ?? 'Net wealth (before tax)'}
+                            stroke={SERIES_COLORS.netWealthBeforeTax}
                             strokeWidth={2}
                             dot={false}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.combinedNetWealthBeforeTax === false}
+                            hide={planChartSeriesActive.netWealthBeforeTax === false}
                           />
-                          <RechartsLine
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="cumulativeExternal"
-                            name="External cash deployed"
-                          stroke="#f97316"
-                          strokeWidth={2}
-                          strokeDasharray="4 4"
-                          dot={false}
-                          isAnimationActive={false}
-                          hide={planChartSeriesActive.cumulativeExternal === false}
-                        />
                       </ComposedChart>
                     </ResponsiveContainer>
                     {planChartFocus && planChartFocus.data ? (
@@ -18279,6 +18407,7 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Market growth to date', value: value - basis });
       break;
     }
+    case 'cashflowAfterTax':
     case 'cashflow': {
       const yearly = meta.yearly ?? {};
       breakdowns.push({ label: 'Gross rent (year)', value: yearly.gross || 0 });
@@ -18297,8 +18426,19 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'After-tax cash flow (year)', value: yearly.cashAfterTax || 0 });
       breakdowns.push({ label: 'Reinvested this year', value: -(yearly.reinvestContribution || 0) });
       breakdowns.push({ label: 'After-tax cash retained (year)', value: yearly.cashAfterTaxRetained || 0 });
-      breakdowns.push({ label: 'Cumulative after-tax cash', value: meta.cumulativeCashAfterTax || 0 });
-      breakdowns.push({ label: 'Cumulative after-tax cash retained', value: meta.cumulativeCashAfterTaxKept || 0 });
+      breakdowns.push({ label: 'Cumulative after-tax cash (pre-sale)', value: meta.cumulativeCashAfterTax || 0 });
+      breakdowns.push({ label: 'Cumulative after-tax cash retained (pre-sale)', value: meta.cumulativeCashAfterTaxKept || 0 });
+      if (Number.isFinite(meta.realizedSaleProceeds) && meta.realizedSaleProceeds !== 0) {
+        breakdowns.push({ label: 'Sale proceeds realised this year', value: meta.realizedSaleProceeds });
+      }
+      breakdowns.push({
+        label: 'After-tax cash including sale proceeds',
+        value: meta.cumulativeCashAfterTaxRealized ?? meta.cumulativeCashAfterTax ?? 0,
+      });
+      breakdowns.push({
+        label: 'Retained cash including sale proceeds',
+        value: meta.cumulativeCashAfterTaxKeptRealized ?? meta.cumulativeCashAfterTaxKept ?? 0,
+      });
       breakdowns.push({ label: 'Total taxes paid to date', value: meta.cumulativePropertyTax || 0 });
       break;
     }
@@ -18327,6 +18467,38 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: `${propertyNetAfterTaxLabel} cash retained`, value: meta.cumulativeCashAfterTaxNet || 0 });
       breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
       breakdowns.push({ label: rentalTaxCumulativeLabel, value: meta.cumulativePropertyTax || 0 });
+      break;
+    }
+    case 'netWealthAfterTax': {
+      const propertyAfterTax = Number(point.propertyNetAfterTax ?? meta.propertyNetAfterTax ?? 0);
+      const cashRetained = Number(
+        meta.cumulativeCashAfterTaxKeptRealized ?? meta.cumulativeCashAfterTaxKept ?? 0
+      );
+      const indexValue = Number(meta.indexFundValue ?? point.indexFund ?? 0);
+      breakdowns.push({ label: 'Property net after tax', value: propertyAfterTax });
+      if (cashRetained) {
+        breakdowns.push({ label: 'After-tax cash retained (included above)', value: cashRetained });
+      }
+      breakdowns.push({ label: 'Index fund value', value: indexValue });
+      breakdowns.push({
+        label: 'Total net wealth (after tax)',
+        value: Number(point.netWealthAfterTax ?? propertyAfterTax + indexValue) || 0,
+      });
+      break;
+    }
+    case 'netWealthBeforeTax': {
+      const propertyBeforeTax = Number(point.propertyNet ?? meta.propertyNet ?? 0);
+      const cashPreTax = Number(meta.cumulativeCashPreTaxKept ?? 0);
+      const indexValue = Number(meta.indexFundValue ?? point.indexFund ?? 0);
+      breakdowns.push({ label: 'Property net (before tax)', value: propertyBeforeTax });
+      if (cashPreTax) {
+        breakdowns.push({ label: 'Cumulative pre-tax cash retained (included above)', value: cashPreTax });
+      }
+      breakdowns.push({ label: 'Index fund value', value: indexValue });
+      breakdowns.push({
+        label: 'Total net wealth (before tax)',
+        value: Number(point.netWealthBeforeTax ?? propertyBeforeTax + indexValue) || 0,
+      });
       break;
     }
     case 'investedRent': {
@@ -18814,24 +18986,19 @@ function PlanWealthChartOverlay({
       value: point.propertyNetAfterTax,
     },
     {
-      key: 'cumulativeCash',
-      label: SERIES_LABELS.cumulativeCash ?? 'Cashflow after tax',
-      value: point.cumulativeCash,
+      key: 'cashflowAfterTax',
+      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax',
+      value: point.cashflowAfterTax ?? point.cumulativeCash,
     },
     {
-      key: 'combinedNetWealth',
-      label: SERIES_LABELS.combinedNetWealth ?? 'Net wealth (after tax)',
-      value: point.combinedNetWealth,
+      key: 'netWealthAfterTax',
+      label: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+      value: point.netWealthAfterTax ?? point.combinedNetWealth,
     },
     {
       key: 'indexFund',
       label: SERIES_LABELS.indexFund ?? 'Index fund value',
       value: point.indexFund ?? point.indexFundValue,
-    },
-    {
-      key: 'cumulativeExternal',
-      label: SERIES_LABELS.cumulativeExternal ?? 'External cash deployed',
-      value: point.cumulativeExternal,
     },
   ].filter((metric) => Number.isFinite(metric.value));
 
