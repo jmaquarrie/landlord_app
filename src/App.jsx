@@ -16532,8 +16532,10 @@ export default function App() {
                     <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.totalIncomeFunding)}</div>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="text-slate-500">Portfolio net wealth incl. cash</div>
-                    <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.finalNetWealth)}</div>
+                    <div className="text-slate-500">Total property net after tax</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">
+                      {currency(planAnalysis.totals.finalPropertyNetAfterTax)}
+                    </div>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                     <div className="text-slate-500">Cash position (exit)</div>
@@ -17071,9 +17073,9 @@ export default function App() {
                 <div className="space-y-5">
                   <div className="grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="text-slate-500">Portfolio net wealth incl. cash</div>
+                      <div className="text-slate-500">Total property net after tax</div>
                       <div className="mt-1 text-base font-semibold text-slate-800">
-                        {currency(planAnalysis.totals.finalNetWealth)}
+                        {currency(planAnalysis.totals.finalPropertyNetAfterTax)}
                       </div>
                     </div>
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
