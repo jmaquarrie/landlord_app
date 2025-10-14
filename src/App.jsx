@@ -1376,6 +1376,409 @@ const sanitizePlanItem = (item) => {
   };
 };
 
+const PLAN_ANALYSIS_EMPTY_TOTALS = {
+  properties: 0,
+  savedProperties: 0,
+  totalInitialOutlay: 0,
+  totalExternalCash: 0,
+  totalIncomeFunding: 0,
+  totalIndexFundContribution: 0,
+  finalPropertyNetAfterTax: 0,
+  finalNetWealth: 0,
+  finalCashPosition: 0,
+  finalExternalPosition: 0,
+  finalIndexFundValue: 0,
+  finalTotalNetWealth: 0,
+};
+
+const clampPercentage = (value, min = 0, max = 1) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, numeric));
+};
+
+const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
+  const indexFundGrowthRate = Number.isFinite(indexFundGrowthInput)
+    ? indexFundGrowthInput
+    : DEFAULT_INDEX_GROWTH;
+
+  if (!Array.isArray(futurePlanItems) || futurePlanItems.length === 0) {
+    return {
+      status: 'empty',
+      items: [],
+      includedItems: [],
+      chart: [],
+      maxYear: 0,
+      totals: { ...PLAN_ANALYSIS_EMPTY_TOTALS },
+      cashflows: [],
+      irr: null,
+    };
+  }
+
+  const items = futurePlanItems.map((rawItem, index) => {
+    const sanitized = sanitizePlanItem(rawItem);
+    let metrics = null;
+    try {
+      metrics = calculateEquity(sanitized.inputs);
+    } catch (error) {
+      console.warn('Unable to evaluate future plan item:', sanitized?.name ?? sanitized?.id ?? 'item', error);
+    }
+
+    const chartByYear = new Map();
+    if (metrics && Array.isArray(metrics.chart)) {
+      metrics.chart.forEach((point) => {
+        const yearValue = Number(point?.year);
+        if (!Number.isFinite(yearValue)) {
+          return;
+        }
+        const year = Math.max(0, Math.round(yearValue));
+        chartByYear.set(year, {
+          year,
+          propertyValue: Number(point?.propertyValue) || 0,
+          propertyGross: Number(point?.propertyGross) || 0,
+          propertyNet: Number(point?.propertyNet) || 0,
+          propertyNetAfterTax: Number(point?.propertyNetAfterTax) || 0,
+        });
+      });
+    }
+
+    const chart = Array.from(chartByYear.values()).sort((a, b) => a.year - b.year);
+    const exitYearFromChart = chart.length > 0 ? chart[chart.length - 1].year : 0;
+    const metricsExitYear = Math.max(0, Math.round(Number(metrics?.exitYear) || 0));
+    const exitYearBase = Math.max(exitYearFromChart, metricsExitYear);
+    const desiredExitYear = Math.max(0, Math.round(Number(sanitized.exitYearOverride) || exitYearBase));
+    const exitYear = exitYearBase > 0 ? Math.min(desiredExitYear, exitYearBase) : desiredExitYear;
+
+    const annualCashflows = Array.isArray(metrics?.annualCashflowsAfterTax)
+      ? metrics.annualCashflowsAfterTax.map((value) => (Number.isFinite(Number(value)) ? Number(value) : 0))
+      : [];
+    const initialOutlay = Math.max(0, Number(metrics?.initialCashOutlay) || 0);
+    const exitProceeds = Number(metrics?.exitNetSaleProceeds) || 0;
+
+    const propertyDisplayName = (() => {
+      const inputName =
+        typeof sanitized.inputs?.propertyDisplayName === 'string'
+          ? sanitized.inputs.propertyDisplayName.trim()
+          : '';
+      if (inputName !== '') {
+        return inputName;
+      }
+      const inputAddress =
+        typeof sanitized.inputs?.propertyAddress === 'string'
+          ? sanitized.inputs.propertyAddress.trim()
+          : '';
+      if (inputAddress !== '') {
+        return inputAddress;
+      }
+      return sanitized.name;
+    })();
+
+    const requestedIncomeContribution = Math.max(0, Number(sanitized.incomeContribution) || 0);
+    const valid = Boolean(metrics) && chart.length > 0;
+
+    return {
+      ...sanitized,
+      order: index,
+      metrics,
+      chart,
+      chartByYear,
+      exitYear,
+      annualCashflows,
+      initialOutlay,
+      exitProceeds,
+      requestedIncomeContribution,
+      displayName: propertyDisplayName,
+      valid,
+      appliedIncomeContribution: 0,
+      availableCashForDeposit: 0,
+      depositRequirement: initialOutlay,
+      cashInjection: Math.max(0, initialOutlay),
+      externalOutlay: Math.max(0, initialOutlay),
+      indexFundContribution: sanitized.useIncomeForDeposit ? 0 : Math.max(0, initialOutlay),
+    };
+  });
+
+  const includedItems = items.filter((item) => item.include && item.valid);
+
+  if (includedItems.length === 0) {
+    return {
+      status: 'no-selection',
+      items,
+      includedItems,
+      chart: [],
+      maxYear: 0,
+      totals: {
+        ...PLAN_ANALYSIS_EMPTY_TOTALS,
+        savedProperties: items.length,
+      },
+      cashflows: [],
+      irr: null,
+    };
+  }
+
+  const orderedIncluded = [...includedItems].sort((a, b) => {
+    if (a.purchaseYear !== b.purchaseYear) {
+      return a.purchaseYear - b.purchaseYear;
+    }
+    return (a.order ?? 0) - (b.order ?? 0);
+  });
+
+  const maxYear = orderedIncluded.reduce(
+    (acc, item) => Math.max(acc, item.purchaseYear + Math.max(0, item.exitYear)),
+    0
+  );
+
+  const itemStates = new Map();
+  orderedIncluded.forEach((item) => {
+    itemStates.set(item.id, {
+      available: 0,
+      applied: 0,
+      injection: Math.max(0, item.initialOutlay),
+      indexContribution: item.useIncomeForDeposit ? 0 : Math.max(0, item.initialOutlay),
+    });
+  });
+
+  const chart = [];
+  const planCashflows = [];
+  let cumulativeCash = 0;
+  let cumulativeExternal = 0;
+  let indexFundValue = 0;
+  let cumulativeIndexFundContribution = 0;
+
+  for (let year = 0; year <= maxYear; year++) {
+    const propertyBreakdown = [];
+    let propertyValue = 0;
+    let propertyGross = 0;
+    let propertyNet = 0;
+    let propertyNetAfterTax = 0;
+    let cashFlow = 0;
+    let externalCashFlow = 0;
+    let indexFundContribution = 0;
+    const yearStartingCash = cumulativeCash;
+    let availableCashPool = yearStartingCash;
+
+    orderedIncluded.forEach((item, index) => {
+      const propertyYear = year - item.purchaseYear;
+      if (propertyYear < 0 || propertyYear > item.exitYear) {
+        return;
+      }
+
+      const chartPoint = item.chartByYear.get(propertyYear);
+      const contribution = {
+        id: item.id,
+        name: item.displayName || item.name || `Plan property ${index + 1}`,
+        purchaseYear: item.purchaseYear,
+        propertyYear,
+        exitYear: item.exitYear,
+        phase:
+          propertyYear === 0 ? 'purchase' : propertyYear === item.exitYear ? 'exit' : 'hold',
+        propertyValue: chartPoint?.propertyValue || 0,
+        propertyGross: chartPoint?.propertyGross || 0,
+        propertyNet: chartPoint?.propertyNet || 0,
+        propertyNetAfterTax: chartPoint?.propertyNetAfterTax || 0,
+        operatingCashflow: 0,
+        saleProceeds: 0,
+        cashFlow: 0,
+        externalCashFlow: 0,
+        indexFundContribution: 0,
+        cumulativeCash: 0,
+        cumulativeExternal: 0,
+        cumulativeIndexFundContribution: 0,
+        appliedIncomeContribution: 0,
+        initialOutlay: item.initialOutlay,
+        externalOutlay: 0,
+      };
+
+      if (chartPoint) {
+        propertyValue += chartPoint.propertyValue;
+        propertyGross += chartPoint.propertyGross;
+        propertyNet += chartPoint.propertyNet;
+        propertyNetAfterTax += chartPoint.propertyNetAfterTax;
+      }
+
+      const propertyState = itemStates.get(item.id);
+      if (propertyYear === 0) {
+        const depositTarget = item.initialOutlay;
+        const requested = item.useIncomeForDeposit
+          ? Math.min(
+              depositTarget,
+              item.requestedIncomeContribution > 0
+                ? item.requestedIncomeContribution
+                : depositTarget
+            )
+          : 0;
+        const availableBefore = Math.max(0, availableCashPool);
+        let applied = 0;
+        if (item.useIncomeForDeposit) {
+          applied = Math.min(requested, availableBefore);
+        }
+        const injection = Math.max(0, depositTarget - applied);
+        const indexContribution = injection;
+
+        contribution.operatingCashflow = -depositTarget;
+        contribution.cashFlow -= depositTarget;
+        contribution.externalCashFlow += injection;
+        contribution.appliedIncomeContribution = applied;
+        contribution.externalOutlay = injection;
+
+        if (indexContribution > 0) {
+          contribution.indexFundContribution = indexContribution;
+          indexFundContribution += indexContribution;
+        }
+
+        if (propertyState) {
+          propertyState.available = availableBefore;
+          propertyState.depositTarget = depositTarget;
+          propertyState.applied = applied;
+          propertyState.injection = injection;
+          propertyState.indexContribution = indexContribution;
+        }
+
+        availableCashPool = Math.max(0, availableCashPool - applied);
+      } else if (propertyYear > 0) {
+        const cashIndex = propertyYear - 1;
+        const annualCash = item.annualCashflows[cashIndex] ?? 0;
+        contribution.operatingCashflow = annualCash;
+        contribution.cashFlow += annualCash;
+        if (propertyYear === item.exitYear) {
+          contribution.saleProceeds = item.exitProceeds;
+          contribution.cashFlow += item.exitProceeds;
+        }
+      }
+
+      if (propertyState) {
+        propertyState.cumulativeCash = (propertyState.cumulativeCash || 0) + contribution.cashFlow;
+        propertyState.cumulativeExternal =
+          (propertyState.cumulativeExternal || 0) + contribution.externalCashFlow;
+        propertyState.cumulativeIndexFundContribution =
+          (propertyState.cumulativeIndexFundContribution || 0) +
+          (contribution.indexFundContribution || 0);
+        contribution.cumulativeCash = propertyState.cumulativeCash;
+        contribution.cumulativeExternal = propertyState.cumulativeExternal;
+        contribution.cumulativeIndexFundContribution =
+          propertyState.cumulativeIndexFundContribution;
+      }
+
+      cashFlow += contribution.cashFlow;
+      externalCashFlow += contribution.externalCashFlow;
+      propertyBreakdown.push(contribution);
+    });
+
+    cumulativeCash += cashFlow;
+    cumulativeExternal += externalCashFlow;
+    indexFundValue = indexFundValue * (1 + clampPercentage(indexFundGrowthRate, -0.99, 10));
+    if (indexFundContribution > 0) {
+      indexFundValue += indexFundContribution;
+      cumulativeIndexFundContribution += indexFundContribution;
+    }
+
+    const combinedNetWealth = propertyNetAfterTax + cumulativeCash;
+    const totalNetWealthWithIndex = combinedNetWealth + indexFundValue;
+
+    chart.push({
+      year,
+      propertyValue,
+      propertyGross,
+      propertyNet,
+      propertyNetAfterTax,
+      combinedNetWealth,
+      totalNetWealthWithIndex,
+      cashFlow,
+      cumulativeCash,
+      externalCashFlow,
+      cumulativeExternal,
+      indexFundValue,
+      indexFundContribution,
+      cumulativeIndexFundContribution,
+      meta: {
+        propertyBreakdown,
+        totals: {
+          propertyNetAfterTax,
+          combinedNetWealth,
+          cumulativeCash,
+          indexFundValue,
+          totalNetWealthWithIndex,
+          cumulativeExternal,
+        },
+      },
+    });
+
+    planCashflows.push(cashFlow);
+  }
+
+  orderedIncluded.forEach((item) => {
+    const state = itemStates.get(item.id);
+    if (!state) {
+      return;
+    }
+    const availableForDeposit = Math.max(0, Number(state.available) || 0);
+    const appliedContribution = Math.max(0, Number(state.applied) || 0);
+    const injection = Math.max(0, Number(state.injection) || 0);
+    const depositTarget = Math.max(
+      0,
+      Number(state.depositTarget ?? item.initialOutlay ?? 0) || 0
+    );
+    item.appliedIncomeContribution = appliedContribution;
+    item.availableCashForDeposit = availableForDeposit;
+    item.depositRequirement = depositTarget;
+    item.cashInjection = injection;
+    item.externalOutlay = injection;
+    item.indexFundContribution = Math.max(0, Number(state.indexContribution) || 0);
+  });
+
+  items.forEach((item) => {
+    if (itemStates.has(item.id)) {
+      return;
+    }
+    item.appliedIncomeContribution = 0;
+    item.availableCashForDeposit = 0;
+    item.depositRequirement = item.initialOutlay;
+    item.cashInjection = item.initialOutlay;
+    item.externalOutlay = item.initialOutlay;
+    item.indexFundContribution = item.useIncomeForDeposit ? 0 : item.initialOutlay;
+  });
+
+  const baseTotals = {
+    properties: includedItems.length,
+    savedProperties: items.length,
+    totalInitialOutlay: includedItems.reduce((sum, item) => sum + item.initialOutlay, 0),
+    totalExternalCash: includedItems.reduce((sum, item) => sum + (item.cashInjection || 0), 0),
+    totalIncomeFunding: includedItems.reduce((sum, item) => sum + (item.appliedIncomeContribution || 0), 0),
+    totalIndexFundContribution: includedItems.reduce(
+      (sum, item) => sum + (item.indexFundContribution || 0),
+      0
+    ),
+  };
+
+  const lastPoint = chart[chart.length - 1] ?? null;
+  const totals = {
+    ...baseTotals,
+    finalPropertyNetAfterTax: lastPoint?.propertyNetAfterTax ?? 0,
+    finalNetWealth: lastPoint?.combinedNetWealth ?? lastPoint?.propertyNetAfterTax ?? 0,
+    finalCashPosition: lastPoint?.cumulativeCash ?? 0,
+    finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
+    finalIndexFundValue: lastPoint?.indexFundValue ?? 0,
+    finalTotalNetWealth:
+      lastPoint?.totalNetWealthWithIndex ??
+      ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
+  };
+
+  const planIrr = irr(planCashflows);
+
+  return {
+    status: 'ready',
+    items,
+    includedItems,
+    chart,
+    maxYear,
+    totals,
+    cashflows: planCashflows,
+    irr: planIrr,
+  };
+};
+
 const loadStoredFuturePlan = () => {
   if (typeof window === 'undefined') {
     return [];
@@ -1989,6 +2392,56 @@ const OPTIMIZATION_VARIATION_DEFAULT_STEPS = {
 const OPTIMIZATION_MAX_DEVIATION_OPTIONS = [0.01, 0.05, 0.1, 0.2, 0.5];
 
 const DEFAULT_OPTIMIZATION_GOAL = OPTIMIZATION_GOAL_OPTIONS[0]?.value ?? 'max_income';
+
+const PLAN_OPTIMIZATION_GOALS = [
+  {
+    value: 'net_wealth',
+    label: 'Net wealth',
+    metric: (analysis) => Number.isFinite(Number(analysis?.totals?.finalTotalNetWealth))
+      ? Number(analysis.totals.finalTotalNetWealth)
+      : NaN,
+    format: (value) => currency(value),
+    direction: 'max',
+  },
+  {
+    value: 'cashflow',
+    label: 'Cashflow',
+    metric: (analysis) => Number.isFinite(Number(analysis?.totals?.finalCashPosition))
+      ? Number(analysis.totals.finalCashPosition)
+      : NaN,
+    format: (value) => currency(value),
+    direction: 'max',
+  },
+  {
+    value: 'irr',
+    label: 'IRR',
+    metric: (analysis) => Number.isFinite(Number(analysis?.irr)) ? Number(analysis.irr) : NaN,
+    format: (value) => formatPercent(value ?? NaN),
+    direction: 'max',
+  },
+];
+
+const PLAN_OPTIMIZATION_GOAL_MAP = PLAN_OPTIMIZATION_GOALS.reduce((acc, goal) => {
+  acc[goal.value] = goal;
+  return acc;
+}, {});
+
+const DEFAULT_PLAN_OPTIMIZATION_GOAL = PLAN_OPTIMIZATION_GOALS[0]?.value ?? 'net_wealth';
+
+const PLAN_OPTIMIZATION_HOLD_OPTIONS = [
+  { key: 'purchaseYear', label: 'Purchase year' },
+  { key: 'exitYear', label: 'Exit year' },
+];
+
+const formatPlanGoalDelta = (goal, delta) => {
+  if (!goal || !Number.isFinite(delta)) {
+    return '';
+  }
+  if (goal.value === 'irr') {
+    return formatPercentDelta(delta);
+  }
+  return formatCurrencyDelta(delta);
+};
 
 const buildScenarioKey = (scenario, extraFields = []) => {
   if (!scenario || typeof scenario !== 'object') {
@@ -5750,6 +6203,18 @@ export default function App() {
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
   const [planChartExpandedDetails, setPlanChartExpandedDetails] = useState({});
+  const [planOptimizationGoal, setPlanOptimizationGoal] = useState(
+    DEFAULT_PLAN_OPTIMIZATION_GOAL
+  );
+  const [planOptimizationHold, setPlanOptimizationHold] = useState({
+    purchaseYear: false,
+    exitYear: false,
+  });
+  const [planOptimizationHoldExpanded, setPlanOptimizationHoldExpanded] = useState(false);
+  const [planOptimizationStatus, setPlanOptimizationStatus] = useState('idle');
+  const [planOptimizationProgress, setPlanOptimizationProgress] = useState(0);
+  const [planOptimizationResult, setPlanOptimizationResult] = useState(null);
+  const [planOptimizationMessage, setPlanOptimizationMessage] = useState('');
   const [optimizationGoal, setOptimizationGoal] = useState(DEFAULT_OPTIMIZATION_GOAL);
   const [optimizationLockedFields, setOptimizationLockedFields] = useState(() => {
     const requiredField = OPTIMIZATION_GOAL_FIXED_FIELDS[DEFAULT_OPTIMIZATION_GOAL] ?? null;
@@ -7672,305 +8137,11 @@ export default function App() {
 
   const equity = useMemo(() => calculateEquity(equityInputs), [equityInputs]);
 
-  const planAnalysis = useMemo(() => {
-    const emptyTotals = {
-      properties: 0,
-      savedProperties: 0,
-      totalInitialOutlay: 0,
-      totalExternalCash: 0,
-      totalIncomeFunding: 0,
-      totalIndexFundContribution: 0,
-      finalPropertyNetAfterTax: 0,
-      finalNetWealth: 0,
-      finalCashPosition: 0,
-      finalExternalPosition: 0,
-      finalIndexFundValue: 0,
-      finalTotalNetWealth: 0,
-    };
-    const indexFundGrowthRate = Number.isFinite(extraSettings?.indexFundGrowth)
-      ? extraSettings.indexFundGrowth
-      : DEFAULT_INDEX_GROWTH;
+  const planAnalysis = useMemo(
+    () => computeFuturePlanAnalysis(futurePlan, extraSettings?.indexFundGrowth),
+    [futurePlan, extraSettings?.indexFundGrowth]
+  );
 
-    if (!Array.isArray(futurePlan) || futurePlan.length === 0) {
-      return {
-        status: 'empty',
-        items: [],
-        includedItems: [],
-        chart: [],
-        maxYear: 0,
-        totals: emptyTotals,
-      };
-    }
-
-    const items = futurePlan.map((rawItem) => {
-      const sanitized = sanitizePlanItem(rawItem);
-      let metrics = null;
-      try {
-        metrics = calculateEquity(sanitized.inputs);
-      } catch (error) {
-        console.warn('Unable to evaluate future plan item:', sanitized?.name ?? sanitized?.id ?? 'item', error);
-      }
-      const chartByYear = new Map();
-      if (metrics && Array.isArray(metrics.chart)) {
-        metrics.chart.forEach((point) => {
-          const yearValue = Number(point?.year);
-          if (!Number.isFinite(yearValue)) {
-            return;
-          }
-          const year = Math.max(0, Math.round(yearValue));
-          chartByYear.set(year, {
-            year,
-            propertyValue: Number(point?.propertyValue) || 0,
-            propertyGross: Number(point?.propertyGross) || 0,
-            propertyNet: Number(point?.propertyNet) || 0,
-            propertyNetAfterTax: Number(point?.propertyNetAfterTax) || 0,
-          });
-        });
-      }
-      const chart = Array.from(chartByYear.values()).sort((a, b) => a.year - b.year);
-      const exitYearFromChart = chart.length > 0 ? chart[chart.length - 1].year : 0;
-      const metricsExitYear = Math.max(0, Math.round(Number(metrics?.exitYear) || 0));
-      const exitYearBase = Math.max(exitYearFromChart, metricsExitYear);
-      const desiredExitYear = Math.max(
-        0,
-        Math.round(Number(sanitized.exitYearOverride) || exitYearBase)
-      );
-      const exitYear = exitYearBase > 0 ? Math.min(desiredExitYear, exitYearBase) : desiredExitYear;
-      const annualCashflows = Array.isArray(metrics?.annualCashflowsAfterTax)
-        ? metrics.annualCashflowsAfterTax.map((value) => (Number.isFinite(Number(value)) ? Number(value) : 0))
-        : [];
-      const initialOutlay = Math.max(0, Number(metrics?.initialCashOutlay) || 0);
-      const exitProceeds = Number(metrics?.exitNetSaleProceeds) || 0;
-      const appliedIncomeContribution = sanitized.useIncomeForDeposit
-        ? Math.min(initialOutlay, sanitized.incomeContribution)
-        : 0;
-      const externalOutlay = Math.max(0, initialOutlay - appliedIncomeContribution);
-      const propertyDisplayName = (() => {
-        const inputName = typeof sanitized.inputs?.propertyDisplayName === 'string'
-          ? sanitized.inputs.propertyDisplayName.trim()
-          : '';
-        if (inputName !== '') {
-          return inputName;
-        }
-        const inputAddress = typeof sanitized.inputs?.propertyAddress === 'string'
-          ? sanitized.inputs.propertyAddress.trim()
-          : '';
-        if (inputAddress !== '') {
-          return inputAddress;
-        }
-        return sanitized.name;
-      })();
-      const valid = Boolean(metrics) && chart.length > 0;
-      return {
-        ...sanitized,
-        displayName: propertyDisplayName,
-        metrics,
-        chart,
-        chartByYear,
-        exitYear,
-        annualCashflows,
-        initialOutlay,
-        exitProceeds,
-        appliedIncomeContribution,
-        externalOutlay,
-        indexFundContribution: sanitized.useIncomeForDeposit ? 0 : initialOutlay,
-        valid,
-      };
-    });
-
-    const includedItems = items.filter((item) => item.include && item.valid);
-    const baseTotals = {
-      properties: includedItems.length,
-      savedProperties: items.length,
-      totalInitialOutlay: includedItems.reduce((sum, item) => sum + item.initialOutlay, 0),
-      totalExternalCash: includedItems.reduce((sum, item) => sum + item.externalOutlay, 0),
-      totalIncomeFunding: includedItems.reduce((sum, item) => sum + item.appliedIncomeContribution, 0),
-      totalIndexFundContribution: includedItems.reduce(
-        (sum, item) => sum + (item.indexFundContribution || 0),
-        0
-      ),
-    };
-    if (includedItems.length === 0) {
-      return {
-        status: 'no-selection',
-        items,
-        includedItems,
-        chart: [],
-        maxYear: 0,
-        totals: {
-          ...emptyTotals,
-          ...baseTotals,
-        },
-      };
-    }
-
-    const maxYear = includedItems.reduce(
-      (acc, item) => Math.max(acc, item.purchaseYear + Math.max(0, item.exitYear)),
-      0
-    );
-
-    const propertyStates = new Map();
-    includedItems.forEach((item) => {
-      propertyStates.set(item.id, {
-        cumulativeCash: 0,
-        cumulativeExternal: 0,
-        cumulativeIndexFundContribution: 0,
-      });
-    });
-
-    const chart = [];
-    let cumulativeCash = 0;
-    let cumulativeExternal = 0;
-    let indexFundValue = 0;
-    let cumulativeIndexFundContribution = 0;
-    for (let year = 0; year <= maxYear; year++) {
-      let propertyValue = 0;
-      let propertyGross = 0;
-      let propertyNet = 0;
-      let propertyNetAfterTax = 0;
-      let cashFlow = 0;
-      let externalCashFlow = 0;
-      let indexFundContribution = 0;
-      const propertyBreakdown = [];
-
-      includedItems.forEach((item, index) => {
-        const propertyYear = year - item.purchaseYear;
-        if (propertyYear < 0) {
-          return;
-        }
-        const chartPoint = item.chartByYear.get(propertyYear);
-        const contribution = {
-          id: item.id,
-          name: item.displayName || item.name || `Plan property ${index + 1}`,
-          purchaseYear: item.purchaseYear,
-          propertyYear,
-          exitYear: item.exitYear,
-          phase:
-            propertyYear === 0
-              ? 'purchase'
-              : propertyYear === item.exitYear
-                ? 'exit'
-                : 'hold',
-          propertyValue: chartPoint?.propertyValue || 0,
-          propertyGross: chartPoint?.propertyGross || 0,
-          propertyNet: chartPoint?.propertyNet || 0,
-          propertyNetAfterTax: chartPoint?.propertyNetAfterTax || 0,
-          operatingCashflow: 0,
-          saleProceeds: 0,
-          cashFlow: 0,
-          externalCashFlow: 0,
-          indexFundContribution: 0,
-          cumulativeCash: 0,
-          cumulativeExternal: 0,
-          cumulativeIndexFundContribution: 0,
-          appliedIncomeContribution: propertyYear === 0 ? item.appliedIncomeContribution : 0,
-          initialOutlay: item.initialOutlay,
-          externalOutlay: propertyYear === 0 ? item.externalOutlay : 0,
-        };
-
-        if (chartPoint) {
-          propertyValue += chartPoint.propertyValue;
-          propertyGross += chartPoint.propertyGross;
-          propertyNet += chartPoint.propertyNet;
-          propertyNetAfterTax += chartPoint.propertyNetAfterTax;
-        }
-
-        if (propertyYear === 0) {
-          contribution.operatingCashflow = -item.initialOutlay;
-          contribution.cashFlow -= item.initialOutlay;
-          contribution.externalCashFlow += item.externalOutlay;
-          if (item.indexFundContribution > 0) {
-            contribution.indexFundContribution = item.indexFundContribution;
-            indexFundContribution += item.indexFundContribution;
-          }
-        } else if (propertyYear > 0) {
-          const cashIndex = propertyYear - 1;
-          const annualCash = item.annualCashflows[cashIndex] ?? 0;
-          contribution.operatingCashflow = annualCash;
-          contribution.cashFlow += annualCash;
-          if (propertyYear === item.exitYear) {
-            contribution.saleProceeds = item.exitProceeds;
-            contribution.cashFlow += item.exitProceeds;
-          }
-        }
-
-        const propertyState = propertyStates.get(item.id);
-        if (propertyState) {
-          propertyState.cumulativeCash += contribution.cashFlow;
-          propertyState.cumulativeExternal += contribution.externalCashFlow;
-          propertyState.cumulativeIndexFundContribution += contribution.indexFundContribution;
-          contribution.cumulativeCash = propertyState.cumulativeCash;
-          contribution.cumulativeExternal = propertyState.cumulativeExternal;
-          contribution.cumulativeIndexFundContribution =
-            propertyState.cumulativeIndexFundContribution;
-        }
-
-        cashFlow += contribution.cashFlow;
-        externalCashFlow += contribution.externalCashFlow;
-        propertyBreakdown.push(contribution);
-      });
-
-      cumulativeCash += cashFlow;
-      cumulativeExternal += externalCashFlow;
-      indexFundValue = indexFundValue * (1 + indexFundGrowthRate);
-      if (indexFundContribution > 0) {
-        indexFundValue += indexFundContribution;
-        cumulativeIndexFundContribution += indexFundContribution;
-      }
-      const combinedNetWealth = propertyNetAfterTax + cumulativeCash;
-      const totalNetWealthWithIndex = combinedNetWealth + indexFundValue;
-      chart.push({
-        year,
-        propertyValue,
-        propertyGross,
-        propertyNet,
-        propertyNetAfterTax,
-        combinedNetWealth,
-        totalNetWealthWithIndex,
-        cashFlow,
-        cumulativeCash,
-        externalCashFlow,
-        cumulativeExternal,
-        indexFundValue,
-        indexFundContribution,
-        cumulativeIndexFundContribution,
-        meta: {
-          propertyBreakdown,
-          totals: {
-            propertyNetAfterTax,
-            combinedNetWealth,
-            cumulativeCash,
-            indexFundValue,
-            totalNetWealthWithIndex,
-            cumulativeExternal,
-          },
-        },
-      });
-    }
-
-    const lastPoint = chart[chart.length - 1] ?? null;
-    const totals = {
-      ...baseTotals,
-      finalPropertyNetAfterTax: lastPoint?.propertyNetAfterTax ?? 0,
-      finalNetWealth:
-        lastPoint?.combinedNetWealth ?? lastPoint?.propertyNetAfterTax ?? 0,
-      finalCashPosition: lastPoint?.cumulativeCash ?? 0,
-      finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
-      finalIndexFundValue: lastPoint?.indexFundValue ?? 0,
-      finalTotalNetWealth:
-        lastPoint?.totalNetWealthWithIndex ??
-        ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
-    };
-
-    return {
-      status: 'ready',
-      items,
-      includedItems,
-      chart,
-      maxYear,
-      totals,
-    };
-  }, [futurePlan, extraSettings?.indexFundGrowth]);
 
   const planTooltipFormatter = useCallback((value) => currency(value), []);
   const planChartFocusPoint = useMemo(() => {
@@ -11802,9 +11973,26 @@ export default function App() {
 
   const handlePlanIncomeToggle = useCallback(
     (id, enabled) => {
-      updatePlanItem(id, { useIncomeForDeposit: Boolean(enabled) });
+      if (enabled) {
+        const planItem = planAnalysis.items.find((entry) => entry.id === id);
+        const depositRequirement = Math.max(
+          0,
+          Number(planItem?.depositRequirement ?? planItem?.initialOutlay) || 0
+        );
+        const availableCash = Math.max(0, Number(planItem?.availableCashForDeposit) || 0);
+        let contribution = depositRequirement;
+        if (availableCash > 0 && availableCash < depositRequirement) {
+          contribution = availableCash;
+        }
+        updatePlanItem(id, {
+          useIncomeForDeposit: true,
+          incomeContribution: contribution,
+        });
+      } else {
+        updatePlanItem(id, { useIncomeForDeposit: false, incomeContribution: 0 });
+      }
     },
-    [updatePlanItem]
+    [planAnalysis.items, updatePlanItem]
   );
 
   const handlePlanExitYearChange = useCallback(
@@ -11836,6 +12024,49 @@ export default function App() {
     [updatePlanItem]
   );
 
+  const handlePlanClone = useCallback(
+    (id) => {
+      if (typeof window === 'undefined') {
+        return;
+      }
+      const source = futurePlan.find((item) => item.id === id);
+      if (!source) {
+        return;
+      }
+      const sanitizedSource = sanitizePlanItem(source);
+      if (!sanitizedSource) {
+        return;
+      }
+      const sourceLabel = sanitizedSource.name || 'Plan property';
+      const defaultLabel = `${sourceLabel} copy`;
+      const promptResult = window.prompt('Name the cloned plan property', defaultLabel);
+      if (promptResult === null) {
+        return;
+      }
+      const cloneLabel = promptResult.trim() !== '' ? promptResult.trim() : defaultLabel;
+      const clone = sanitizePlanItem({
+        ...sanitizedSource,
+        id: `plan-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        name: cloneLabel,
+        createdAt: new Date().toISOString(),
+      });
+      if (!clone) {
+        return;
+      }
+      setFuturePlan((prev) => {
+        const index = prev.findIndex((item) => item.id === id);
+        if (index === -1) {
+          return prev;
+        }
+        const next = prev.slice();
+        next.splice(index + 1, 0, clone);
+        return next;
+      });
+      setPlanNotice(`Cloned "${sourceLabel}" as "${cloneLabel}".`);
+    },
+    [futurePlan, setFuturePlan, setPlanNotice]
+  );
+
   const updatePlanInputs = useCallback(
     (id, next) => {
       if (!next || typeof next !== 'object') {
@@ -11851,6 +12082,259 @@ export default function App() {
     },
     [updatePlanItem]
   );
+
+  const resetPlanOptimizationState = useCallback(() => {
+    setPlanOptimizationStatus('idle');
+    setPlanOptimizationProgress(0);
+    setPlanOptimizationMessage('');
+  }, []);
+
+  const handlePlanOptimizationGoalChange = useCallback(
+    (value) => {
+      setPlanOptimizationGoal(value);
+      setPlanOptimizationResult(null);
+      resetPlanOptimizationState();
+    },
+    [resetPlanOptimizationState]
+  );
+
+  const handlePlanOptimizationHoldToggle = useCallback(
+    (key, nextValue) => {
+      setPlanOptimizationHold((prev) => ({
+        ...prev,
+        [key]: typeof nextValue === 'boolean' ? nextValue : !prev?.[key],
+      }));
+      setPlanOptimizationResult(null);
+      resetPlanOptimizationState();
+    },
+    [resetPlanOptimizationState]
+  );
+
+  const handleApplyPlanOptimization = useCallback(
+    (plan, message) => {
+      if (!Array.isArray(plan) || plan.length === 0) {
+        return;
+      }
+      setFuturePlan(plan.map((item) => sanitizePlanItem(item)).filter(Boolean));
+      if (message) {
+        setPlanNotice(message);
+      }
+      resetPlanOptimizationState();
+    },
+    [setFuturePlan, setPlanNotice, resetPlanOptimizationState]
+  );
+
+  const handlePlanOptimizationStart = useCallback(async () => {
+    if (planOptimizationStatus === 'running') {
+      return;
+    }
+    const goalConfig =
+      PLAN_OPTIMIZATION_GOAL_MAP[planOptimizationGoal] ??
+      PLAN_OPTIMIZATION_GOAL_MAP[DEFAULT_PLAN_OPTIMIZATION_GOAL];
+    if (!goalConfig) {
+      setPlanOptimizationStatus('error');
+      setPlanOptimizationMessage('Unable to evaluate optimisation goal.');
+      setPlanOptimizationResult({
+        status: 'error',
+        message: 'Unable to evaluate optimisation goal.',
+      });
+      return;
+    }
+    if (!Array.isArray(futurePlan) || futurePlan.length === 0) {
+      setPlanOptimizationStatus('unavailable');
+      setPlanOptimizationMessage('Save properties to the future plan before optimising.');
+      setPlanOptimizationResult({
+        status: 'unavailable',
+        message: 'Save properties to the future plan before optimising.',
+      });
+      return;
+    }
+
+    setPlanOptimizationStatus('running');
+    setPlanOptimizationProgress(0);
+    setPlanOptimizationMessage('Preparing plan benchmarks…');
+    setPlanOptimizationResult(null);
+
+    try {
+      const indexFundGrowth = Number.isFinite(extraSettings?.indexFundGrowth)
+        ? extraSettings.indexFundGrowth
+        : DEFAULT_INDEX_GROWTH;
+      const baselineAnalysis =
+        planAnalysis?.status === 'ready'
+          ? planAnalysis
+          : computeFuturePlanAnalysis(futurePlan, indexFundGrowth);
+
+      if (!baselineAnalysis || baselineAnalysis.includedItems.length === 0) {
+        const message = 'Select at least one complete property to run plan optimisation.';
+        setPlanOptimizationStatus('unavailable');
+        setPlanOptimizationMessage(message);
+        setPlanOptimizationResult({ status: 'unavailable', message });
+        return;
+      }
+
+      const baselineValue = goalConfig.metric(baselineAnalysis);
+      const planItemsById = new Map((planAnalysis.items ?? []).map((entry) => [entry.id, entry]));
+      const purchaseDeltas = [-2, -1, 0, 1, 2];
+      const exitDeltas = [-2, -1, 0, 1, 2];
+      const candidates = [];
+
+      futurePlan.forEach((rawItem) => {
+        const baseItem = sanitizePlanItem(rawItem);
+        if (!baseItem) {
+          return;
+        }
+        const planEntry = planItemsById.get(baseItem.id);
+        const basePurchase = Number.isFinite(planEntry?.purchaseYear)
+          ? planEntry.purchaseYear
+          : baseItem.purchaseYear ?? 0;
+        const baseExit = Number.isFinite(planEntry?.exitYear)
+          ? planEntry.exitYear
+          : Number.isFinite(baseItem.exitYearOverride)
+            ? baseItem.exitYearOverride
+            : Number.isFinite(baseItem.inputs?.exitYear)
+              ? baseItem.inputs.exitYear
+              : 0;
+
+        const purchaseOptions = planOptimizationHold.purchaseYear
+          ? [basePurchase]
+          : Array.from(
+              new Set(
+                purchaseDeltas
+                  .map((delta) => clamp(Math.round(basePurchase + delta), 0, PLAN_MAX_PURCHASE_YEAR))
+                  .concat(basePurchase)
+              )
+            ).sort((a, b) => a - b);
+
+        const exitOptions = planOptimizationHold.exitYear
+          ? [baseExit]
+          : Array.from(
+              new Set(exitDeltas.map((delta) => Math.max(0, Math.round(baseExit + delta))).concat(baseExit))
+            ).sort((a, b) => a - b);
+
+        purchaseOptions.forEach((purchaseYear) => {
+          exitOptions.forEach((exitYear) => {
+            if (purchaseYear === basePurchase && exitYear === baseExit) {
+              return;
+            }
+            const updatedPlan = futurePlan.map((planItem) => {
+              if (planItem.id !== baseItem.id) {
+                return planItem;
+              }
+              return sanitizePlanItem({
+                ...planItem,
+                purchaseYear,
+                exitYearOverride: exitYear,
+                inputs: {
+                  ...(planItem.inputs ?? {}),
+                  exitYear,
+                },
+              });
+            });
+            candidates.push({
+              id: baseItem.id,
+              label: planEntry?.displayName || baseItem.name || 'Plan property',
+              plan: updatedPlan,
+              purchaseYear,
+              exitYear,
+            });
+          });
+        });
+      });
+
+      if (candidates.length === 0) {
+        setPlanOptimizationStatus('ready');
+        setPlanOptimizationProgress(1);
+        const message = 'No alternative purchase or exit combinations available under the current constraints.';
+        setPlanOptimizationMessage(message);
+        setPlanOptimizationResult({
+          status: 'baseline',
+          goal: goalConfig,
+          baseline: {
+            value: baselineValue,
+            formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
+            analysis: baselineAnalysis,
+          },
+          best: null,
+          alternatives: [],
+          message,
+        });
+        return;
+      }
+
+      const evaluated = [];
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const analysis = computeFuturePlanAnalysis(candidate.plan, indexFundGrowth);
+        const value = goalConfig.metric(analysis);
+        evaluated.push({
+          ...candidate,
+          analysis,
+          value,
+        });
+        const progress = (index + 1) / candidates.length;
+        setPlanOptimizationProgress(progress);
+        setPlanOptimizationMessage(
+          `Evaluated ${index + 1} of ${candidates.length} plan variation${candidates.length === 1 ? '' : 's'}…`
+        );
+        if ((index + 1) % 5 === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+
+      const validResults = evaluated.filter((candidate) => Number.isFinite(candidate.value));
+      validResults.sort((a, b) => b.value - a.value);
+
+      const best = validResults[0] ?? null;
+      const alternatives = validResults.slice(1, 4);
+
+      setPlanOptimizationStatus('ready');
+      setPlanOptimizationProgress(1);
+      setPlanOptimizationMessage(best ? 'Optimisation complete.' : 'No improvements over baseline.');
+      setPlanOptimizationResult({
+        status: best ? 'ready' : 'baseline',
+        goal: goalConfig,
+        baseline: {
+          value: baselineValue,
+          formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
+          analysis: baselineAnalysis,
+        },
+        best: best
+          ? {
+              ...best,
+              formattedValue: goalConfig.format(best.value),
+              delta: Number.isFinite(baselineValue) ? best.value - baselineValue : NaN,
+              formattedDelta: Number.isFinite(baselineValue)
+                ? formatPlanGoalDelta(goalConfig, best.value - baselineValue)
+                : '',
+            }
+          : null,
+        alternatives: alternatives.map((candidate) => ({
+          ...candidate,
+          formattedValue: goalConfig.format(candidate.value),
+          delta: Number.isFinite(baselineValue) ? candidate.value - baselineValue : NaN,
+          formattedDelta: Number.isFinite(baselineValue)
+            ? formatPlanGoalDelta(goalConfig, candidate.value - baselineValue)
+            : '',
+        })),
+      });
+    } catch (error) {
+      console.warn('Unable to run plan optimisation:', error);
+      setPlanOptimizationStatus('error');
+      setPlanOptimizationProgress(0);
+      setPlanOptimizationMessage('Unable to complete plan optimisation.');
+      setPlanOptimizationResult({
+        status: 'error',
+        message: 'Unable to complete plan optimisation.',
+      });
+    }
+  }, [
+    planOptimizationStatus,
+    planOptimizationGoal,
+    planOptimizationHold,
+    futurePlan,
+    planAnalysis,
+    extraSettings?.indexFundGrowth,
+  ]);
 
   const handlePlanRemove = useCallback((id) => {
     setFuturePlan((prev) => prev.filter((item) => item.id !== id));
@@ -15853,7 +16337,10 @@ export default function App() {
                         const createdLabel = item.createdAt
                           ? new Date(item.createdAt).toLocaleString()
                           : '';
-                        const maxContribution = Math.max(0, Math.round(item.initialOutlay || 0));
+                        const maxContribution = Math.max(
+                          0,
+                          Math.round(item.depositRequirement ?? item.initialOutlay ?? 0)
+                        );
                         const isExpanded = planExpandedRows[item.id] === true;
                         const exitYearDisplay = Number.isFinite(Number(item.exitYearOverride))
                           ? Math.max(0, Math.round(Number(item.exitYearOverride)))
@@ -15952,19 +16439,34 @@ export default function App() {
                                   }`}
                                 />
                                 <div className="mt-1 text-[10px] text-slate-500">
-                                  Cap contributions at {currency(maxContribution)} (initial cash outlay).
+                                  Available portfolio cash: {currency(item.availableCashForDeposit)}
                                 </div>
+                                {item.useIncomeForDeposit && item.cashInjection > 0 ? (
+                                  <div className="text-[10px] text-amber-600">
+                                    Shortfall covered externally (added to index fund):{' '}
+                                    {currency(item.cashInjection)}
+                                  </div>
+                                ) : null}
                               </td>
                               <td className="px-3 py-3 text-slate-700">{currency(item.initialOutlay)}</td>
                               <td className="px-3 py-3 text-slate-700">{currency(item.externalOutlay)}</td>
                               <td className="px-3 py-3 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handlePlanRemove(item.id)}
-                                  className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
-                                >
-                                  Remove
-                                </button>
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePlanClone(item.id)}
+                                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                                  >
+                                    Clone
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePlanRemove(item.id)}
+                                    className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                             {isExpanded ? (
@@ -16663,6 +17165,200 @@ export default function App() {
                   <p className="text-[11px] text-slate-500">
                     Index fund contributions assume deposits funded from outside the portfolio are invested alongside the benchmark from the purchase year onward.
                   </p>
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <label htmlFor="plan-optimization-goal" className="sr-only">
+                          Optimisation goal
+                        </label>
+                        <select
+                          id="plan-optimization-goal"
+                          value={planOptimizationGoal}
+                          onChange={(event) => handlePlanOptimizationGoalChange(event.target.value)}
+                          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm focus:border-slate-500 focus:outline-none"
+                        >
+                          {PLAN_OPTIMIZATION_GOALS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handlePlanOptimizationStart}
+                          disabled={planOptimizationStatus === 'running'}
+                          className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+                            planOptimizationStatus === 'running'
+                              ? 'cursor-wait border border-slate-200 bg-slate-100 text-slate-400'
+                              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {planOptimizationStatus === 'running' ? 'Optimising…' : 'Optimise'}
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPlanOptimizationHoldExpanded((prev) => !prev)}
+                        aria-expanded={planOptimizationHoldExpanded}
+                        aria-controls="plan-optimization-hold"
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className={`h-3 w-3 transition-transform ${planOptimizationHoldExpanded ? 'rotate-180' : ''}`}
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
+                        </svg>
+                        <span>Factors to hold constant</span>
+                      </button>
+                    </div>
+                    {planOptimizationHoldExpanded ? (
+                      <div
+                        id="plan-optimization-hold"
+                        className="mt-3 flex flex-wrap gap-4 text-[11px] text-slate-600"
+                      >
+                        {PLAN_OPTIMIZATION_HOLD_OPTIONS.map((option) => (
+                          <label key={option.key} className="inline-flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={planOptimizationHold?.[option.key] === true}
+                              onChange={(event) =>
+                                handlePlanOptimizationHoldToggle(option.key, event.target.checked)
+                              }
+                            />
+                            <span>{option.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : null}
+                    {planOptimizationStatus === 'running' ? (
+                      <div className="mt-3 space-y-2">
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                          <div
+                            className="h-full rounded-full bg-slate-500 transition-all"
+                            style={{ width: `${Math.round(planOptimizationProgress * 100)}%` }}
+                          />
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          {planOptimizationMessage || 'Benchmarking plan variations…'}
+                        </p>
+                      </div>
+                    ) : planOptimizationResult?.status === 'ready' && planOptimizationResult.best ? (
+                      <div className="mt-3 space-y-3">
+                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                Recommended plan
+                              </div>
+                              <div className="text-sm font-semibold text-slate-800">
+                                {planOptimizationResult.best.label}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                Purchase in year {planOptimizationResult.best.purchaseYear} · hold for
+                                {' '}
+                                {planOptimizationResult.best.exitYear} year
+                                {planOptimizationResult.best.exitYear === 1 ? '' : 's'}
+                              </div>
+                            </div>
+                            <div className="text-right text-[11px] text-slate-500">
+                              <div className="text-sm font-semibold text-slate-700">
+                                {planOptimizationResult.best.formattedValue}
+                              </div>
+                              {planOptimizationResult.best.formattedDelta ? (
+                                <div>{planOptimizationResult.best.formattedDelta}</div>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-[11px] text-slate-500">
+                              Baseline {planOptimizationResult.goal?.label ?? 'value'}: {planOptimizationResult.baseline?.formattedValue ?? '—'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleApplyPlanOptimization(
+                                  planOptimizationResult.best.plan,
+                                  `Applied ${planOptimizationResult.goal?.label ?? 'plan'} optimisation.`
+                                )
+                              }
+                              className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                            >
+                              Load plan
+                            </button>
+                          </div>
+                        </div>
+                        {planOptimizationResult.alternatives?.length ? (
+                          <div className="space-y-2">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                              Other opportunities
+                            </div>
+                            {planOptimizationResult.alternatives.map((alternative) => (
+                              <div key={`${alternative.id}-${alternative.purchaseYear}-${alternative.exitYear}`} className="rounded-lg border border-slate-200 bg-white p-3">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <div>
+                                    <div className="text-sm font-semibold text-slate-800">
+                                      {alternative.label}
+                                    </div>
+                                    <div className="text-[11px] text-slate-500">
+                                      Purchase in year {alternative.purchaseYear} · hold for {alternative.exitYear} year
+                                      {alternative.exitYear === 1 ? '' : 's'}
+                                    </div>
+                                  </div>
+                                  <div className="text-right text-[11px] text-slate-500">
+                                    <div className="text-sm font-semibold text-slate-700">
+                                      {alternative.formattedValue}
+                                    </div>
+                                    {alternative.formattedDelta ? (
+                                      <div>{alternative.formattedDelta}</div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-[11px] text-slate-500">Δ vs baseline</span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleApplyPlanOptimization(
+                                        alternative.plan,
+                                        `Loaded alternative ${planOptimizationResult.goal?.label ?? 'plan'} scenario.`
+                                      )
+                                    }
+                                    className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                                  >
+                                    Load plan
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : planOptimizationResult?.status === 'unavailable' ? (
+                      <p className="mt-3 text-[11px] text-slate-500">
+                        {planOptimizationResult.message ?? 'Unable to generate plan optimisation with the current inputs.'}
+                      </p>
+                    ) : planOptimizationResult?.status === 'error' ? (
+                      <p className="mt-3 text-[11px] text-rose-600">
+                        {planOptimizationResult.message ?? 'Unable to complete plan optimisation.'}
+                      </p>
+                    ) : planOptimizationResult?.status === 'baseline' ? (
+                      <p className="mt-3 text-[11px] text-slate-500">
+                        {planOptimizationResult.message ?? 'No alternative combinations improved on the baseline under current constraints.'}
+                      </p>
+                    ) : planOptimizationMessage ? (
+                      <p className="mt-3 text-[11px] text-slate-500">{planOptimizationMessage}</p>
+                    ) : (
+                      <p className="mt-3 text-[11px] text-slate-500">
+                        Select an optimisation goal and click optimise to benchmark purchase and exit timing.
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
