@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -1348,6 +1348,11 @@ const sanitizePlanItem = (item) => {
   const incomeContribution =
     Number.isFinite(rawContribution) && rawContribution > 0 ? rawContribution : 0;
   const inputs = sanitizePlanInputs(item.inputs);
+  const inputExitYear = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
+  const rawExit = Number(item.exitYearOverride ?? item.exitYear);
+  const exitYearOverride = Number.isFinite(rawExit) && rawExit >= 0
+    ? clamp(Math.round(rawExit), 0, PLAN_MAX_PURCHASE_YEAR)
+    : inputExitYear;
   return {
     id,
     name,
@@ -1357,6 +1362,7 @@ const sanitizePlanItem = (item) => {
     include,
     useIncomeForDeposit: useIncome,
     incomeContribution,
+    exitYearOverride,
   };
 };
 
@@ -5721,6 +5727,14 @@ export default function App() {
   const [showTableModal, setShowTableModal] = useState(false);
   const [showOptimizationModal, setShowOptimizationModal] = useState(false);
   const [showPlanModal, setShowPlanModal] = useState(false);
+  const [planExpandedRows, setPlanExpandedRows] = useState({});
+  const [planChartExpanded, setPlanChartExpanded] = useState(false);
+  const [planChartSeriesActive, setPlanChartSeriesActive] = useState(() => ({
+    propertyNetAfterTax: true,
+    cumulativeCash: true,
+    cumulativeExternal: true,
+    indexFundValue: true,
+  }));
   const [optimizationGoal, setOptimizationGoal] = useState(DEFAULT_OPTIMIZATION_GOAL);
   const [optimizationLockedFields, setOptimizationLockedFields] = useState(() => {
     const requiredField = OPTIMIZATION_GOAL_FIXED_FIELDS[DEFAULT_OPTIMIZATION_GOAL] ?? null;
@@ -5891,6 +5905,22 @@ export default function App() {
   const closeCashflowDetailOverlay = useCallback(() => {
     setCashflowDetailExpanded(false);
   }, []);
+  const togglePlanRowExpansion = useCallback((id) => {
+    setPlanExpandedRows((prev) => ({
+      ...prev,
+      [id]: !prev?.[id],
+    }));
+  }, []);
+  const togglePlanChartSeries = useCallback((key) => {
+    setPlanChartSeriesActive((prev) => {
+      const next = { ...prev };
+      next[key] = prev?.[key] === false;
+      return next;
+    });
+  }, []);
+  const closePlanChartOverlay = useCallback(() => {
+    setPlanChartExpanded(false);
+  }, []);
   const chartAreaRef = useRef(null);
   const chartOverlayRef = useRef(null);
   const chartModalContentRef = useRef(null);
@@ -5953,6 +5983,7 @@ export default function App() {
   useOverlayEscape(interestSplitExpanded, closeInterestSplitOverlay);
   useOverlayEscape(leverageExpanded, closeLeverageOverlay);
   useOverlayEscape(cashflowDetailExpanded, closeCashflowDetailOverlay);
+  useOverlayEscape(planChartExpanded, closePlanChartOverlay);
   useOverlayEscape(showOptimizationModal, () => setShowOptimizationModal(false));
   useOverlayEscape(showPlanModal, () => setShowPlanModal(false));
 
@@ -7611,10 +7642,16 @@ export default function App() {
       totalInitialOutlay: 0,
       totalExternalCash: 0,
       totalIncomeFunding: 0,
+      totalIndexFundContribution: 0,
       finalNetWealth: 0,
       finalCashPosition: 0,
       finalExternalPosition: 0,
+      finalIndexFundValue: 0,
     };
+    const indexFundGrowthRate = Number.isFinite(extraSettings?.indexFundGrowth)
+      ? extraSettings.indexFundGrowth
+      : DEFAULT_INDEX_GROWTH;
+
     if (!Array.isArray(futurePlan) || futurePlan.length === 0) {
       return {
         status: 'empty',
@@ -7654,7 +7691,12 @@ export default function App() {
       const chart = Array.from(chartByYear.values()).sort((a, b) => a.year - b.year);
       const exitYearFromChart = chart.length > 0 ? chart[chart.length - 1].year : 0;
       const metricsExitYear = Math.max(0, Math.round(Number(metrics?.exitYear) || 0));
-      const exitYear = Math.max(exitYearFromChart, metricsExitYear);
+      const exitYearBase = Math.max(exitYearFromChart, metricsExitYear);
+      const desiredExitYear = Math.max(
+        0,
+        Math.round(Number(sanitized.exitYearOverride) || exitYearBase)
+      );
+      const exitYear = exitYearBase > 0 ? Math.min(desiredExitYear, exitYearBase) : desiredExitYear;
       const annualCashflows = Array.isArray(metrics?.annualCashflowsAfterTax)
         ? metrics.annualCashflowsAfterTax.map((value) => (Number.isFinite(Number(value)) ? Number(value) : 0))
         : [];
@@ -7676,6 +7718,7 @@ export default function App() {
         exitProceeds,
         appliedIncomeContribution,
         externalOutlay,
+        indexFundContribution: sanitized.useIncomeForDeposit ? 0 : initialOutlay,
         valid,
       };
     });
@@ -7687,6 +7730,10 @@ export default function App() {
       totalInitialOutlay: includedItems.reduce((sum, item) => sum + item.initialOutlay, 0),
       totalExternalCash: includedItems.reduce((sum, item) => sum + item.externalOutlay, 0),
       totalIncomeFunding: includedItems.reduce((sum, item) => sum + item.appliedIncomeContribution, 0),
+      totalIndexFundContribution: includedItems.reduce(
+        (sum, item) => sum + (item.indexFundContribution || 0),
+        0
+      ),
     };
     if (includedItems.length === 0) {
       return {
@@ -7695,7 +7742,13 @@ export default function App() {
         includedItems,
         chart: [],
         maxYear: 0,
-        totals: { ...baseTotals, finalNetWealth: 0, finalCashPosition: 0, finalExternalPosition: 0 },
+        totals: {
+          ...baseTotals,
+          finalNetWealth: 0,
+          finalCashPosition: 0,
+          finalExternalPosition: 0,
+          finalIndexFundValue: 0,
+        },
       };
     }
 
@@ -7707,6 +7760,8 @@ export default function App() {
     const chart = [];
     let cumulativeCash = 0;
     let cumulativeExternal = 0;
+    let indexFundValue = 0;
+    let cumulativeIndexFundContribution = 0;
     for (let year = 0; year <= maxYear; year++) {
       let propertyValue = 0;
       let propertyGross = 0;
@@ -7714,6 +7769,7 @@ export default function App() {
       let propertyNetAfterTax = 0;
       let cashFlow = 0;
       let externalCashFlow = 0;
+      let indexFundContribution = 0;
 
       includedItems.forEach((item) => {
         const propertyYear = year - item.purchaseYear;
@@ -7730,6 +7786,9 @@ export default function App() {
         if (propertyYear === 0) {
           cashFlow -= item.initialOutlay;
           externalCashFlow += item.externalOutlay;
+          if (item.indexFundContribution > 0) {
+            indexFundContribution += item.indexFundContribution;
+          }
         } else if (propertyYear > 0) {
           const cashIndex = propertyYear - 1;
           const annualCash = item.annualCashflows[cashIndex] ?? 0;
@@ -7742,6 +7801,11 @@ export default function App() {
 
       cumulativeCash += cashFlow;
       cumulativeExternal += externalCashFlow;
+      indexFundValue = indexFundValue * (1 + indexFundGrowthRate);
+      if (indexFundContribution > 0) {
+        indexFundValue += indexFundContribution;
+        cumulativeIndexFundContribution += indexFundContribution;
+      }
       chart.push({
         year,
         propertyValue,
@@ -7752,6 +7816,9 @@ export default function App() {
         cumulativeCash,
         externalCashFlow,
         cumulativeExternal,
+        indexFundValue,
+        indexFundContribution,
+        cumulativeIndexFundContribution,
       });
     }
 
@@ -7760,6 +7827,7 @@ export default function App() {
       finalNetWealth: chart[chart.length - 1]?.propertyNetAfterTax ?? 0,
       finalCashPosition: chart[chart.length - 1]?.cumulativeCash ?? 0,
       finalExternalPosition: chart[chart.length - 1]?.cumulativeExternal ?? 0,
+      finalIndexFundValue: chart[chart.length - 1]?.indexFundValue ?? 0,
     };
 
     return {
@@ -7770,7 +7838,7 @@ export default function App() {
       maxYear,
       totals,
     };
-  }, [futurePlan]);
+  }, [futurePlan, extraSettings?.indexFundGrowth]);
 
   const planTooltipFormatter = useCallback((value) => currency(value), []);
 
@@ -11493,6 +11561,7 @@ export default function App() {
       include: true,
       useIncomeForDeposit: false,
       incomeContribution: 0,
+      exitYearOverride: snapshot.data?.exitYear,
     });
     setFuturePlan((prev) => [...prev, newItem]);
     setPlanNotice(`Added "${label}" to your future plan.`);
@@ -11522,6 +11591,26 @@ export default function App() {
     [updatePlanItem]
   );
 
+  const handlePlanExitYearChange = useCallback(
+    (id, value) => {
+      const numeric = Math.round(Number(value));
+      const sanitizedValue = clamp(
+        Number.isFinite(numeric) ? numeric : 0,
+        0,
+        PLAN_MAX_PURCHASE_YEAR
+      );
+      updatePlanItem(id, (current) => ({
+        ...current,
+        exitYearOverride: sanitizedValue,
+        inputs: {
+          ...(current?.inputs ?? {}),
+          exitYear: sanitizedValue,
+        },
+      }));
+    },
+    [updatePlanItem]
+  );
+
   const handlePlanIncomeAmountChange = useCallback(
     (id, value) => {
       const numeric = Number(value);
@@ -11531,8 +11620,32 @@ export default function App() {
     [updatePlanItem]
   );
 
+  const updatePlanInputs = useCallback(
+    (id, next) => {
+      if (!next || typeof next !== 'object') {
+        return;
+      }
+      updatePlanItem(id, (current) => ({
+        ...current,
+        inputs: {
+          ...(current?.inputs ?? {}),
+          ...next,
+        },
+      }));
+    },
+    [updatePlanItem]
+  );
+
   const handlePlanRemove = useCallback((id) => {
     setFuturePlan((prev) => prev.filter((item) => item.id !== id));
+    setPlanExpandedRows((prev) => {
+      if (!prev || prev[id] === undefined) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   }, []);
 
   const handleSaveScenario = async () => {
@@ -15512,6 +15625,7 @@ export default function App() {
                         <th scope="col" className="px-3 py-2 font-semibold">Include</th>
                         <th scope="col" className="px-3 py-2 font-semibold">Property</th>
                         <th scope="col" className="px-3 py-2 font-semibold">Purchase year</th>
+                        <th scope="col" className="px-3 py-2 font-semibold">Exit year</th>
                         <th scope="col" className="px-3 py-2 font-semibold">Deposit funding</th>
                         <th scope="col" className="px-3 py-2 font-semibold">Initial cash outlay</th>
                         <th scope="col" className="px-3 py-2 font-semibold">External cash</th>
@@ -15524,76 +15638,131 @@ export default function App() {
                           ? new Date(item.createdAt).toLocaleString()
                           : '';
                         const maxContribution = Math.max(0, Math.round(item.initialOutlay || 0));
+                        const isExpanded = planExpandedRows[item.id] === true;
+                        const exitYearDisplay = Number.isFinite(Number(item.exitYearOverride))
+                          ? Math.max(0, Math.round(Number(item.exitYearOverride)))
+                          : Math.max(0, Math.round(Number(item.exitYear)));
                         return (
-                          <tr key={item.id} className="align-top">
-                            <td className="px-3 py-3">
-                              <input
-                                type="checkbox"
-                                checked={item.include}
-                                onChange={(event) => handlePlanIncludeToggle(item.id, event.target.checked)}
-                              />
-                            </td>
-                            <td className="px-3 py-3">
-                              <div className="font-semibold text-slate-700">{item.name}</div>
-                              {createdLabel ? (
-                                <div className="text-[10px] text-slate-500">Added {createdLabel}</div>
-                              ) : null}
-                              {item.valid ? null : (
-                                <div className="mt-1 text-[10px] text-rose-600">
-                                  Missing inputs to project this deal. Load it in the dashboard and complete the purchase details.
-                                </div>
-                              )}
-                            </td>
-                            <td className="px-3 py-3">
-                              <input
-                                type="number"
-                                min={0}
-                                max={PLAN_MAX_PURCHASE_YEAR}
-                                value={item.purchaseYear}
-                                onChange={(event) => handlePlanPurchaseYearChange(item.id, event.target.value)}
-                                className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                              />
-                              <div className="mt-1 text-[10px] text-slate-500">Year {item.purchaseYear}</div>
-                            </td>
-                            <td className="px-3 py-3">
-                              <div className="flex items-center gap-2">
+                          <Fragment key={item.id}>
+                            <tr className={`align-top ${isExpanded ? 'bg-slate-50/60' : ''}`}>
+                              <td className="px-3 py-3">
                                 <input
                                   type="checkbox"
-                                  checked={item.useIncomeForDeposit}
-                                  onChange={(event) => handlePlanIncomeToggle(item.id, event.target.checked)}
+                                  checked={item.include}
+                                  onChange={(event) => handlePlanIncludeToggle(item.id, event.target.checked)}
                                 />
-                                <span>Use cash flow</span>
-                              </div>
-                              <input
-                                type="number"
-                                min={0}
-                                max={maxContribution || undefined}
-                                step={100}
-                                value={item.incomeContribution}
-                                disabled={!item.useIncomeForDeposit}
-                                onChange={(event) => handlePlanIncomeAmountChange(item.id, event.target.value)}
-                                className={`mt-2 w-32 rounded-lg border px-2 py-1 text-xs ${
-                                  item.useIncomeForDeposit
-                                    ? 'border-slate-300'
-                                    : 'border-slate-200 bg-slate-100 text-slate-400'
-                                }`}
-                              />
-                              <div className="mt-1 text-[10px] text-slate-500">
-                                Cap contributions at {currency(maxContribution)} (initial cash outlay).
-                              </div>
-                            </td>
-                            <td className="px-3 py-3 text-slate-700">{currency(item.initialOutlay)}</td>
-                            <td className="px-3 py-3 text-slate-700">{currency(item.externalOutlay)}</td>
-                            <td className="px-3 py-3 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handlePlanRemove(item.id)}
-                                className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
-                              >
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
+                              </td>
+                              <td className="px-3 py-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="font-semibold text-slate-700">{item.name}</div>
+                                    {createdLabel ? (
+                                      <div className="text-[10px] text-slate-500">Added {createdLabel}</div>
+                                    ) : null}
+                                    {item.valid ? null : (
+                                      <div className="mt-1 text-[10px] text-rose-600">
+                                        Missing inputs to project this deal. Load it in the dashboard and complete the purchase details.
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => togglePlanRowExpansion(item.id)}
+                                    aria-expanded={isExpanded}
+                                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600 transition hover:bg-slate-100 ${
+                                      isExpanded ? 'bg-slate-100' : ''
+                                    }`}
+                                  >
+                                    <span className="sr-only">Toggle details</span>
+                                    <svg
+                                      xmlns="http://www.w3.org/2000/svg"
+                                      viewBox="0 0 20 20"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="1.5"
+                                      className={`h-3.5 w-3.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                                      aria-hidden="true"
+                                    >
+                                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="px-3 py-3">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={PLAN_MAX_PURCHASE_YEAR}
+                                  value={item.purchaseYear}
+                                  onChange={(event) => handlePlanPurchaseYearChange(item.id, event.target.value)}
+                                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                                />
+                                <div className="mt-1 text-[10px] text-slate-500">Year {item.purchaseYear}</div>
+                              </td>
+                              <td className="px-3 py-3">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={PLAN_MAX_PURCHASE_YEAR}
+                                  value={exitYearDisplay}
+                                  onChange={(event) => handlePlanExitYearChange(item.id, event.target.value)}
+                                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                                />
+                                <div className="mt-1 text-[10px] text-slate-500">
+                                  Hold for {exitYearDisplay} year{exitYearDisplay === 1 ? '' : 's'}
+                                </div>
+                              </td>
+                              <td className="px-3 py-3">
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={item.useIncomeForDeposit}
+                                    onChange={(event) => handlePlanIncomeToggle(item.id, event.target.checked)}
+                                  />
+                                  <span>Use cash flow</span>
+                                </div>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={maxContribution || undefined}
+                                  step={100}
+                                  value={item.incomeContribution}
+                                  disabled={!item.useIncomeForDeposit}
+                                  onChange={(event) => handlePlanIncomeAmountChange(item.id, event.target.value)}
+                                  className={`mt-2 w-32 rounded-lg border px-2 py-1 text-xs ${
+                                    item.useIncomeForDeposit
+                                      ? 'border-slate-300'
+                                      : 'border-slate-200 bg-slate-100 text-slate-400'
+                                  }`}
+                                />
+                                <div className="mt-1 text-[10px] text-slate-500">
+                                  Cap contributions at {currency(maxContribution)} (initial cash outlay).
+                                </div>
+                              </td>
+                              <td className="px-3 py-3 text-slate-700">{currency(item.initialOutlay)}</td>
+                              <td className="px-3 py-3 text-slate-700">{currency(item.externalOutlay)}</td>
+                              <td className="px-3 py-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handlePlanRemove(item.id)}
+                                  className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                            {isExpanded ? (
+                              <tr className="bg-slate-50">
+                                <td colSpan={8} className="px-6 py-4">
+                                  <PlanItemDetail
+                                    item={item}
+                                    onUpdate={(fields) => updatePlanInputs(item.id, fields)}
+                                    onExitYearChange={(value) => handlePlanExitYearChange(item.id, value)}
+                                  />
+                                </td>
+                              </tr>
+                            ) : null}
+                          </Fragment>
                         );
                       })}
                     </tbody>
@@ -15629,12 +15798,51 @@ export default function App() {
                     <div className="text-slate-500">Cash position (exit)</div>
                     <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.finalCashPosition)}</div>
                   </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-slate-500">Index fund value (exit)</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.finalIndexFundValue)}</div>
+                  </div>
                 </div>
                 {planAnalysis.chart.length > 0 ? (
                   <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <h3 className="text-sm font-semibold text-slate-800">Combined wealth trajectory</h3>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Aggregates portfolio value, net wealth, and cumulative cash across all included deals with their chosen purchase years.
+                    <div className="mb-1 flex items-center justify-between gap-3">
+                      <h3 className="text-sm font-semibold text-slate-800">Combined wealth trajectory</h3>
+                      {planChartExpanded ? (
+                        <button
+                          type="button"
+                          onClick={closePlanChartOverlay}
+                          className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                          title="Close combined wealth trajectory"
+                        >
+                          <span>Close</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setPlanChartExpanded(true)}
+                          className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                          title="Expand combined wealth trajectory"
+                        >
+                          <span>Expand</span>
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 20 20"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            className="h-3 w-3"
+                            aria-hidden="true"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Aggregates portfolio value, net wealth, cumulative cash, and optional index fund comparisons across all included deals with their chosen purchase years.
                     </p>
                     <div className="mt-4 h-72 w-full">
                       <ResponsiveContainer width="100%" height="100%">
@@ -15651,7 +15859,15 @@ export default function App() {
                             formatter={(value) => planTooltipFormatter(value)}
                             labelFormatter={(value) => `Year ${value}`}
                           />
-                          <Legend />
+                          <Legend
+                            content={(props) => (
+                              <ChartLegend
+                                {...props}
+                                activeSeries={planChartSeriesActive}
+                                onToggle={togglePlanChartSeries}
+                              />
+                            )}
+                          />
                           <Area
                             yAxisId="currency"
                             type="monotone"
@@ -15660,6 +15876,7 @@ export default function App() {
                             stroke="#2563eb"
                             fill="#93c5fd"
                             fillOpacity={0.35}
+                            hide={planChartSeriesActive.propertyNetAfterTax === false}
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -15669,6 +15886,7 @@ export default function App() {
                             stroke="#16a34a"
                             strokeWidth={2}
                             dot={false}
+                            hide={planChartSeriesActive.cumulativeCash === false}
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -15679,6 +15897,18 @@ export default function App() {
                             strokeDasharray="4 4"
                             strokeWidth={2}
                             dot={false}
+                            hide={planChartSeriesActive.cumulativeExternal === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="indexFundValue"
+                            name="Index fund value"
+                            stroke="#fb923c"
+                            strokeWidth={2}
+                            dot={false}
+                            strokeDasharray="2 2"
+                            hide={planChartSeriesActive.indexFundValue === false}
                           />
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -15979,6 +16209,155 @@ export default function App() {
       )}
 
       </div>
+
+      {planChartExpanded ? (
+        <div
+          className="no-print fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 px-4 py-8"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="plan-chart-overlay-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closePlanChartOverlay();
+            }
+          }}
+        >
+          <div
+            className="relative flex h-full max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2 id="plan-chart-overlay-title" className="text-base font-semibold text-slate-900">
+                  Combined wealth trajectory
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Explore the aggregated property portfolio performance alongside external cash deployment and optional index fund growth.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closePlanChartOverlay}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-5">
+              {planAnalysis.chart.length === 0 ? (
+                <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-500">
+                  Save at least one complete property to the future plan to view the combined analysis.
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  <div className="grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="text-slate-500">Portfolio net wealth (exit)</div>
+                      <div className="mt-1 text-base font-semibold text-slate-800">
+                        {currency(planAnalysis.totals.finalNetWealth)}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="text-slate-500">Cash position (exit)</div>
+                      <div className="mt-1 text-base font-semibold text-slate-800">
+                        {currency(planAnalysis.totals.finalCashPosition)}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="text-slate-500">Index fund value (exit)</div>
+                      <div className="mt-1 text-base font-semibold text-slate-800">
+                        {currency(planAnalysis.totals.finalIndexFundValue)}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="text-slate-500">Index fund contributions</div>
+                      <div className="mt-1 text-base font-semibold text-slate-800">
+                        {currency(planAnalysis.totals.totalIndexFundContribution)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="h-[28rem] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart data={planAnalysis.chart} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="year"
+                          tickFormatter={(value) => `Y${value}`}
+                          tick={{ fontSize: 11, fill: '#475569' }}
+                        />
+                        <YAxis
+                          yAxisId="currency"
+                          tickFormatter={(value) => currencyNoPence(value)}
+                          tick={{ fontSize: 11, fill: '#475569' }}
+                          width={110}
+                        />
+                        <Tooltip
+                          formatter={(value) => planTooltipFormatter(value)}
+                          labelFormatter={(value) => `Year ${value}`}
+                        />
+                        <Legend
+                          content={(props) => (
+                            <ChartLegend
+                              {...props}
+                              activeSeries={planChartSeriesActive}
+                              onToggle={togglePlanChartSeries}
+                            />
+                          )}
+                        />
+                        <Area
+                          yAxisId="currency"
+                          type="monotone"
+                          dataKey="propertyNetAfterTax"
+                          name="Net wealth (after tax)"
+                          stroke="#2563eb"
+                          fill="#93c5fd"
+                          fillOpacity={0.3}
+                          hide={planChartSeriesActive.propertyNetAfterTax === false}
+                        />
+                        <RechartsLine
+                          yAxisId="currency"
+                          type="monotone"
+                          dataKey="cumulativeCash"
+                          name="Cumulative cash"
+                          stroke="#16a34a"
+                          strokeWidth={2}
+                          dot={false}
+                          hide={planChartSeriesActive.cumulativeCash === false}
+                        />
+                        <RechartsLine
+                          yAxisId="currency"
+                          type="monotone"
+                          dataKey="cumulativeExternal"
+                          name="External cash deployed"
+                          stroke="#f97316"
+                          strokeWidth={2}
+                          strokeDasharray="4 4"
+                          dot={false}
+                          hide={planChartSeriesActive.cumulativeExternal === false}
+                        />
+                        <RechartsLine
+                          yAxisId="currency"
+                          type="monotone"
+                          dataKey="indexFundValue"
+                          name="Index fund value"
+                          stroke="#fb923c"
+                          strokeWidth={2}
+                          strokeDasharray="2 2"
+                          dot={false}
+                          hide={planChartSeriesActive.indexFundValue === false}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Index fund contributions assume deposits funded from outside the portfolio are invested alongside the benchmark from the purchase year onward.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {interestSplitExpanded ? (
         <div
@@ -17221,6 +17600,543 @@ function ChatBubble({
       >
         {open ? 'Close chat' : 'Chat with AI'}
       </button>
+    </div>
+  );
+}
+
+function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
+  if (!item) {
+    return null;
+  }
+  const inputs = item.inputs ?? {};
+  const handleTextChange = (field, value) => {
+    if (typeof onUpdate === 'function') {
+      onUpdate({ [field]: value });
+    }
+  };
+  const handleNumberChange = (field, value) => {
+    const numeric = Number(value);
+    if (typeof onUpdate === 'function') {
+      onUpdate({ [field]: Number.isFinite(numeric) ? numeric : 0 });
+    }
+  };
+  const handlePercentChange = (field, value) => {
+    const numeric = Number(value);
+    if (typeof onUpdate === 'function') {
+      onUpdate({ [field]: Number.isFinite(numeric) ? numeric / 100 : 0 });
+    }
+  };
+  const handleCheckboxChange = (field, checked) => {
+    if (typeof onUpdate === 'function') {
+      onUpdate({ [field]: Boolean(checked) });
+    }
+  };
+  const percentValue = (field) => {
+    const numeric = Number(inputs?.[field]);
+    return Number.isFinite(numeric) ? roundTo(numeric * 100, 2) : '';
+  };
+  const numericValue = (field) => {
+    const numeric = Number(inputs?.[field]);
+    return Number.isFinite(numeric) ? numeric : 0;
+  };
+  const computedExitYear = Number.isFinite(Number(item.exitYearOverride))
+    ? Number(item.exitYearOverride)
+    : Number(inputs.exitYear);
+  const exitYearValue = Number.isFinite(computedExitYear)
+    ? Math.max(0, Math.round(computedExitYear))
+    : 0;
+  const loanTypeName = `plan-loan-type-${item.id}`;
+  const buyerType = typeof inputs.buyerType === 'string' ? inputs.buyerType : 'individual';
+  const propertiesOwned = Math.max(0, Math.round(numericValue('propertiesOwned')));
+  const reinvestChecked = Boolean(inputs.reinvestIncome);
+  const bridgingChecked = Boolean(inputs.useBridgingLoan);
+  const historicalChecked = Boolean(inputs.useHistoricalAppreciation);
+  return (
+    <div className="space-y-5 text-xs text-slate-600">
+      <div>
+        <h4 className="text-sm font-semibold text-slate-700">Property basics</h4>
+        <div className="mt-2 grid gap-2 md:grid-cols-2">
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Display name</span>
+            <input
+              type="text"
+              value={inputs.propertyDisplayName ?? ''}
+              onChange={(event) => handleTextChange('propertyDisplayName', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Property address</span>
+            <input
+              type="text"
+              value={inputs.propertyAddress ?? ''}
+              onChange={(event) => handleTextChange('propertyAddress', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Property URL</span>
+            <input
+              type="text"
+              value={inputs.propertyUrl ?? ''}
+              onChange={(event) => handleTextChange('propertyUrl', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Property type</span>
+            <select
+              value={inputs.propertyType ?? ''}
+              onChange={(event) => handleTextChange('propertyType', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            >
+              {PROPERTY_TYPE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Bedrooms</span>
+            <input
+              type="number"
+              min={0}
+              value={numericValue('bedrooms')}
+              onChange={(event) => handleNumberChange('bedrooms', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Bathrooms</span>
+            <input
+              type="number"
+              min={0}
+              value={numericValue('bathrooms')}
+              onChange={(event) => handleNumberChange('bathrooms', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+        </div>
+      </div>
+      <div>
+        <h4 className="text-sm font-semibold text-slate-700">Purchase & financing</h4>
+        <div className="mt-2 grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Purchase price (£)</span>
+            <input
+              type="number"
+              min={0}
+              step={1000}
+              value={numericValue('purchasePrice')}
+              onChange={(event) => handleNumberChange('purchasePrice', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Deposit %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('depositPct')}
+              onChange={(event) => handlePercentChange('depositPct', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Closing costs %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('closingCostsPct')}
+              onChange={(event) => handlePercentChange('closingCostsPct', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Renovation cost (£)</span>
+            <input
+              type="number"
+              min={0}
+              step={500}
+              value={numericValue('renovationCost')}
+              onChange={(event) => handleNumberChange('renovationCost', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Mortgage fee (£)</span>
+            <input
+              type="number"
+              min={0}
+              step={100}
+              value={numericValue('mortgagePackageFee')}
+              onChange={(event) => handleNumberChange('mortgagePackageFee', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Interest rate % (APR)</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.01}
+              value={percentValue('interestRate')}
+              onChange={(event) => handlePercentChange('interestRate', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Mortgage term (years)</span>
+            <input
+              type="number"
+              min={1}
+              value={numericValue('mortgageYears')}
+              onChange={(event) => handleNumberChange('mortgageYears', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-4 text-slate-600">
+          <label className="inline-flex items-center gap-2 text-xs font-medium">
+            <input
+              type="radio"
+              name={loanTypeName}
+              checked={inputs.loanType === 'repayment'}
+              onChange={() => handleTextChange('loanType', 'repayment')}
+            />
+            <span>Capital repayment</span>
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs font-medium">
+            <input
+              type="radio"
+              name={loanTypeName}
+              checked={inputs.loanType === 'interest_only'}
+              onChange={() => handleTextChange('loanType', 'interest_only')}
+            />
+            <span>Interest-only</span>
+          </label>
+        </div>
+      </div>
+      <div>
+        <h4 className="text-sm font-semibold text-slate-700">Bridging loan</h4>
+        <label className="mt-2 inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+          <input
+            type="checkbox"
+            checked={bridgingChecked}
+            onChange={(event) => handleCheckboxChange('useBridgingLoan', event.target.checked)}
+          />
+          <span>Use bridging loan for deposit</span>
+        </label>
+        {bridgingChecked ? (
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <label className="flex flex-col gap-1">
+              <span className="font-medium text-slate-600">Bridging term (months)</span>
+              <input
+                type="number"
+                min={1}
+              value={numericValue('bridgingLoanTermMonths')}
+                onChange={(event) => handleNumberChange('bridgingLoanTermMonths', event.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-1.5"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="font-medium text-slate-600">Bridging rate %</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.01}
+                value={percentValue('bridgingLoanInterestRate')}
+                onChange={(event) => handlePercentChange('bridgingLoanInterestRate', event.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-1.5"
+              />
+            </label>
+          </div>
+        ) : null}
+      </div>
+      <div>
+        <h4 className="text-sm font-semibold text-slate-700">Rental & operations</h4>
+        <div className="mt-2 grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Monthly rent (£)</span>
+            <input
+              type="number"
+              min={0}
+              step={50}
+              value={numericValue('monthlyRent')}
+              onChange={(event) => handleNumberChange('monthlyRent', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Vacancy %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('vacancyPct')}
+              onChange={(event) => handlePercentChange('vacancyPct', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Management %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('mgmtPct')}
+              onChange={(event) => handlePercentChange('mgmtPct', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Repairs/CapEx %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('repairsPct')}
+              onChange={(event) => handlePercentChange('repairsPct', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Insurance (£/yr)</span>
+            <input
+              type="number"
+              min={0}
+              step={50}
+              value={numericValue('insurancePerYear')}
+              onChange={(event) => handleNumberChange('insurancePerYear', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Other OpEx (£/yr)</span>
+            <input
+              type="number"
+              min={0}
+              step={50}
+              value={numericValue('otherOpexPerYear')}
+              onChange={(event) => handleNumberChange('otherOpexPerYear', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+        </div>
+      </div>
+      <div>
+        <h4 className="text-sm font-semibold text-slate-700">Growth & exit</h4>
+        <div className="mt-2 grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Annual appreciation %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('annualAppreciation')}
+              onChange={(event) => handlePercentChange('annualAppreciation', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+              disabled={historicalChecked}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Historical window</span>
+            <select
+              value={inputs.historicalAppreciationWindow ?? DEFAULT_APPRECIATION_WINDOW}
+              onChange={(event) => handleNumberChange('historicalAppreciationWindow', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+              disabled={!historicalChecked}
+            >
+              {PROPERTY_APPRECIATION_WINDOWS.map((years) => (
+                <option key={years} value={years}>
+                  {years} year{years === 1 ? '' : 's'} average
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Rent growth %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('rentGrowth')}
+              onChange={(event) => handlePercentChange('rentGrowth', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Exit year</span>
+            <input
+              type="number"
+              min={0}
+              max={PLAN_MAX_PURCHASE_YEAR}
+              value={exitYearValue}
+              onChange={(event) => onExitYearChange?.(event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Selling costs %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('sellingCostsPct')}
+              onChange={(event) => handlePercentChange('sellingCostsPct', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Index fund growth %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('indexFundGrowth')}
+              onChange={(event) => handlePercentChange('indexFundGrowth', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+        </div>
+        <div className="mt-3 space-y-2">
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+            <input
+              type="checkbox"
+              checked={historicalChecked}
+              onChange={(event) => handleCheckboxChange('useHistoricalAppreciation', event.target.checked)}
+            />
+            <span>Use historical appreciation averages</span>
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+            <input
+              type="checkbox"
+              checked={reinvestChecked}
+              onChange={(event) => handleCheckboxChange('reinvestIncome', event.target.checked)}
+            />
+            <span>Send after-tax cash to index fund</span>
+          </label>
+          {reinvestChecked ? (
+            <label className="flex flex-col gap-1">
+              <span className="font-medium text-slate-600">Reinvest % of after-tax cash flow</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.1}
+                value={percentValue('reinvestPct')}
+                onChange={(event) => handlePercentChange('reinvestPct', event.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-1.5"
+              />
+            </label>
+          ) : null}
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+            <input
+              type="checkbox"
+              checked={Boolean(inputs.deductOperatingExpenses)}
+              onChange={(event) => handleCheckboxChange('deductOperatingExpenses', event.target.checked)}
+            />
+            <span>Treat operating expenses as tax deductible</span>
+          </label>
+        </div>
+      </div>
+      <div>
+        <h4 className="text-sm font-semibold text-slate-700">Buyer profile</h4>
+        <div className="mt-2 grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Buyer type</span>
+            <select
+              value={buyerType}
+              onChange={(event) => handleTextChange('buyerType', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            >
+              <option value="individual">Individual</option>
+              <option value="company">Company</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Existing properties</span>
+            <input
+              type="number"
+              min={0}
+              value={propertiesOwned}
+              onChange={(event) => handleNumberChange('propertiesOwned', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          {buyerType === 'individual' ? (
+            <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+              <input
+                type="checkbox"
+                checked={Boolean(inputs.firstTimeBuyer)}
+                onChange={(event) => handleCheckboxChange('firstTimeBuyer', event.target.checked && propertiesOwned === 0)}
+                disabled={propertiesOwned > 0}
+              />
+              <span>First-time buyer relief</span>
+            </label>
+          ) : null}
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Owner A income (£)</span>
+            <input
+              type="number"
+              min={0}
+              step={500}
+              value={numericValue('incomePerson1')}
+              onChange={(event) => handleNumberChange('incomePerson1', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Owner B income (£)</span>
+            <input
+              type="number"
+              min={0}
+              step={500}
+              value={numericValue('incomePerson2')}
+              onChange={(event) => handleNumberChange('incomePerson2', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Owner A ownership %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('ownershipShare1')}
+              onChange={(event) => handlePercentChange('ownershipShare1', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-slate-600">Owner B ownership %</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.1}
+              value={percentValue('ownershipShare2')}
+              onChange={(event) => handlePercentChange('ownershipShare2', event.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5"
+            />
+          </label>
+        </div>
+      </div>
     </div>
   );
 }
