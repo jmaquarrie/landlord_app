@@ -263,7 +263,7 @@ const SERIES_LABELS = {
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
   cashflowAfterTax: 'Cashflow after tax',
-  netWealthAfterTax: 'Net wealth after tax (minus injections & taxes)',
+  netWealthAfterTax: 'Net wealth after tax (minus injections, taxes & loans)',
   netWealthBeforeTax: 'Net wealth (before tax)',
 };
 
@@ -1484,6 +1484,10 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const cashAfterTaxRetained = Number.isFinite(Number(yearlyMeta?.cashAfterTaxRetained))
           ? Number(yearlyMeta.cashAfterTaxRetained)
           : cashAfterTaxYear;
+        const remainingLoan = Number(
+          meta?.remainingLoan ?? meta?.loanBalance ?? point?.remainingLoan ?? point?.loanBalance ?? 0
+        );
+
         chartByYear.set(year, {
           year,
           propertyValue: Number(point?.propertyValue) || 0,
@@ -1506,6 +1510,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           yearlyTax: taxPaid,
           yearlyCashAfterTax: cashAfterTaxYear,
           yearlyCashAfterTaxRetained: cashAfterTaxRetained,
+          loanBalance: Number.isFinite(remainingLoan) ? Math.max(0, remainingLoan) : 0,
+          meta: meta ?? null,
         });
       });
     }
@@ -1711,7 +1717,13 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         indexFundContribution: reinvestContribution,
         reinvestContribution,
         tax: taxPaid,
-        loanBalance: Number(chartPoint?.meta?.remainingLoan ?? chartPoint?.meta?.loanBalance ?? 0) || 0,
+        loanBalance:
+          Number(
+            chartPoint?.loanBalance ??
+              chartPoint?.meta?.remainingLoan ??
+              chartPoint?.meta?.loanBalance ??
+              0
+          ) || 0,
         cumulativeCash,
         cumulativeExternal,
         cumulativeIndexFundContribution: cumulativeInvested,
@@ -1797,7 +1809,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     }
 
     const netWealth =
-      propertyNetAfterTax +
+      propertyValue +
       planState.cumulativeCash +
       planState.investedBalance -
       planState.cumulativeExternal -
@@ -6415,7 +6427,6 @@ export default function App() {
   const [planExpandedRows, setPlanExpandedRows] = useState({});
   const [planChartExpanded, setPlanChartExpanded] = useState(false);
   const [planChartSeriesActive, setPlanChartSeriesActive] = useState(() => ({
-    indexFund: true,
     cashflowAfterTax: true,
     propertyValue: true,
     netWealthAfterTax: true,
@@ -16993,7 +17004,7 @@ export default function App() {
                     <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.totalIncomeFunding)}</div>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-slate-500">Net wealth after tax (minus injections & taxes)</div>
+                  <div className="text-slate-500">Net wealth after tax (minus injections, taxes & loans)</div>
                     <div className="mt-1 text-lg font-semibold text-slate-800">
                       {currency(planAnalysis.totals.finalNetWealth)}
                     </div>
@@ -17068,7 +17079,7 @@ export default function App() {
                       )}
                     </div>
                     <p className="text-[11px] text-slate-500">
-                      Aggregates portfolio value, net wealth, cumulative cash, and optional index fund comparisons across all included deals with their chosen purchase years.
+                      Aggregates portfolio value, net wealth, cumulative cash, invested balances, and liabilities across all included deals with their chosen purchase years.
                     </p>
                     <div className="mt-4 h-72 w-full">
                       <ResponsiveContainer width="100%" height="100%">
@@ -17093,17 +17104,6 @@ export default function App() {
                                 onToggle={togglePlanChartSeries}
                               />
                             )}
-                          />
-                          <Area
-                            yAxisId="currency"
-                            type="monotone"
-                            dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
-                            stroke={SERIES_COLORS.indexFund}
-                            fill="rgba(249,115,22,0.2)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.indexFund === false}
                           />
                           <Area
                             yAxisId="currency"
@@ -17133,7 +17133,7 @@ export default function App() {
                             dataKey="netWealthAfterTax"
                             name={
                               SERIES_LABELS.netWealthAfterTax ??
-                              'Net wealth after tax (minus injections & taxes)'
+                              'Net wealth after tax (minus injections, taxes & loans)'
                             }
                             stroke={SERIES_COLORS.netWealthAfterTax}
                             strokeWidth={2}
@@ -17547,7 +17547,7 @@ export default function App() {
                 <div className="space-y-5">
                   <div className="grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="text-slate-500">Net wealth after tax (minus injections & taxes)</div>
+                      <div className="text-slate-500">Net wealth after tax (minus injections, taxes & loans)</div>
                       <div className="mt-1 text-base font-semibold text-slate-800">
                         {currency(planAnalysis.totals.finalNetWealth)}
                       </div>
@@ -17624,7 +17624,6 @@ export default function App() {
                         ) : null}
                         {planChartFocus && planChartFocus.data
                           ? [
-                              'indexFund',
                               'cashflowAfterTax',
                               'propertyValue',
                               'netWealthAfterTax',
@@ -17654,17 +17653,6 @@ export default function App() {
                           <Area
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
-                            stroke={SERIES_COLORS.indexFund}
-                            fill="rgba(249,115,22,0.2)"
-                            strokeWidth={2}
-                            isAnimationActive={false}
-                            hide={planChartSeriesActive.indexFund === false}
-                          />
-                          <Area
-                            yAxisId="currency"
-                            type="monotone"
                             dataKey="cashflowAfterTax"
                             name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
@@ -17688,10 +17676,10 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="netWealthAfterTax"
-                            name={
-                              SERIES_LABELS.netWealthAfterTax ??
-                              'Net wealth after tax (minus injections & taxes)'
-                            }
+                          name={
+                            SERIES_LABELS.netWealthAfterTax ??
+                            'Net wealth after tax (minus injections, taxes & loans)'
+                          }
                             stroke={SERIES_COLORS.netWealthAfterTax}
                             strokeWidth={2}
                             dot={false}
@@ -19096,11 +19084,6 @@ function PlanWealthChartOverlay({
 
   const summaryMetrics = [
     {
-      key: 'indexFund',
-      label: SERIES_LABELS.indexFund ?? 'Index fund value',
-      value: point.indexFund ?? point.indexFundValue,
-    },
-    {
       key: 'propertyValue',
       label: SERIES_LABELS.propertyValue ?? 'Property value',
       value: point.propertyValue,
@@ -19153,7 +19136,7 @@ function PlanWealthChartOverlay({
     {
       key: 'netWealthAfterTax',
       label:
-        SERIES_LABELS.netWealthAfterTax ?? 'Net wealth after tax (minus injections & taxes)',
+        SERIES_LABELS.netWealthAfterTax ?? 'Net wealth after tax (minus injections, taxes & loans)',
       value: point.netWealthAfterTax ?? point.combinedNetWealth,
     },
   ].filter((metric) => Number.isFinite(metric.value));
