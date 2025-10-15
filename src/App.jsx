@@ -259,6 +259,11 @@ const SERIES_LABELS = {
   netWealthBeforeTax: 'Net wealth (before tax)',
 };
 
+const toFiniteNumber = (value, fallback = 0) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+};
+
 const mergeLegendPayload = (payload, entries) => {
   const base = Array.isArray(payload) ? [...payload] : [];
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -9097,7 +9102,7 @@ export default function App() {
         return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
       })
       .map((point) => {
-        const cashflowAfterTax = Number(
+        const cashflowAfterTax = toFiniteNumber(
           point?.cashflowAfterTax ??
             point?.meta?.cumulativeCashAfterTaxKeptRealized ??
             point?.cashflow ??
@@ -9106,13 +9111,13 @@ export default function App() {
             point?.meta?.cumulativeCashAfterTax ??
             0
         );
-        const indexFundValue = Number(
+        const indexFundValue = toFiniteNumber(
           point?.indexFund ??
             point?.meta?.indexFundValue ??
             point?.meta?.totals?.indexFund ??
             0
         );
-        const investedRent = Number(
+        const investedRent = toFiniteNumber(
           point?.investedRent ??
             point?.reinvestFund ??
             point?.reinvestedCash ??
@@ -9121,14 +9126,15 @@ export default function App() {
             point?.meta?.reinvestFundValue ??
             0
         );
-        const propertyNetAfterTaxValue = Number(
+        const propertyNetAfterTaxValue = toFiniteNumber(
           point?.propertyNetAfterTax ?? point?.meta?.propertyNetAfterTax ?? 0
         );
-        const netWealthAfterTaxBase = Number(
+        const netWealthAfterTaxBase = toFiniteNumber(
           point?.netWealthAfterTax ??
             point?.meta?.netWealthAfterTax ??
             point?.meta?.totals?.combinedNetWealth ??
-            propertyNetAfterTaxValue + indexFundValue
+            propertyNetAfterTaxValue + indexFundValue,
+          propertyNetAfterTaxValue + indexFundValue
         );
         const netWealthAfterTax = netWealthAfterTaxBase + Math.max(0, investedRent);
         return {
@@ -10335,30 +10341,31 @@ export default function App() {
   const reinvestSeriesHasBalance = useMemo(
     () =>
       Array.isArray(equity.chart) &&
-      equity.chart.some((point) =>
-        Number(
-          point?.investedRent ??
-            point?.reinvestFund ??
-            point?.reinvestedCash ??
-            point?.meta?.totals?.reinvestedCash ??
-            point?.meta?.investedRentValue ??
-            point?.meta?.reinvestFundValue ??
-            0
-        ) > 0
+      equity.chart.some(
+        (point) =>
+          toFiniteNumber(
+            point?.investedRent ??
+              point?.reinvestFund ??
+              point?.reinvestedCash ??
+              point?.meta?.totals?.reinvestedCash ??
+              point?.meta?.investedRentValue ??
+              point?.meta?.reinvestFundValue ??
+              0
+          ) > 0
       ),
     [equity.chart]
   );
-  const reinvestActive = reinvestSelected && reinvestSeriesHasBalance;
+  const reinvestActive = reinvestSelected || reinvestSeriesHasBalance;
 
   useEffect(() => {
     setActiveSeries((prev) => {
-      const shouldEnable = reinvestSelected;
+      const shouldEnable = reinvestActive;
       if ((prev.investedRent ?? false) === shouldEnable) {
         return prev;
       }
       return { ...prev, investedRent: shouldEnable };
     });
-  }, [reinvestSelected]);
+  }, [reinvestActive]);
   const reinvestRateLabel = formatPercent(reinvestRate);
 
   const exitCumCashPreTaxNet = exitCumCash - reinvestFundValue;
@@ -14169,7 +14176,7 @@ export default function App() {
                                 type: 'line',
                               },
                             ];
-                            if (reinvestSelected) {
+                            if (reinvestSeriesHasBalance) {
                               extraEntries.push({
                                 dataKey: 'investedRent',
                                 value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
@@ -14236,7 +14243,7 @@ export default function App() {
                           strokeWidth={2}
                           dot={false}
                           isAnimationActive={false}
-                          hide={!activeSeries.investedRent || !reinvestSelected}
+                          hide={!activeSeries.investedRent || !reinvestSeriesHasBalance}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -15789,15 +15796,13 @@ export default function App() {
                     { key: 'investedRent', label: 'Reinvested cash (after tax)' },
                   ].map((option) => {
                     const checked = activeSeries[option.key] !== false;
-                    const disabled = option.key === 'investedRent' && !reinvestSelected;
+                    const disabled = option.key === 'investedRent' && !reinvestSeriesHasBalance;
                     return (
                       <label
                         key={option.key}
                         className={`flex items-center gap-2 ${disabled ? 'text-slate-400' : ''}`}
                         title={
-                          disabled
-                            ? 'Enable reinvest after-tax cash flow to view invested rent performance.'
-                            : undefined
+                          disabled ? 'Add reinvested after-tax cash to view this line.' : undefined
                         }
                       >
                         <input
@@ -15848,7 +15853,7 @@ export default function App() {
                                   type: 'line',
                                 },
                               ];
-                              if (reinvestSelected) {
+                              if (reinvestSeriesHasBalance) {
                                 extraEntries.push({
                                   dataKey: 'investedRent',
                                   value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
@@ -15946,7 +15951,7 @@ export default function App() {
                             dot={false}
                             yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.investedRent || !reinvestSelected}
+                            hide={!activeSeries.investedRent || !reinvestSeriesHasBalance}
                           />
                           <Area
                             type="monotone"
