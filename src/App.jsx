@@ -1414,6 +1414,7 @@ const PLAN_ANALYSIS_EMPTY_TOTALS = {
   finalIndexFundValue: 0,
   finalInvestedCashflow: 0,
   finalExternalLoans: 0,
+  finalTaxes: 0,
   finalTotalNetWealth: 0,
   averageRentalYield: 0,
   averageCapRate: 0,
@@ -1463,6 +1464,18 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         }
         const year = Math.max(0, Math.round(yearValue));
         const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue) || 0;
+        const meta = point && typeof point.meta === 'object' ? point.meta : null;
+        const yearlyMeta = meta && typeof meta.yearly === 'object' ? meta.yearly : null;
+        const reinvestContribution = Number.isFinite(Number(yearlyMeta?.reinvestContribution))
+          ? Number(yearlyMeta.reinvestContribution)
+          : 0;
+        const taxPaid = Number.isFinite(Number(yearlyMeta?.tax)) ? Number(yearlyMeta.tax) : 0;
+        const cashAfterTaxYear = Number.isFinite(Number(yearlyMeta?.cashAfterTax))
+          ? Number(yearlyMeta.cashAfterTax)
+          : 0;
+        const cashAfterTaxRetained = Number.isFinite(Number(yearlyMeta?.cashAfterTaxRetained))
+          ? Number(yearlyMeta.cashAfterTaxRetained)
+          : cashAfterTaxYear;
         const cashflowKept = Number(
           point?.meta?.cumulativeCashAfterTaxKeptRealized ??
             point?.cashflow ??
@@ -1504,6 +1517,10 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           reinvestFund: Number(point?.reinvestFund ?? point?.meta?.reinvestFundValue) || 0,
           netWealthAfterTax: netWealthAfterTaxValue,
           netWealthBeforeTax: netWealthBeforeTaxValue,
+          yearlyReinvestContribution: reinvestContribution,
+          yearlyTax: taxPaid,
+          yearlyCashAfterTax: cashAfterTaxYear,
+          yearlyCashAfterTaxRetained: cashAfterTaxRetained,
         });
       });
     }
@@ -1625,6 +1642,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       applied: 0,
       injection: Math.max(0, item.initialOutlay),
       indexContribution: item.useIncomeForDeposit ? 0 : Math.max(0, item.initialOutlay),
+      cumulativeTax: 0,
     });
   });
 
@@ -1632,6 +1650,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   const planCashflows = [];
   let cumulativeCash = 0;
   let cumulativeExternal = 0;
+  let cumulativeTaxes = 0;
   let indexFundValue = 0;
   let cumulativeIndexFundContribution = 0;
   let cumulativeInvestedCash = 0;
@@ -1649,6 +1668,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     let externalCashFlow = 0;
     let indexFundContribution = 0;
     let investedCashContribution = 0;
+    let annualTaxes = 0;
     const yearStartingCash = cumulativeCash;
     let availableCashPool = yearStartingCash;
 
@@ -1659,11 +1679,12 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       }
 
       const chartPoint = item.chartByYear.get(propertyYear);
-      const rawReinvestContribution = Number(
-        chartPoint?.meta?.yearly?.reinvestContribution ?? 0
-      );
+      const rawReinvestContribution = Number(chartPoint?.yearlyReinvestContribution ?? 0);
       const reinvestContribution = Number.isFinite(rawReinvestContribution)
         ? rawReinvestContribution
+        : 0;
+      const taxPaid = Number.isFinite(Number(chartPoint?.yearlyTax))
+        ? Number(chartPoint?.yearlyTax)
         : 0;
       const contribution = {
         id: item.id,
@@ -1691,6 +1712,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         cumulativeIndexFundContribution: 0,
         reinvestContribution: 0,
         cumulativeInvested: 0,
+        tax: 0,
+        cumulativeTax: 0,
         appliedIncomeContribution: 0,
         initialOutlay: item.initialOutlay,
         externalOutlay: 0,
@@ -1709,6 +1732,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         if (reinvestContribution !== 0) {
           investedCashContribution += reinvestContribution;
         }
+        contribution.tax = taxPaid;
+        annualTaxes += taxPaid;
       }
 
       const propertyState = itemStates.get(item.id);
@@ -1782,11 +1807,13 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         }
         propertyState.cumulativeInvested =
           (propertyState.cumulativeInvested || 0) + reinvestContribution;
+        propertyState.cumulativeTax = (propertyState.cumulativeTax || 0) + taxPaid;
         contribution.cumulativeCash = propertyState.cumulativeCash;
         contribution.cumulativeExternal = propertyState.cumulativeExternal;
         contribution.cumulativeIndexFundContribution =
           propertyState.cumulativeIndexFundContribution;
         contribution.cumulativeInvested = propertyState.cumulativeInvested;
+        contribution.cumulativeTax = propertyState.cumulativeTax;
       }
 
       cashFlow += contribution.cashFlow;
@@ -1796,6 +1823,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
 
     cumulativeCash += cashFlow;
     cumulativeExternal += externalCashFlow;
+    cumulativeTaxes += annualTaxes;
     cumulativeInvestedCash += investedCashContribution;
     indexFundValue = indexFundValue * (1 + clampPercentage(indexFundGrowthRate, -0.99, 10));
     if (indexFundContribution > 0) {
@@ -1803,10 +1831,16 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cumulativeIndexFundContribution += indexFundContribution;
     }
 
-    const portfolioCashAdjustment = cumulativeCash - propertyCashflowNet;
+    const propertyEquityBeforeTax =
+      propertyNet - propertyCashflowGross - propertyInvestedRent;
+    const propertyEquityAfterTax =
+      propertyNetAfterTax - propertyCashflowNet - propertyInvestedRent;
     const externalOffset = cumulativeExternal;
-    const combinedNetWealthBeforeTax = propertyNet + portfolioCashAdjustment - externalOffset;
-    const combinedNetWealthAfterTax = propertyNetAfterTax + portfolioCashAdjustment - externalOffset;
+    const taxOffset = cumulativeTaxes;
+    const combinedNetWealthBeforeTax =
+      propertyEquityBeforeTax + cumulativeCash + propertyInvestedRent - externalOffset;
+    const combinedNetWealthAfterTax =
+      propertyEquityAfterTax + cumulativeCash + propertyInvestedRent - externalOffset - taxOffset;
     const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
 
     chart.push({
@@ -1820,6 +1854,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cashflowGross: propertyCashflowGross,
       cashflowAfterTax: cumulativeCash,
       investedRent: propertyInvestedRent,
+      investedCashflow: propertyInvestedRent,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
@@ -1830,8 +1865,9 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       externalCashFlow,
       cumulativeExternal,
       investedCashContribution,
-      investedCashflow: cumulativeInvestedCash,
       cumulativeInvestedCash,
+      taxes: annualTaxes,
+      cumulativeTaxes,
       externalLoans: -cumulativeExternal,
       indexFund: indexFundValue,
       indexFundValue,
@@ -1854,8 +1890,9 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           totalNetWealthWithIndex,
           cumulativeExternal,
           investedCashContribution,
-          investedCashflow: cumulativeInvestedCash,
+          investedCashflow: propertyInvestedRent,
           externalLoans: -cumulativeExternal,
+          taxes: cumulativeTaxes,
         },
       },
     });
@@ -1948,6 +1985,10 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       lastPoint?.externalLoans ??
       lastPoint?.meta?.totals?.externalLoans ??
       -(lastPoint?.cumulativeExternal ?? 0),
+    finalTaxes:
+      lastPoint?.cumulativeTaxes ??
+      lastPoint?.meta?.totals?.taxes ??
+      0,
     finalTotalNetWealth:
       lastPoint?.combinedNetWealth ??
       lastPoint?.netWealthAfterTax ??
