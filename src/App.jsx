@@ -1061,6 +1061,9 @@ const EXPANDED_SERIES_ORDER = [
   'indexFund4x',
 ];
 
+const CORE_WEALTH_SERIES = ['indexFund', 'cashflowAfterTax', 'propertyValue', 'netWealthAfterTax'];
+const CORE_WEALTH_SERIES_SET = new Set(CORE_WEALTH_SERIES);
+
 const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
 const RATE_STATIC_PERCENT_KEYS = ['irrHurdle'];
 const RATE_PERCENT_SERIES = [...RATE_PERCENT_KEYS, ...RATE_STATIC_PERCENT_KEYS];
@@ -1270,6 +1273,7 @@ const DEFAULT_INPUTS = {
   reinvestIncome: false,
   reinvestPct: 0.5,
   deductOperatingExpenses: true,
+  neverSell: false,
 };
 
 const EXTRA_SETTINGS_DEFAULTS = {
@@ -1363,6 +1367,8 @@ const sanitizePlanItem = (item) => {
   const incomeContribution =
     Number.isFinite(rawContribution) && rawContribution > 0 ? rawContribution : 0;
   const inputs = sanitizePlanInputs(item.inputs);
+  const neverSell = item.neverSell === true || inputs.neverSell === true;
+  inputs.neverSell = neverSell;
   const inputExitYear = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const rawExit = Number(item.exitYearOverride ?? item.exitYear);
   const exitYearOverride = Number.isFinite(rawExit) && rawExit >= 0
@@ -1379,6 +1385,7 @@ const sanitizePlanItem = (item) => {
     incomeContribution,
     exitYearOverride,
     isPrimary,
+    neverSell,
   };
 };
 
@@ -1644,7 +1651,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         propertyYear,
         exitYear: item.exitYear,
         phase:
-          propertyYear === 0 ? 'purchase' : propertyYear === item.exitYear ? 'exit' : 'hold',
+          propertyYear === 0
+            ? 'purchase'
+            : propertyYear === item.exitYear && !item.neverSell
+            ? 'exit'
+            : 'hold',
         propertyValue: chartPoint?.propertyValue || 0,
         propertyGross: chartPoint?.propertyGross || 0,
         propertyNet: chartPoint?.propertyNet || 0,
@@ -1720,7 +1731,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const annualCash = item.annualCashflows[cashIndex] ?? 0;
         contribution.operatingCashflow = annualCash;
         contribution.cashFlow += annualCash;
-        if (propertyYear === item.exitYear) {
+        if (!item.neverSell && propertyYear === item.exitYear) {
           contribution.saleProceeds = item.exitProceeds;
           contribution.cashFlow += item.exitProceeds;
         }
@@ -2503,6 +2514,7 @@ const OPTIMIZATION_SCENARIO_KEY_FIELDS = [
   'interestRate',
   'mortgageYears',
   'exitYear',
+  'neverSell',
   'loanType',
   'buyerType',
   'ownershipShare1',
@@ -5021,6 +5033,7 @@ function transformCloneForExport(root) {
 
 function calculateEquity(rawInputs) {
   const inputs = { ...DEFAULT_INPUTS, ...rawInputs };
+  const neverSell = inputs.neverSell === true;
 
   const stampDuty = calcStampDuty(
     inputs.purchasePrice,
@@ -5357,12 +5370,14 @@ function calculateEquity(rawInputs) {
           ? loan
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
-      yearCashflowForCf = cash + netSaleProceeds;
-      yearCashflowForNpv = afterTaxCash + netSaleProceeds;
+      if (!neverSell) {
+        yearCashflowForCf = cash + netSaleProceeds;
+        yearCashflowForNpv = afterTaxCash + netSaleProceeds;
+        realizedSaleProceeds = netSaleProceeds;
+      }
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
       exitNetSaleProceeds = netSaleProceeds;
-      realizedSaleProceeds = netSaleProceeds;
     }
     cf.push(yearCashflowForCf);
     npvCashflows.push(yearCashflowForNpv);
@@ -5381,7 +5396,7 @@ function calculateEquity(rawInputs) {
     const reinvestFundGrowth = Math.max(0, reinvestFundValue - cumulativeReinvested);
     const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
 
-    const propertyValueForChart = y === inputs.exitYear ? 0 : vt;
+    const propertyValueForChart = y === inputs.exitYear && !neverSell ? 0 : vt;
     const netWealthAfterTaxValue = propertyNetAfterTaxValue + indexVal;
     const netWealthBeforeTaxValue = propertyNetValue + indexVal;
 
@@ -5494,6 +5509,7 @@ function calculateEquity(rawInputs) {
         lastMeta.cumulativeCashAfterTax ??
         extensionCashflowKept
     );
+    const extensionPropertyValue = neverSell ? Number(lastPoint.propertyValue) || 0 : 0;
     const extensionPropertyNet = Number(lastPoint.propertyNet) || 0;
     const extensionPropertyNetAfterTax = Number(lastPoint.propertyNetAfterTax) || 0;
     const extensionNetWealthAfterTax = Number(
@@ -5509,7 +5525,7 @@ function calculateEquity(rawInputs) {
       indexFund1_5x: extensionIndexFund * 1.5,
       indexFund2x: extensionIndexFund * 2,
       indexFund4x: extensionIndexFund * 4,
-      propertyValue: 0,
+      propertyValue: extensionPropertyValue,
       propertyGross: extensionPropertyGross,
       propertyNet: extensionPropertyNet,
       propertyNetAfterTax: extensionPropertyNetAfterTax,
@@ -5528,10 +5544,10 @@ function calculateEquity(rawInputs) {
       netWealthBeforeTax: extensionNetWealthBeforeTax,
       meta: {
         ...lastMeta,
-        propertyValue: 0,
-        saleValue: 0,
-        remainingLoan: 0,
-        netSaleIfSold: 0,
+        propertyValue: extensionPropertyValue,
+        saleValue: neverSell ? Number(lastMeta.saleValue) || extensionPropertyValue : 0,
+        remainingLoan: neverSell ? lastMeta.remainingLoan ?? 0 : 0,
+        netSaleIfSold: neverSell ? lastMeta.netSaleIfSold ?? extensionPropertyNet : 0,
         cumulativeCashAfterTaxRealized: extensionCashflowGross,
         cumulativeCashAfterTaxNetRealized: extensionCashflowNet,
         cumulativeCashAfterTaxKeptRealized: extensionCashflowKept,
@@ -11477,6 +11493,10 @@ export default function App() {
     });
   };
 
+  const onNeverSellToggle = (checked) => {
+    setInputs((prev) => ({ ...prev, neverSell: Boolean(checked) }));
+  };
+
   const onText = (key, value) => {
     setInputs((prev) => ({ ...prev, [key]: value }));
     if (key === 'propertyUrl') {
@@ -11869,6 +11889,29 @@ export default function App() {
         value={Number.isFinite(inputs[k]) ? roundTo(inputs[k], decimals) : ''}
         onChange={(e) => onNum(k, Number(e.target.value), decimals)}
         step={step}
+        className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+      />
+    </div>
+  );
+
+  const exitYearInput = () => (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-xs font-medium text-slate-600">Exit year</label>
+        <label className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600">
+          <input
+            type="checkbox"
+            checked={Boolean(inputs.neverSell)}
+            onChange={(event) => onNeverSellToggle(event.target.checked)}
+          />
+          <span>Never sell</span>
+        </label>
+      </div>
+      <input
+        type="number"
+        value={Number.isFinite(inputs.exitYear) ? roundTo(inputs.exitYear, 0) : ''}
+        onChange={(event) => onNum('exitYear', Number(event.target.value), 0)}
+        step={1}
         className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
       />
     </div>
@@ -12314,6 +12357,21 @@ export default function App() {
         inputs: {
           ...(current?.inputs ?? {}),
           exitYear: sanitizedValue,
+        },
+      }));
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanNeverSellToggle = useCallback(
+    (id, checked) => {
+      const enabled = Boolean(checked);
+      updatePlanItem(id, (current) => ({
+        ...current,
+        neverSell: enabled,
+        inputs: {
+          ...(current?.inputs ?? {}),
+          neverSell: enabled,
         },
       }));
     },
@@ -13525,7 +13583,7 @@ export default function App() {
                     ) : null}
                   </div>
                   {pctInput('rentGrowth', 'Rent growth %')}
-                  {smallInput('exitYear', 'Exit year', 1)}
+                  {exitYearInput()}
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
@@ -13928,14 +13986,21 @@ export default function App() {
                         />
                         <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                         <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={activeSeries}
-                              onToggle={toggleSeries}
-                              excludedKeys={reinvestActive ? [] : ['investedRent']}
-                            />
-                          )}
+                          content={(legendProps) => {
+                            const legendPayload = Array.isArray(legendProps?.payload)
+                              ? legendProps.payload.filter((entry) =>
+                                  CORE_WEALTH_SERIES_SET.has(entry.dataKey ?? entry.value)
+                                )
+                              : [];
+                            return (
+                              <ChartLegend
+                                {...legendProps}
+                                payload={legendPayload}
+                                activeSeries={activeSeries}
+                                onToggle={toggleSeries}
+                              />
+                            );
+                          }}
                         />
                         <Area
                           type="monotone"
@@ -15599,19 +15664,21 @@ export default function App() {
                             width={110}
                           />
                           <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={activeSeries}
-                                onToggle={toggleSeries}
-                                excludedKeys={[
-                                  'indexFund1_5x',
-                                  'indexFund2x',
-                                  'indexFund4x',
-                                  'investedRent',
-                                ]}
-                              />
-                            )}
+                            content={(legendProps) => {
+                              const legendPayload = Array.isArray(legendProps?.payload)
+                                ? legendProps.payload.filter((entry) =>
+                                    CORE_WEALTH_SERIES_SET.has(entry.dataKey ?? entry.value)
+                                  )
+                                : [];
+                              return (
+                                <ChartLegend
+                                  {...legendProps}
+                                  payload={legendPayload}
+                                  activeSeries={activeSeries}
+                                  onToggle={toggleSeries}
+                                />
+                              );
+                            }}
                           />
                           {chartFocus ? (
                             <ReferenceLine
@@ -15743,7 +15810,7 @@ export default function App() {
                           />
                         </AreaChart>
                       </ResponsiveContainer>
-                      {chartFocus && chartFocus.data ? (
+                      {chartFocusLocked && chartFocus && chartFocus.data ? (
                         <WealthChartOverlay
                           overlayRef={chartOverlayRef}
                           year={chartFocus.year}
@@ -15767,7 +15834,7 @@ export default function App() {
                 <div>
                   <h3 className="text-sm font-semibold text-slate-700">Exit & growth assumptions</h3>
                   <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {smallInput('exitYear', 'Exit year', 1)}
+                    {exitYearInput()}
                     {pctInput('annualAppreciation', 'Capital growth %')}
                     {pctInput('rentGrowth', 'Rent growth %')}
                     {pctInput('sellingCostsPct', 'Selling costs %')}
@@ -16826,16 +16893,30 @@ export default function App() {
                                 </div>
                               </td>
                               <td className="px-3 py-3">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={PLAN_MAX_PURCHASE_YEAR}
-                                  value={exitYearDisplay}
-                                  onChange={(event) => handlePlanExitYearChange(item.id, event.target.value)}
-                                  className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                                />
-                                <div className="mt-1 text-[10px] text-slate-500">
-                                  Hold for {exitYearDisplay} year{exitYearDisplay === 1 ? '' : 's'}
+                                <div className="space-y-1">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={PLAN_MAX_PURCHASE_YEAR}
+                                    value={exitYearDisplay}
+                                    onChange={(event) => handlePlanExitYearChange(item.id, event.target.value)}
+                                    className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                                  />
+                                  <label className="flex items-center gap-2 text-[10px] font-medium text-slate-600">
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(item.neverSell)}
+                                      onChange={(event) =>
+                                        handlePlanNeverSellToggle(item.id, event.target.checked)
+                                      }
+                                    />
+                                    <span>Never sell</span>
+                                  </label>
+                                  <div className="text-[10px] text-slate-500">
+                                    {item.neverSell
+                                      ? 'Hold indefinitely'
+                                      : `Hold for ${exitYearDisplay} year${exitYearDisplay === 1 ? '' : 's'}`}
+                                  </div>
                                 </div>
                               </td>
                               <td className="px-3 py-3">
@@ -17489,13 +17570,21 @@ export default function App() {
                           labelFormatter={(value) => `Year ${value}`}
                         />
                         <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={planChartSeriesActive}
-                              onToggle={togglePlanChartSeries}
-                            />
-                          )}
+                          content={(props) => {
+                            const legendPayload = Array.isArray(props?.payload)
+                              ? props.payload.filter((entry) =>
+                                  CORE_WEALTH_SERIES_SET.has(entry.dataKey ?? entry.value)
+                                )
+                              : [];
+                            return (
+                              <ChartLegend
+                                {...props}
+                                payload={legendPayload}
+                                activeSeries={planChartSeriesActive}
+                                onToggle={togglePlanChartSeries}
+                              />
+                            );
+                          }}
                         />
                         {planChartFocus ? (
                           <ReferenceLine
@@ -17577,20 +17666,20 @@ export default function App() {
                           />
                       </ComposedChart>
                     </ResponsiveContainer>
-                    {planChartFocus && planChartFocus.data ? (
-                      <PlanWealthChartOverlay
-                        overlayRef={planChartOverlayRef}
-                        year={planChartFocus.year}
-                        point={planChartFocus.data}
-                        activeSeries={planChartSeriesActive}
-                        expandedProperties={planChartExpandedDetails}
-                        onToggleProperty={togglePlanPropertyDetail}
-                        onClear={clearPlanChartFocus}
-                        onOptimise={handlePlanOptimizationStart}
-                        optimizing={planOptimizationStatus === 'running'}
-                        goalLabel={PLAN_OPTIMIZATION_GOAL_MAP[planOptimizationGoal]?.label}
-                      />
-                    ) : null}
+                        {planChartFocusLocked && planChartFocus && planChartFocus.data ? (
+                          <PlanWealthChartOverlay
+                            overlayRef={planChartOverlayRef}
+                            year={planChartFocus.year}
+                            point={planChartFocus.data}
+                            activeSeries={planChartSeriesActive}
+                            expandedProperties={planChartExpandedDetails}
+                            onToggleProperty={togglePlanPropertyDetail}
+                            onClear={clearPlanChartFocus}
+                            onOptimise={handlePlanOptimizationStart}
+                            optimizing={planOptimizationStatus === 'running'}
+                            goalLabel={PLAN_OPTIMIZATION_GOAL_MAP[planOptimizationGoal]?.label}
+                          />
+                        ) : null}
                   </div>
                   <p className="text-[11px] text-slate-500">
                     Index fund contributions assume deposits funded from outside the portfolio are invested alongside the benchmark from the purchase year onward.
@@ -19449,6 +19538,7 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
   const exitYearValue = Number.isFinite(computedExitYear)
     ? Math.max(0, Math.round(computedExitYear))
     : 0;
+  const neverSell = Boolean(inputs.neverSell);
   const loanTypeName = `plan-loan-type-${item.id}`;
   const buyerType = typeof inputs.buyerType === 'string' ? inputs.buyerType : 'individual';
   const propertiesOwned = Math.max(0, Math.round(numericValue('propertiesOwned')));
@@ -19783,14 +19873,29 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
           </label>
           <label className="flex flex-col gap-1">
             <span className="font-medium text-slate-600">Exit year</span>
-            <input
-              type="number"
-              min={0}
-              max={PLAN_MAX_PURCHASE_YEAR}
-              value={exitYearValue}
-              onChange={(event) => onExitYearChange?.(event.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-1.5"
-            />
+            <div className="space-y-1">
+              <input
+                type="number"
+                min={0}
+                max={PLAN_MAX_PURCHASE_YEAR}
+                value={exitYearValue}
+                onChange={(event) => onExitYearChange?.(event.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-1.5"
+              />
+              <label className="flex items-center gap-2 text-[11px] font-medium text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={neverSell}
+                  onChange={(event) => handleCheckboxChange('neverSell', event.target.checked)}
+                />
+                <span>Never sell</span>
+              </label>
+              <span className="text-[11px] text-slate-500">
+                {neverSell
+                  ? 'Property is held indefinitely'
+                  : `Hold for ${exitYearValue} year${exitYearValue === 1 ? '' : 's'}`}
+              </span>
+            </div>
           </label>
           <label className="flex flex-col gap-1">
             <span className="font-medium text-slate-600">Selling costs %</span>
