@@ -1699,6 +1699,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       }
 
       const chartPoint = item.chartByYear.get(propertyYear);
+      const chartMeta = (chartPoint && typeof chartPoint.meta === 'object' && chartPoint.meta) || {};
       const contribution = {
         id: item.id,
         name: item.displayName || item.name || `Plan property ${index + 1}`,
@@ -1810,8 +1811,19 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         contribution.operatingCashflow = annualCash;
         contribution.cashFlow += annualCash;
         if (!item.neverExit && propertyYear === item.exitYear) {
-          contribution.saleProceeds = item.exitProceeds;
-          contribution.cashFlow += item.exitProceeds;
+          const saleValue = Number(chartMeta.saleValue) || 0;
+          const saleCosts = Number(chartMeta.saleCosts) || 0;
+          const remainingLoan = Number(chartMeta.remainingLoan) || 0;
+          const realizedSale = Number(chartMeta.realizedSaleProceeds ?? chartMeta.netSaleIfSold);
+          const netSaleProceeds = Number.isFinite(realizedSale)
+            ? realizedSale
+            : Number(item.exitProceeds) || 0;
+
+          contribution.saleProceeds = netSaleProceeds;
+          contribution.saleValue = saleValue;
+          contribution.saleCosts = saleCosts;
+          contribution.debtPayoff = remainingLoan;
+          contribution.cashFlow += netSaleProceeds;
         }
       }
 
@@ -19250,6 +19262,11 @@ function PlanWealthChartOverlay({
               {
                 label: 'Sale proceeds this year',
                 value: property.saleProceeds,
+                type: 'currency',
+              },
+              {
+                label: 'Debt repaid at sale',
+                value: property.debtPayoff,
                 type: 'currency',
               },
               {
