@@ -204,7 +204,9 @@ const SERIES_COLORS = {
   combinedNetWealthBeforeTax: '#0369a1',
   investedRent: '#0d9488',
   investedCashflow: '#14b8a6',
-  externalLoans: '#ef4444',
+  externalInjection: '#ef4444',
+  taxLiability: '#b91c1c',
+  loanLiabilities: '#7f1d1d',
   indexFund1_5x: '#fb7185',
   indexFund2x: '#ec4899',
   indexFund4x: '#c026d3',
@@ -239,7 +241,9 @@ const SERIES_LABELS = {
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
   investedRent: 'Invested rent',
   investedCashflow: 'Invested cashflow',
-  externalLoans: 'External loans',
+  externalInjection: 'External injection',
+  taxLiability: 'Taxes paid',
+  loanLiabilities: 'Loan liabilities',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
@@ -259,7 +263,7 @@ const SERIES_LABELS = {
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
   cashflowAfterTax: 'Cashflow after tax',
-  netWealthAfterTax: 'Net wealth after tax (net of external loans)',
+  netWealthAfterTax: 'Net wealth after tax (minus injections & taxes)',
   netWealthBeforeTax: 'Net wealth (before tax)',
 };
 
@@ -1071,7 +1075,9 @@ const CORE_WEALTH_SERIES = [
   'propertyValue',
   'netWealthAfterTax',
   'investedCashflow',
-  'externalLoans',
+  'externalInjection',
+  'taxLiability',
+  'loanLiabilities',
 ];
 const CORE_WEALTH_SERIES_SET = new Set(CORE_WEALTH_SERIES);
 
@@ -1413,8 +1419,10 @@ const PLAN_ANALYSIS_EMPTY_TOTALS = {
   finalExternalPosition: 0,
   finalIndexFundValue: 0,
   finalInvestedCashflow: 0,
-  finalExternalLoans: 0,
+  finalExternalInjection: 0,
   finalTaxes: 0,
+  finalTaxLiability: 0,
+  finalLoanLiabilities: 0,
   finalTotalNetWealth: 0,
   averageRentalYield: 0,
   averageCapRate: 0,
@@ -1654,6 +1662,9 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   let indexFundValue = 0;
   let cumulativeIndexFundContribution = 0;
   let cumulativeInvestedCash = 0;
+  let investedCashBalance = 0;
+
+  const planIndexGrowthRate = clampPercentage(indexFundGrowthRate, -0.99, 10);
 
   for (let year = 0; year <= maxYear; year++) {
     const propertyBreakdown = [];
@@ -1663,7 +1674,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     let propertyNetAfterTax = 0;
     let propertyCashflowNet = 0;
     let propertyCashflowGross = 0;
-    let propertyInvestedRent = 0;
+    const yearStartingInvestedBalance = investedCashBalance;
+    if (Number.isFinite(yearStartingInvestedBalance) && yearStartingInvestedBalance !== 0) {
+      investedCashBalance = yearStartingInvestedBalance * (1 + planIndexGrowthRate);
+    }
+    let totalLoanBalance = 0;
     let cashFlow = 0;
     let externalCashFlow = 0;
     let indexFundContribution = 0;
@@ -1728,11 +1743,15 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const grossCashValue = Number(chartPoint.cashflowGross ?? chartPoint.cashflow) || 0;
         propertyCashflowNet += netCashValue;
         propertyCashflowGross += grossCashValue;
-        propertyInvestedRent += Number(chartPoint.investedRent) || 0;
+        const remainingLoan = Number(chartPoint?.meta?.remainingLoan ?? 0);
+        if (Number.isFinite(remainingLoan) && remainingLoan > 0) {
+          totalLoanBalance += remainingLoan;
+        }
         if (reinvestContribution !== 0) {
           investedCashContribution += reinvestContribution;
         }
         contribution.tax = taxPaid;
+        contribution.loanBalance = Number.isFinite(remainingLoan) ? Math.max(0, remainingLoan) : 0;
         annualTaxes += taxPaid;
       }
 
@@ -1808,12 +1827,16 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         propertyState.cumulativeInvested =
           (propertyState.cumulativeInvested || 0) + reinvestContribution;
         propertyState.cumulativeTax = (propertyState.cumulativeTax || 0) + taxPaid;
+        propertyState.loanBalance = contribution.loanBalance;
         contribution.cumulativeCash = propertyState.cumulativeCash;
         contribution.cumulativeExternal = propertyState.cumulativeExternal;
         contribution.cumulativeIndexFundContribution =
           propertyState.cumulativeIndexFundContribution;
         contribution.cumulativeInvested = propertyState.cumulativeInvested;
         contribution.cumulativeTax = propertyState.cumulativeTax;
+        if (Number.isFinite(propertyState.loanBalance)) {
+          contribution.loanBalance = propertyState.loanBalance;
+        }
       }
 
       cashFlow += contribution.cashFlow;
@@ -1825,22 +1848,26 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     cumulativeExternal += externalCashFlow;
     cumulativeTaxes += annualTaxes;
     cumulativeInvestedCash += investedCashContribution;
-    indexFundValue = indexFundValue * (1 + clampPercentage(indexFundGrowthRate, -0.99, 10));
+    if (investedCashContribution !== 0) {
+      investedCashBalance += investedCashContribution;
+    }
+    const investedCashflowValue = investedCashBalance;
+    indexFundValue = indexFundValue * (1 + planIndexGrowthRate);
     if (indexFundContribution > 0) {
       indexFundValue += indexFundContribution;
       cumulativeIndexFundContribution += indexFundContribution;
     }
 
     const propertyEquityBeforeTax =
-      propertyNet - propertyCashflowGross - propertyInvestedRent;
+      propertyNet - propertyCashflowGross - investedCashflowValue;
     const propertyEquityAfterTax =
-      propertyNetAfterTax - propertyCashflowNet - propertyInvestedRent;
+      propertyNetAfterTax - propertyCashflowNet - investedCashflowValue;
     const externalOffset = cumulativeExternal;
     const taxOffset = cumulativeTaxes;
     const combinedNetWealthBeforeTax =
-      propertyEquityBeforeTax + cumulativeCash + propertyInvestedRent - externalOffset;
+      propertyEquityBeforeTax + cumulativeCash + investedCashflowValue - externalOffset;
     const combinedNetWealthAfterTax =
-      propertyEquityAfterTax + cumulativeCash + propertyInvestedRent - externalOffset - taxOffset;
+      propertyEquityAfterTax + cumulativeCash + investedCashflowValue - externalOffset - taxOffset;
     const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
 
     chart.push({
@@ -1853,8 +1880,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cashflowNet: propertyCashflowNet,
       cashflowGross: propertyCashflowGross,
       cashflowAfterTax: cumulativeCash,
-      investedRent: propertyInvestedRent,
-      investedCashflow: propertyInvestedRent,
+      investedRent: investedCashflowValue,
+      investedCashflow: investedCashflowValue,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
@@ -1868,7 +1895,10 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cumulativeInvestedCash,
       taxes: annualTaxes,
       cumulativeTaxes,
-      externalLoans: -cumulativeExternal,
+      externalInjection: -cumulativeExternal,
+      taxLiability: -cumulativeTaxes,
+      loanLiabilities: -totalLoanBalance,
+      totalLoanBalance,
       indexFund: indexFundValue,
       indexFundValue,
       indexFundContribution,
@@ -1890,9 +1920,12 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           totalNetWealthWithIndex,
           cumulativeExternal,
           investedCashContribution,
-          investedCashflow: propertyInvestedRent,
-          externalLoans: -cumulativeExternal,
+          investedCashflow: investedCashflowValue,
+          externalInjection: -cumulativeExternal,
           taxes: cumulativeTaxes,
+          taxLiability: -cumulativeTaxes,
+          loanLiabilities: -totalLoanBalance,
+          totalLoanBalance,
         },
       },
     });
@@ -1981,14 +2014,22 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       lastPoint?.meta?.totals?.investedCashflow ??
       lastPoint?.cumulativeInvestedCash ??
       0,
-    finalExternalLoans:
-      lastPoint?.externalLoans ??
-      lastPoint?.meta?.totals?.externalLoans ??
+    finalExternalInjection:
+      lastPoint?.externalInjection ??
+      lastPoint?.meta?.totals?.externalInjection ??
       -(lastPoint?.cumulativeExternal ?? 0),
     finalTaxes:
       lastPoint?.cumulativeTaxes ??
       lastPoint?.meta?.totals?.taxes ??
       0,
+    finalTaxLiability:
+      lastPoint?.taxLiability ??
+      lastPoint?.meta?.totals?.taxLiability ??
+      -(lastPoint?.cumulativeTaxes ?? 0),
+    finalLoanLiabilities:
+      lastPoint?.loanLiabilities ??
+      lastPoint?.meta?.totals?.loanLiabilities ??
+      -(lastPoint?.meta?.totals?.totalLoanBalance ?? 0),
     finalTotalNetWealth:
       lastPoint?.combinedNetWealth ??
       lastPoint?.netWealthAfterTax ??
@@ -6542,7 +6583,9 @@ export default function App() {
     propertyValue: true,
     netWealthAfterTax: true,
     investedCashflow: true,
-    externalLoans: true,
+    externalInjection: true,
+    taxLiability: true,
+    loanLiabilities: true,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
@@ -17113,7 +17156,7 @@ export default function App() {
                     <div className="mt-1 text-lg font-semibold text-slate-800">{currency(planAnalysis.totals.totalIncomeFunding)}</div>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="text-slate-500">Net wealth after tax (minus cash injections)</div>
+                  <div className="text-slate-500">Net wealth after tax (minus injections & taxes)</div>
                     <div className="mt-1 text-lg font-semibold text-slate-800">
                       {currency(planAnalysis.totals.finalNetWealth)}
                     </div>
@@ -17253,7 +17296,7 @@ export default function App() {
                             dataKey="netWealthAfterTax"
                             name={
                               SERIES_LABELS.netWealthAfterTax ??
-                              'Net wealth after tax (net of external loans)'
+                              'Net wealth after tax (minus injections & taxes)'
                             }
                             stroke={SERIES_COLORS.netWealthAfterTax}
                             strokeWidth={2}
@@ -17275,13 +17318,35 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="externalLoans"
-                            name={SERIES_LABELS.externalLoans ?? 'External loans'}
-                            stroke={SERIES_COLORS.externalLoans}
+                            dataKey="externalInjection"
+                            name={SERIES_LABELS.externalInjection ?? 'External injection'}
+                            stroke={SERIES_COLORS.externalInjection}
                             strokeWidth={2}
                             dot={false}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.externalLoans === false}
+                            hide={planChartSeriesActive.externalInjection === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="taxLiability"
+                            name={SERIES_LABELS.taxLiability ?? 'Taxes paid'}
+                            stroke={SERIES_COLORS.taxLiability}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.taxLiability === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="loanLiabilities"
+                            name={SERIES_LABELS.loanLiabilities ?? 'Loan liabilities'}
+                            stroke={SERIES_COLORS.loanLiabilities}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.loanLiabilities === false}
                           />
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -17645,7 +17710,7 @@ export default function App() {
                 <div className="space-y-5">
                   <div className="grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="text-slate-500">Net wealth after tax (minus cash injections)</div>
+                      <div className="text-slate-500">Net wealth after tax (minus injections & taxes)</div>
                       <div className="mt-1 text-base font-semibold text-slate-800">
                         {currency(planAnalysis.totals.finalNetWealth)}
                       </div>
@@ -17727,7 +17792,9 @@ export default function App() {
                               'propertyValue',
                               'netWealthAfterTax',
                               'investedCashflow',
-                              'externalLoans',
+                              'externalInjection',
+                              'taxLiability',
+                              'loanLiabilities',
                             ]
                               .filter(
                                 (key) =>
@@ -17786,7 +17853,7 @@ export default function App() {
                             dataKey="netWealthAfterTax"
                             name={
                               SERIES_LABELS.netWealthAfterTax ??
-                              'Net wealth after tax (net of external loans)'
+                              'Net wealth after tax (minus injections & taxes)'
                             }
                             stroke={SERIES_COLORS.netWealthAfterTax}
                             strokeWidth={2}
@@ -17808,13 +17875,35 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="externalLoans"
-                            name={SERIES_LABELS.externalLoans ?? 'External loans'}
-                            stroke={SERIES_COLORS.externalLoans}
+                            dataKey="externalInjection"
+                            name={SERIES_LABELS.externalInjection ?? 'External injection'}
+                            stroke={SERIES_COLORS.externalInjection}
                             strokeWidth={2}
                             dot={false}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.externalLoans === false}
+                            hide={planChartSeriesActive.externalInjection === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="taxLiability"
+                            name={SERIES_LABELS.taxLiability ?? 'Taxes paid'}
+                            stroke={SERIES_COLORS.taxLiability}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.taxLiability === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="loanLiabilities"
+                            name={SERIES_LABELS.loanLiabilities ?? 'Loan liabilities'}
+                            stroke={SERIES_COLORS.loanLiabilities}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.loanLiabilities === false}
                           />
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -19190,18 +19279,44 @@ function PlanWealthChartOverlay({
       value: point.investedCashflow ?? point.cumulativeInvestedCash,
     },
     {
-      key: 'externalLoans',
-      label: SERIES_LABELS.externalLoans ?? 'External loans',
+      key: 'externalInjection',
+      label: SERIES_LABELS.externalInjection ?? 'External injection',
       value:
-        point.externalLoans ??
-        (Number.isFinite(point.cumulativeExternal)
+        point.externalInjection ??
+        (Number.isFinite(point.meta?.totals?.externalInjection)
+          ? point.meta.totals.externalInjection
+          : Number.isFinite(point.cumulativeExternal)
           ? -point.cumulativeExternal
+          : null),
+    },
+    {
+      key: 'taxLiability',
+      label: SERIES_LABELS.taxLiability ?? 'Taxes paid',
+      value:
+        point.taxLiability ??
+        (Number.isFinite(point.meta?.totals?.taxLiability)
+          ? point.meta.totals.taxLiability
+          : Number.isFinite(point.cumulativeTaxes)
+          ? -point.cumulativeTaxes
+          : null),
+    },
+    {
+      key: 'loanLiabilities',
+      label: SERIES_LABELS.loanLiabilities ?? 'Loan liabilities',
+      value:
+        point.loanLiabilities ??
+        (Number.isFinite(point.totalLoanBalance)
+          ? -point.totalLoanBalance
+          : Number.isFinite(point.meta?.totals?.loanLiabilities)
+          ? point.meta.totals.loanLiabilities
+          : Number.isFinite(point.meta?.totals?.totalLoanBalance)
+          ? -point.meta.totals.totalLoanBalance
           : null),
     },
     {
       key: 'netWealthAfterTax',
       label:
-        SERIES_LABELS.netWealthAfterTax ?? 'Net wealth after tax (net of external loans)',
+        SERIES_LABELS.netWealthAfterTax ?? 'Net wealth after tax (minus injections & taxes)',
       value: point.netWealthAfterTax ?? point.combinedNetWealth,
     },
   ].filter((metric) => Number.isFinite(metric.value));
@@ -19366,6 +19481,16 @@ function PlanWealthChartOverlay({
                 type: 'currency',
               },
               {
+                label: 'Taxes this year',
+                value: property.tax,
+                type: 'currency',
+              },
+              {
+                label: 'Cumulative taxes paid',
+                value: property.cumulativeTax,
+                type: 'currency',
+              },
+              {
                 label: 'Cumulative cash impact',
                 value: property.cumulativeCash,
                 type: 'currency',
@@ -19378,6 +19503,11 @@ function PlanWealthChartOverlay({
               {
                 label: 'Cumulative index contributions',
                 value: property.cumulativeIndexFundContribution,
+                type: 'currency',
+              },
+              {
+                label: 'Outstanding loan balance',
+                value: property.loanBalance,
                 type: 'currency',
               },
             ].filter(shouldDisplayDetail);
