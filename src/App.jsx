@@ -227,7 +227,7 @@ const SERIES_COLORS = {
 };
 
 const SERIES_LABELS = {
-  indexFund: 'Index fund value',
+  indexFund: 'Index fund',
   cashflow: 'Cashflow',
   propertyValue: 'Property value',
   propertyGross: 'Property gross',
@@ -235,7 +235,7 @@ const SERIES_LABELS = {
   propertyNetAfterTax: 'Property value after tax',
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
-  investedRent: 'Invested rent',
+  investedRent: 'Reinvested cash (after tax)',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
@@ -254,7 +254,7 @@ const SERIES_LABELS = {
   cumulativeDiscounted: 'NPV to date',
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
-  cashflowAfterTax: 'Cashflow after tax',
+  cashflowAfterTax: 'Cashflow (after tax)',
   netWealthAfterTax: 'Net wealth (after tax)',
   netWealthBeforeTax: 'Net wealth (before tax)',
 };
@@ -1257,6 +1257,7 @@ const DEFAULT_INPUTS = {
   rentGrowth: 0.02,
   exitYear: 20,
   sellingCostsPct: 0.02,
+  neverExit: false,
   discountRate: 0.07,
   irrHurdle: 0.12,
   buyerType: 'individual',
@@ -1366,8 +1367,11 @@ const sanitizePlanItem = (item) => {
   const inputExitYear = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const rawExit = Number(item.exitYearOverride ?? item.exitYear);
   const exitYearOverride = Number.isFinite(rawExit) && rawExit >= 0
-    ? clamp(Math.round(rawExit), 0, PLAN_MAX_PURCHASE_YEAR)
+    ? Math.max(0, Math.round(rawExit))
     : inputExitYear;
+  const neverExit = inputs.neverExit === true || item.neverExit === true;
+  inputs.exitYear = inputExitYear;
+  inputs.neverExit = neverExit;
   return {
     id,
     name,
@@ -1379,6 +1383,7 @@ const sanitizePlanItem = (item) => {
     incomeContribution,
     exitYearOverride,
     isPrimary,
+    neverExit,
   };
 };
 
@@ -1394,6 +1399,7 @@ const PLAN_ANALYSIS_EMPTY_TOTALS = {
   finalCashPosition: 0,
   finalExternalPosition: 0,
   finalIndexFundValue: 0,
+  finalReinvestedCash: 0,
   finalTotalNetWealth: 0,
   averageRentalYield: 0,
   averageCapRate: 0,
@@ -1425,11 +1431,48 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     };
   }
 
-  const items = futurePlanItems.map((rawItem, index) => {
-    const sanitized = sanitizePlanItem(rawItem);
+  const sanitizedEntries = futurePlanItems
+    .map((rawItem, index) => {
+      const sanitized = sanitizePlanItem(rawItem);
+      if (!sanitized) {
+        return null;
+      }
+      return { sanitized, index };
+    })
+    .filter(Boolean);
+
+  const requestedHorizon = sanitizedEntries.reduce((max, entry) => {
+    const { sanitized } = entry;
+    const desiredHoldYears = Math.max(
+      0,
+      Math.round(Number(sanitized.exitYearOverride ?? sanitized.inputs?.exitYear ?? 0))
+    );
+    const purchaseOffset = Math.max(
+      0,
+      Math.round(Number(sanitized.purchaseYear ?? 0))
+    );
+    const timelineEnd = purchaseOffset + desiredHoldYears;
+    return Math.max(max, timelineEnd);
+  }, 0);
+
+  const items = sanitizedEntries.map(({ sanitized, index }) => {
+    const desiredExitYear = Math.max(
+      0,
+      Math.round(Number(sanitized.exitYearOverride ?? sanitized.inputs?.exitYear ?? 0))
+    );
+    const purchaseOffset = Math.max(0, Math.round(Number(sanitized.purchaseYear ?? 0)));
+    const horizonAdjustedHold = Math.max(0, requestedHorizon - purchaseOffset);
+    const effectiveExitYear = sanitized.neverExit
+      ? Math.max(desiredExitYear, horizonAdjustedHold)
+      : desiredExitYear;
+    const metricsInputs = {
+      ...sanitized.inputs,
+      exitYear: effectiveExitYear,
+      neverExit: Boolean(sanitized.neverExit),
+    };
     let metrics = null;
     try {
-      metrics = calculateEquity(sanitized.inputs);
+      metrics = calculateEquity(metricsInputs);
     } catch (error) {
       console.warn('Unable to evaluate future plan item:', sanitized?.name ?? sanitized?.id ?? 'item', error);
     }
@@ -1489,11 +1532,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     }
 
     const chart = Array.from(chartByYear.values()).sort((a, b) => a.year - b.year);
-    const exitYearFromChart = chart.length > 0 ? chart[chart.length - 1].year : 0;
-    const metricsExitYear = Math.max(0, Math.round(Number(metrics?.exitYear) || 0));
-    const exitYearBase = Math.max(exitYearFromChart, metricsExitYear);
-    const desiredExitYear = Math.max(0, Math.round(Number(sanitized.exitYearOverride) || exitYearBase));
-    const exitYear = exitYearBase > 0 ? Math.min(desiredExitYear, exitYearBase) : desiredExitYear;
+    const exitYear = effectiveExitYear;
 
     const annualCashflows = Array.isArray(metrics?.annualCashflowsAfterTax)
       ? metrics.annualCashflowsAfterTax.map((value) => (Number.isFinite(Number(value)) ? Number(value) : 0))
@@ -1599,6 +1638,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   );
 
   const itemStates = new Map();
+  const reinvestmentStates = new Map();
   orderedIncluded.forEach((item) => {
     itemStates.set(item.id, {
       available: 0,
@@ -1606,6 +1646,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       injection: Math.max(0, item.initialOutlay),
       indexContribution: item.useIncomeForDeposit ? 0 : Math.max(0, item.initialOutlay),
     });
+    reinvestmentStates.set(item.id, { balance: 0, contributions: 0 });
   });
 
   const chart = [];
@@ -1623,20 +1664,49 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     let propertyNetAfterTax = 0;
     let propertyCashflowNet = 0;
     let propertyCashflowGross = 0;
-    let propertyInvestedRent = 0;
+    let reinvestedFundBalance = 0;
+    let reinvestedFundContributionTotal = 0;
+    let reinvestContributionYear = 0;
+    let reinvestGrowthYear = 0;
+    let reinvestEligibleCashYear = 0;
     let cashFlow = 0;
     let externalCashFlow = 0;
     let indexFundContribution = 0;
     const yearStartingCash = cumulativeCash;
     let availableCashPool = yearStartingCash;
 
+    const reinvestGrowthMultiplier = 1 + clampPercentage(indexFundGrowthRate, -0.99, 10);
+
     orderedIncluded.forEach((item, index) => {
       const propertyYear = year - item.purchaseYear;
-      if (propertyYear < 0 || propertyYear > item.exitYear) {
+      const reinvestState = reinvestmentStates.get(item.id) || { balance: 0, contributions: 0 };
+      reinvestmentStates.set(item.id, reinvestState);
+
+      if (propertyYear < 0) {
+        if (reinvestState.balance > 0) {
+          reinvestedFundBalance += reinvestState.balance;
+          reinvestedFundContributionTotal += reinvestState.contributions;
+        }
+        return;
+      }
+
+      if (propertyYear > item.exitYear) {
+        if (reinvestState.balance > 0) {
+          const priorBalance = reinvestState.balance;
+          const grownBalance = priorBalance * reinvestGrowthMultiplier;
+          reinvestState.balance = grownBalance;
+          const growthDelta = grownBalance - priorBalance;
+          if (growthDelta > 0) {
+            reinvestGrowthYear += growthDelta;
+          }
+          reinvestedFundBalance += reinvestState.balance;
+          reinvestedFundContributionTotal += reinvestState.contributions;
+        }
         return;
       }
 
       const chartPoint = item.chartByYear.get(propertyYear);
+      const chartMeta = (chartPoint && typeof chartPoint.meta === 'object' && chartPoint.meta) || {};
       const contribution = {
         id: item.id,
         name: item.displayName || item.name || `Plan property ${index + 1}`,
@@ -1644,7 +1714,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         propertyYear,
         exitYear: item.exitYear,
         phase:
-          propertyYear === 0 ? 'purchase' : propertyYear === item.exitYear ? 'exit' : 'hold',
+          propertyYear === 0
+            ? 'purchase'
+            : !item.neverExit && propertyYear === item.exitYear
+            ? 'exit'
+            : 'hold',
         propertyValue: chartPoint?.propertyValue || 0,
         propertyGross: chartPoint?.propertyGross || 0,
         propertyNet: chartPoint?.propertyNet || 0,
@@ -1671,7 +1745,30 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const grossCashValue = Number(chartPoint.cashflowGross ?? chartPoint.cashflow) || 0;
         propertyCashflowNet += netCashValue;
         propertyCashflowGross += grossCashValue;
-        propertyInvestedRent += Number(chartPoint.investedRent) || 0;
+        const propertyReinvestedValue =
+          Number(chartPoint.reinvestFund ?? chartPoint.investedRent ?? chartPoint.meta?.reinvestFundValue) || 0;
+        const propertyReinvestedContributions =
+          Number(
+            chartPoint.meta?.investedRentContributions ?? chartPoint.meta?.cumulativeReinvested ?? 0
+          ) || 0;
+        const propertyReinvestContributionYear =
+          Number(chartPoint.meta?.yearly?.reinvestContribution ?? 0) || 0;
+        const propertyReinvestGrowthYear =
+          Number(chartPoint.meta?.yearly?.investedRentGrowth ?? 0) || 0;
+        const propertyAfterTaxCashYear =
+          Number(chartPoint.meta?.yearly?.cashAfterTax ?? 0);
+        reinvestedFundBalance += propertyReinvestedValue;
+        reinvestedFundContributionTotal += propertyReinvestedContributions;
+        reinvestContributionYear += propertyReinvestContributionYear;
+        reinvestGrowthYear += propertyReinvestGrowthYear;
+        if (propertyAfterTaxCashYear > 0) {
+          reinvestEligibleCashYear += propertyAfterTaxCashYear;
+        }
+        reinvestState.balance = propertyReinvestedValue;
+        reinvestState.contributions = propertyReinvestedContributions;
+      } else if (reinvestState.balance > 0) {
+        reinvestedFundBalance += reinvestState.balance;
+        reinvestedFundContributionTotal += reinvestState.contributions;
       }
 
       const propertyState = itemStates.get(item.id);
@@ -1720,9 +1817,20 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const annualCash = item.annualCashflows[cashIndex] ?? 0;
         contribution.operatingCashflow = annualCash;
         contribution.cashFlow += annualCash;
-        if (propertyYear === item.exitYear) {
-          contribution.saleProceeds = item.exitProceeds;
-          contribution.cashFlow += item.exitProceeds;
+        if (!item.neverExit && propertyYear === item.exitYear) {
+          const saleValue = Number(chartMeta.saleValue) || 0;
+          const saleCosts = Number(chartMeta.saleCosts) || 0;
+          const remainingLoan = Number(chartMeta.remainingLoan) || 0;
+          const realizedSale = Number(chartMeta.realizedSaleProceeds ?? chartMeta.netSaleIfSold);
+          const netSaleProceeds = Number.isFinite(realizedSale)
+            ? realizedSale
+            : Number(item.exitProceeds) || 0;
+
+          contribution.saleProceeds = netSaleProceeds;
+          contribution.saleValue = saleValue;
+          contribution.saleCosts = saleCosts;
+          contribution.debtPayoff = remainingLoan;
+          contribution.cashFlow += netSaleProceeds;
         }
       }
 
@@ -1752,9 +1860,25 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cumulativeIndexFundContribution += indexFundContribution;
     }
 
+    const reinvestedFundGrowthTotal = Math.max(
+      0,
+      reinvestedFundBalance - reinvestedFundContributionTotal
+    );
+    const reinvestShare =
+      reinvestEligibleCashYear > 0
+        ? clampPercentage(reinvestContributionYear / reinvestEligibleCashYear, 0, 1)
+        : null;
     const portfolioCashAdjustment = cumulativeCash - propertyCashflowNet;
-    const combinedNetWealthBeforeTax = propertyNet + portfolioCashAdjustment;
-    const combinedNetWealthAfterTax = propertyNetAfterTax + portfolioCashAdjustment;
+    const propertyNetBeforeTaxExcludingReinvest = propertyNet - reinvestedFundBalance;
+    const propertyNetAfterTaxExcludingReinvest = propertyNetAfterTax - reinvestedFundBalance;
+    const combinedNetWealthBeforeTaxBase =
+      propertyNetBeforeTaxExcludingReinvest + portfolioCashAdjustment;
+    const combinedNetWealthAfterTaxBase =
+      propertyNetAfterTaxExcludingReinvest + portfolioCashAdjustment;
+    const combinedNetWealthBeforeTax =
+      combinedNetWealthBeforeTaxBase + reinvestedFundBalance;
+    const combinedNetWealthAfterTax =
+      combinedNetWealthAfterTaxBase + reinvestedFundBalance;
     const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
 
     chart.push({
@@ -1767,12 +1891,12 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cashflowNet: propertyCashflowNet,
       cashflowGross: propertyCashflowGross,
       cashflowAfterTax: cumulativeCash,
-      investedRent: propertyInvestedRent,
+      investedRent: reinvestedFundBalance,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
-      netWealthAfterTax: totalNetWealthWithIndex,
-      netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+      netWealthAfterTax: combinedNetWealthAfterTax,
+      netWealthBeforeTax: combinedNetWealthBeforeTax,
       cashFlow,
       cumulativeCash,
       externalCashFlow,
@@ -1781,8 +1905,17 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       indexFundValue,
       indexFundContribution,
       cumulativeIndexFundContribution,
+      reinvestedCash: reinvestedFundBalance,
       meta: {
         propertyBreakdown,
+        shouldReinvest: reinvestedFundBalance > 0,
+        reinvestShare,
+        investedRentContributions: reinvestedFundContributionTotal,
+        investedRentGrowth: reinvestedFundGrowthTotal,
+        yearly: {
+          reinvestContribution: reinvestContributionYear,
+          investedRentGrowth: reinvestGrowthYear,
+        },
         totals: {
           propertyValue,
           propertyNet,
@@ -1791,12 +1924,13 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           cashflowAfterTax: cumulativeCash,
           combinedNetWealth: combinedNetWealthAfterTax,
           combinedNetWealthBeforeTax,
-          netWealthAfterTax: totalNetWealthWithIndex,
-          netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+          netWealthAfterTax: combinedNetWealthAfterTax,
+          netWealthBeforeTax: combinedNetWealthBeforeTax,
           cumulativeCash,
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
           cumulativeExternal,
+          reinvestedCash: reinvestedFundBalance,
         },
       },
     });
@@ -1879,10 +2013,16 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       0,
     finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
     finalIndexFundValue: lastPoint?.indexFundValue ?? lastPoint?.indexFund ?? 0,
+    finalReinvestedCash:
+      lastPoint?.reinvestedCash ??
+      lastPoint?.investedRent ??
+      lastPoint?.meta?.totals?.reinvestedCash ??
+      0,
     finalTotalNetWealth:
       lastPoint?.netWealthAfterTax ??
-      lastPoint?.totalNetWealthWithIndex ??
-      ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
+      lastPoint?.combinedNetWealth ??
+      lastPoint?.meta?.totals?.netWealthAfterTax ??
+      0,
     averageRentalYield,
     averageCapRate,
   };
@@ -5345,7 +5485,7 @@ function calculateEquity(rawInputs) {
     let yearCashflowForCf = cash;
     let yearCashflowForNpv = afterTaxCash;
     let realizedSaleProceeds = 0;
-    if (y === inputs.exitYear) {
+    if (!inputs.neverExit && y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
       const rem =
@@ -5377,7 +5517,7 @@ function calculateEquity(rawInputs) {
     const reinvestFundGrowth = Math.max(0, reinvestFundValue - cumulativeReinvested);
     const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
 
-    const propertyValueForChart = y === inputs.exitYear ? 0 : vt;
+    const propertyValueForChart = !inputs.neverExit && y === inputs.exitYear ? 0 : vt;
     const netWealthAfterTaxValue = propertyNetAfterTaxValue + indexVal;
     const netWealthBeforeTaxValue = propertyNetValue + indexVal;
 
@@ -5441,6 +5581,7 @@ function calculateEquity(rawInputs) {
         yieldRate: yieldRateYear,
         cashOnCash: cashOnCashYear,
         irrSeries: irrToDate,
+        neverExit: Boolean(inputs.neverExit),
         yearly: {
           gross,
           operatingExpenses: varOpex + fixed,
@@ -5461,6 +5602,18 @@ function calculateEquity(rawInputs) {
     });
 
     rent *= 1 + inputs.rentGrowth;
+  }
+
+  if (inputs.neverExit) {
+    const cumulativeCashPreTaxNetFinal = shouldReinvest
+      ? cumulativeCashPreTax - cumulativeReinvested
+      : cumulativeCashPreTax;
+    const cumulativeCashAfterTaxNetFinal = shouldReinvest
+      ? cumulativeCashAfterTax - cumulativeReinvested
+      : cumulativeCashAfterTax;
+    exitCumCash = cumulativeCashPreTaxNetFinal + reinvestFundValue;
+    exitCumCashAfterTax = cumulativeCashAfterTaxNetFinal + reinvestFundValue;
+    exitNetSaleProceeds = 0;
   }
 
   if (chart.length > 0) {
@@ -5499,13 +5652,28 @@ function calculateEquity(rawInputs) {
       lastPoint.netWealthBeforeTax ?? extensionPropertyNet + extensionIndexFund
     );
     const extensionPropertyGross = Number(lastPoint.propertyGross) || extensionPropertyNet;
+    const extensionPropertyValue = inputs.neverExit
+      ? Number(lastPoint.propertyValue ?? lastMeta.propertyValue) || extensionPropertyGross
+      : 0;
+    const extensionMetaPropertyValue = inputs.neverExit
+      ? lastMeta.propertyValue ?? extensionPropertyValue
+      : 0;
+    const extensionMetaSaleValue = inputs.neverExit
+      ? lastMeta.saleValue ?? extensionMetaPropertyValue
+      : 0;
+    const extensionMetaRemainingLoan = inputs.neverExit
+      ? lastMeta.remainingLoan ?? 0
+      : 0;
+    const extensionMetaNetSaleIfSold = inputs.neverExit
+      ? lastMeta.netSaleIfSold ?? extensionPropertyNet
+      : 0;
     chart.push({
       year: extensionYear,
       indexFund: extensionIndexFund,
       indexFund1_5x: extensionIndexFund * 1.5,
       indexFund2x: extensionIndexFund * 2,
       indexFund4x: extensionIndexFund * 4,
-      propertyValue: 0,
+      propertyValue: extensionPropertyValue,
       propertyGross: extensionPropertyGross,
       propertyNet: extensionPropertyNet,
       propertyNetAfterTax: extensionPropertyNetAfterTax,
@@ -5524,10 +5692,10 @@ function calculateEquity(rawInputs) {
       netWealthBeforeTax: extensionNetWealthBeforeTax,
       meta: {
         ...lastMeta,
-        propertyValue: 0,
-        saleValue: 0,
-        remainingLoan: 0,
-        netSaleIfSold: 0,
+        propertyValue: extensionMetaPropertyValue,
+        saleValue: extensionMetaSaleValue,
+        remainingLoan: extensionMetaRemainingLoan,
+        netSaleIfSold: extensionMetaNetSaleIfSold,
         cumulativeCashAfterTaxRealized: extensionCashflowGross,
         cumulativeCashAfterTaxNetRealized: extensionCashflowNet,
         cumulativeCashAfterTaxKeptRealized: extensionCashflowKept,
@@ -5536,6 +5704,7 @@ function calculateEquity(rawInputs) {
         realizedSaleProceeds: 0,
         netWealthAfterTax: extensionNetWealthAfterTax,
         netWealthBeforeTax: extensionNetWealthBeforeTax,
+        neverExit: Boolean(inputs.neverExit),
         extension: true,
       },
     });
@@ -5643,6 +5812,7 @@ function calculateEquity(rawInputs) {
     wealthDeltaAfterTax,
     wealthDeltaAfterTaxPct,
     exitYear: inputs.exitYear,
+    neverExit: Boolean(inputs.neverExit),
     annualGrossRents,
     annualOperatingExpenses,
     annualNoiValues,
@@ -6422,6 +6592,7 @@ export default function App() {
     indexFund: true,
     cashflowAfterTax: true,
     propertyValue: true,
+    investedRent: true,
     netWealthAfterTax: true,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
@@ -6539,7 +6710,7 @@ export default function App() {
     indexFund4x: false,
     cashflowAfterTax: true,
     propertyValue: true,
-    propertyNetAfterTax: true,
+    propertyNetAfterTax: false,
     netWealthAfterTax: true,
     investedRent: false,
   });
@@ -8355,6 +8526,10 @@ export default function App() {
 
 
   const planTooltipFormatter = useCallback((value) => currency(value), []);
+  const planHasReinvestedCash = useMemo(
+    () => planAnalysis.chart.some((point) => Number(point?.investedRent) > 0),
+    [planAnalysis.chart]
+  );
   const planChartFocusPoint = useMemo(() => {
     if (!Number.isFinite(planChartFocusYear)) {
       return null;
@@ -8389,24 +8564,11 @@ export default function App() {
       if (planChartFocusLocked) {
         return;
       }
-      if (!event || event.isTooltipActive === false) {
+      if ((!event || event.isTooltipActive === false) && planChartFocusYear !== null) {
         setPlanChartFocusYear(null);
-        return;
       }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setPlanChartFocusYear(null);
-        return;
-      }
-      const year = Math.max(0, Math.round(activeYear));
-      const match = planAnalysis.chart.find((point) => Number(point?.year) === year);
-      if (!match) {
-        setPlanChartFocusYear(null);
-        return;
-      }
-      setPlanChartFocusYear(year);
     },
-    [planChartFocusLocked, planAnalysis.chart]
+    [planChartFocusLocked, planChartFocusYear]
   );
 
   const handlePlanChartMouseLeave = useCallback(() => {
@@ -9932,28 +10094,11 @@ export default function App() {
       if (chartFocusLocked) {
         return;
       }
-      if (!event || event.isTooltipActive === false) {
+      if ((!event || event.isTooltipActive === false) && chartFocus !== null) {
         setChartFocus(null);
-        return;
       }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setChartFocus(null);
-        return;
-      }
-      const match = filteredChartData.find((point) => Number(point?.year) === activeYear);
-      if (!match) {
-        setChartFocus(null);
-        return;
-      }
-      setChartFocus((prev) => {
-        if (prev?.year === activeYear && prev.data === match) {
-          return prev;
-        }
-        return { year: activeYear, data: match };
-      });
     },
-    [chartFocusLocked, filteredChartData]
+    [chartFocusLocked, chartFocus]
   );
 
   const handleChartMouseLeave = useCallback(() => {
@@ -12299,17 +12444,28 @@ export default function App() {
   const handlePlanExitYearChange = useCallback(
     (id, value) => {
       const numeric = Math.round(Number(value));
-      const sanitizedValue = clamp(
-        Number.isFinite(numeric) ? numeric : 0,
-        0,
-        PLAN_MAX_PURCHASE_YEAR
-      );
+      const sanitizedValue = Math.max(0, Number.isFinite(numeric) ? numeric : 0);
       updatePlanItem(id, (current) => ({
         ...current,
         exitYearOverride: sanitizedValue,
         inputs: {
           ...(current?.inputs ?? {}),
           exitYear: sanitizedValue,
+        },
+      }));
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanNeverExitToggle = useCallback(
+    (id, enabled) => {
+      const nextValue = Boolean(enabled);
+      updatePlanItem(id, (current) => ({
+        ...current,
+        neverExit: nextValue,
+        inputs: {
+          ...(current?.inputs ?? {}),
+          neverExit: nextValue,
         },
       }));
     },
@@ -12441,13 +12597,18 @@ export default function App() {
       if (!next || typeof next !== 'object') {
         return;
       }
-      updatePlanItem(id, (current) => ({
-        ...current,
-        inputs: {
+      updatePlanItem(id, (current) => {
+        const mergedInputs = {
           ...(current?.inputs ?? {}),
           ...next,
-        },
-      }));
+        };
+        const nextNeverExit = Boolean(mergedInputs.neverExit);
+        return {
+          ...current,
+          neverExit: nextNeverExit,
+          inputs: mergedInputs,
+        };
+      });
     },
     [updatePlanItem]
   );
@@ -13522,6 +13683,19 @@ export default function App() {
                   </div>
                   {pctInput('rentGrowth', 'Rent growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
+                  <label className="col-span-2 inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(inputs.neverExit)}
+                      onChange={(event) =>
+                        setInputs((prev) => ({
+                          ...prev,
+                          neverExit: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>Never exit this property</span>
+                  </label>
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
@@ -13936,7 +14110,7 @@ export default function App() {
                         <Area
                           type="monotone"
                           dataKey="indexFund"
-                          name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                          name={SERIES_LABELS.indexFund ?? 'Index fund'}
                           stroke={SERIES_COLORS.indexFund}
                           fill="rgba(249,115,22,0.2)"
                           strokeWidth={2}
@@ -13946,7 +14120,7 @@ export default function App() {
                         <Area
                           type="monotone"
                           dataKey="cashflowAfterTax"
-                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                           stroke={SERIES_COLORS.cashflowAfterTax}
                           fill="rgba(16,185,129,0.18)"
                           strokeWidth={2}
@@ -13963,16 +14137,6 @@ export default function App() {
                           isAnimationActive={false}
                           hide={!activeSeries.propertyValue}
                         />
-                        <Area
-                          type="monotone"
-                          dataKey="propertyNetAfterTax"
-                          name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
-                          stroke={SERIES_COLORS.propertyNetAfterTax}
-                          fill="rgba(147,51,234,0.2)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={!activeSeries.propertyNetAfterTax}
-                        />
                         <RechartsLine
                           type="monotone"
                           dataKey="netWealthAfterTax"
@@ -13983,14 +14147,13 @@ export default function App() {
                           isAnimationActive={false}
                           hide={!activeSeries.netWealthAfterTax}
                         />
-                        <Area
+                        <RechartsLine
                           type="monotone"
                           dataKey="investedRent"
-                          name="Invested rent"
-                          stroke="#0d9488"
-                          fill="rgba(13,148,136,0.15)"
+                          name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                          stroke={SERIES_COLORS.investedRent}
                           strokeWidth={2}
-                          strokeDasharray="5 3"
+                          dot={false}
                           isAnimationActive={false}
                           hide={!activeSeries.investedRent || !reinvestActive}
                         />
@@ -15542,7 +15705,7 @@ export default function App() {
                     { key: 'indexFund1_5x', label: 'Index fund 1.5×' },
                     { key: 'indexFund2x', label: 'Index fund 2×' },
                     { key: 'indexFund4x', label: 'Index fund 4×' },
-                    { key: 'investedRent', label: 'Invested rent' },
+                    { key: 'investedRent', label: 'Reinvested cash (after tax)' },
                   ].map((option) => {
                     const checked = activeSeries[option.key] !== false;
                     const disabled = option.key === 'investedRent' && !reinvestActive;
@@ -15600,12 +15763,11 @@ export default function App() {
                                 {...props}
                                 activeSeries={activeSeries}
                                 onToggle={toggleSeries}
-                                excludedKeys={[
-                                  'indexFund1_5x',
-                                  'indexFund2x',
-                                  'indexFund4x',
-                                  'investedRent',
-                                ]}
+                                excludedKeys={
+                                  reinvestActive
+                                    ? ['indexFund1_5x', 'indexFund2x', 'indexFund4x']
+                                    : ['indexFund1_5x', 'indexFund2x', 'indexFund4x', 'investedRent']
+                                }
                               />
                             )}
                           />
@@ -15637,7 +15799,7 @@ export default function App() {
                           <Area
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -15648,7 +15810,7 @@ export default function App() {
                           <Area
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -15667,17 +15829,6 @@ export default function App() {
                             isAnimationActive={false}
                             hide={!activeSeries.propertyValue}
                           />
-                          <Area
-                            type="monotone"
-                            dataKey="propertyNetAfterTax"
-                            name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
-                            stroke={SERIES_COLORS.propertyNetAfterTax}
-                            fill="rgba(147,51,234,0.2)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.propertyNetAfterTax}
-                          />
                           <RechartsLine
                             type="monotone"
                             dataKey="netWealthAfterTax"
@@ -15689,14 +15840,13 @@ export default function App() {
                             isAnimationActive={false}
                             hide={!activeSeries.netWealthAfterTax}
                           />
-                          <Area
+                          <RechartsLine
                             type="monotone"
                             dataKey="investedRent"
-                            name="Invested rent"
-                            stroke="#0d9488"
-                            fill="rgba(13,148,136,0.15)"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                            stroke={SERIES_COLORS.investedRent}
                             strokeWidth={2}
-                            strokeDasharray="5 3"
+                            dot={false}
                             yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.investedRent}
@@ -16702,9 +16852,11 @@ export default function App() {
                         );
                         const isExpanded = planExpandedRows[item.id] === true;
                         const isPrimaryRow = item.isPrimary === true || index === 0;
-                        const exitYearDisplay = Number.isFinite(Number(item.exitYearOverride))
+                        const exitYearInputValue = Number.isFinite(Number(item.exitYearOverride))
                           ? Math.max(0, Math.round(Number(item.exitYearOverride)))
                           : Math.max(0, Math.round(Number(item.exitYear)));
+                        const modeledExitYear = Math.max(0, Math.round(Number(item.exitYear)));
+                        const exitYearDisplay = item.neverExit ? modeledExitYear : exitYearInputValue;
                         return (
                           <Fragment key={item.id}>
                             <tr
@@ -16825,13 +16977,22 @@ export default function App() {
                                 <input
                                   type="number"
                                   min={0}
-                                  max={PLAN_MAX_PURCHASE_YEAR}
-                                  value={exitYearDisplay}
+                                  value={exitYearInputValue}
                                   onChange={(event) => handlePlanExitYearChange(item.id, event.target.value)}
                                   className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
                                 />
+                                <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-500">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(item.neverExit)}
+                                    onChange={(event) => handlePlanNeverExitToggle(item.id, event.target.checked)}
+                                  />
+                                  <span>Never exit</span>
+                                </div>
                                 <div className="mt-1 text-[10px] text-slate-500">
-                                  Hold for {exitYearDisplay} year{exitYearDisplay === 1 ? '' : 's'}
+                                  {item.neverExit
+                                    ? `Modelled for ${modeledExitYear} year${modeledExitYear === 1 ? '' : 's'} while holding`
+                                    : `Hold for ${exitYearDisplay} year${exitYearDisplay === 1 ? '' : 's'}`}
                                 </div>
                               </td>
                               <td className="px-3 py-3">
@@ -17026,6 +17187,7 @@ export default function App() {
                                 {...props}
                                 activeSeries={planChartSeriesActive}
                                 onToggle={togglePlanChartSeries}
+                                excludedKeys={planHasReinvestedCash ? [] : ['investedRent']}
                               />
                             )}
                           />
@@ -17033,7 +17195,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -17044,7 +17206,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17061,6 +17223,19 @@ export default function App() {
                             strokeWidth={2}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyValue === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="investedRent"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                            stroke={SERIES_COLORS.investedRent}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={
+                              planChartSeriesActive.investedRent === false || !planHasReinvestedCash
+                            }
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -17484,15 +17659,16 @@ export default function App() {
                           formatter={(value) => planTooltipFormatter(value)}
                           labelFormatter={(value) => `Year ${value}`}
                         />
-                        <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={planChartSeriesActive}
-                              onToggle={togglePlanChartSeries}
-                            />
-                          )}
-                        />
+                          <Legend
+                            content={(props) => (
+                              <ChartLegend
+                                {...props}
+                                activeSeries={planChartSeriesActive}
+                                onToggle={togglePlanChartSeries}
+                                excludedKeys={planHasReinvestedCash ? [] : ['investedRent']}
+                              />
+                            )}
+                          />
                         {planChartFocus ? (
                           <ReferenceLine
                             x={planChartFocus.year}
@@ -17531,7 +17707,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -17542,7 +17718,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17559,6 +17735,19 @@ export default function App() {
                             strokeWidth={2}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyValue === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="investedRent"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                            stroke={SERIES_COLORS.investedRent}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={
+                              planChartSeriesActive.investedRent === false || !planHasReinvestedCash
+                            }
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -18923,10 +19112,11 @@ function PlanWealthChartOverlay({
     return null;
   }
 
+  const reinvestedValue = Number(point.reinvestedCash ?? point.investedRent ?? 0);
   const summaryMetrics = [
     {
       key: 'indexFund',
-      label: SERIES_LABELS.indexFund ?? 'Index fund value',
+      label: SERIES_LABELS.indexFund ?? 'Index fund',
       value: point.indexFund ?? point.indexFundValue,
     },
     {
@@ -18936,8 +19126,14 @@ function PlanWealthChartOverlay({
     },
     {
       key: 'cashflowAfterTax',
-      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax',
+      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)',
       value: point.cashflowAfterTax ?? point.cumulativeCash,
+    },
+    {
+      key: 'investedRent',
+      label: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+      value:
+        Number.isFinite(reinvestedValue) && reinvestedValue > 0 ? reinvestedValue : NaN,
     },
     {
       key: 'netWealthAfterTax',
@@ -19073,6 +19269,11 @@ function PlanWealthChartOverlay({
               {
                 label: 'Sale proceeds this year',
                 value: property.saleProceeds,
+                type: 'currency',
+              },
+              {
+                label: 'Debt repaid at sale',
+                value: property.debtPayoff,
                 type: 'currency',
               },
               {
@@ -19782,11 +19983,18 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
             <input
               type="number"
               min={0}
-              max={PLAN_MAX_PURCHASE_YEAR}
               value={exitYearValue}
               onChange={(event) => onExitYearChange?.(event.target.value)}
               className="rounded-lg border border-slate-300 px-3 py-1.5"
             />
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+            <input
+              type="checkbox"
+              checked={Boolean(inputs.neverExit)}
+              onChange={(event) => handleCheckboxChange('neverExit', event.target.checked)}
+            />
+            <span>Never exit this property</span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="font-medium text-slate-600">Selling costs %</span>
