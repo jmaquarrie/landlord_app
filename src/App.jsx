@@ -259,6 +259,28 @@ const SERIES_LABELS = {
   netWealthBeforeTax: 'Net wealth (before tax)',
 };
 
+const mergeLegendPayload = (payload, entries) => {
+  const base = Array.isArray(payload) ? [...payload] : [];
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return base;
+  }
+  const existing = new Set(
+    base.map((entry) => (entry && entry.dataKey) || (entry && entry.value) || null).filter(Boolean)
+  );
+  entries.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const key = entry.dataKey || entry.value;
+    if (!key || existing.has(key)) {
+      return;
+    }
+    base.push(entry);
+    existing.add(key);
+  });
+  return base;
+};
+
 const CASHFLOW_BAR_COLORS = {
   rentIncome: '#0ea5e9',
   operatingExpenses: '#ef4444',
@@ -14094,14 +14116,33 @@ export default function App() {
                         />
                         <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                         <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={activeSeries}
-                              onToggle={toggleSeries}
-                              excludedKeys={reinvestActive ? [] : ['investedRent']}
-                            />
-                          )}
+                          content={(props) => {
+                            const extraEntries = [
+                              {
+                                dataKey: 'netWealthAfterTax',
+                                value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                                color: SERIES_COLORS.netWealthAfterTax,
+                                type: 'line',
+                              },
+                            ];
+                            if (reinvestActive) {
+                              extraEntries.push({
+                                dataKey: 'investedRent',
+                                value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+                                color: SERIES_COLORS.investedRent,
+                                type: 'line',
+                              });
+                            }
+                            const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                            return (
+                              <ChartLegend
+                                {...props}
+                                payload={legendPayload}
+                                activeSeries={activeSeries}
+                                onToggle={toggleSeries}
+                              />
+                            );
+                          }}
                         />
                         <Area
                           type="monotone"
@@ -15754,18 +15795,34 @@ export default function App() {
                             width={110}
                           />
                           <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={activeSeries}
-                                onToggle={toggleSeries}
-                                excludedKeys={
-                                  reinvestActive
-                                    ? ['indexFund1_5x', 'indexFund2x', 'indexFund4x']
-                                    : ['indexFund1_5x', 'indexFund2x', 'indexFund4x', 'investedRent']
-                                }
-                              />
-                            )}
+                            content={(props) => {
+                              const extraEntries = [
+                                {
+                                  dataKey: 'netWealthAfterTax',
+                                  value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                                  color: SERIES_COLORS.netWealthAfterTax,
+                                  type: 'line',
+                                },
+                              ];
+                              if (reinvestActive) {
+                                extraEntries.push({
+                                  dataKey: 'investedRent',
+                                  value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+                                  color: SERIES_COLORS.investedRent,
+                                  type: 'line',
+                                });
+                              }
+                              const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                              return (
+                                <ChartLegend
+                                  {...props}
+                                  payload={legendPayload}
+                                  activeSeries={activeSeries}
+                                  onToggle={toggleSeries}
+                                  excludedKeys={['indexFund1_5x', 'indexFund2x', 'indexFund4x']}
+                                />
+                              );
+                            }}
                           />
                           {chartFocus ? (
                             <ReferenceLine
@@ -17178,14 +17235,33 @@ export default function App() {
                             labelFormatter={(value) => `Year ${value}`}
                           />
                           <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={planChartSeriesActive}
-                                onToggle={togglePlanChartSeries}
-                                excludedKeys={planHasReinvestedCash ? [] : ['investedRent']}
-                              />
-                            )}
+                            content={(props) => {
+                              const extraEntries = [
+                                {
+                                  dataKey: 'netWealthAfterTax',
+                                  value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                                  color: SERIES_COLORS.netWealthAfterTax,
+                                  type: 'line',
+                                },
+                              ];
+                              if (planHasReinvestedCash) {
+                                extraEntries.push({
+                                  dataKey: 'investedRent',
+                                  value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+                                  color: SERIES_COLORS.investedRent,
+                                  type: 'line',
+                                });
+                              }
+                              const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                              return (
+                                <ChartLegend
+                                  {...props}
+                                  payload={legendPayload}
+                                  activeSeries={planChartSeriesActive}
+                                  onToggle={togglePlanChartSeries}
+                                />
+                              );
+                            }}
                           />
                           <Area
                             yAxisId="currency"
@@ -17655,16 +17731,35 @@ export default function App() {
                           formatter={(value) => planTooltipFormatter(value)}
                           labelFormatter={(value) => `Year ${value}`}
                         />
-                          <Legend
-                            content={(props) => (
+                        <Legend
+                          content={(props) => {
+                            const extraEntries = [
+                              {
+                                dataKey: 'netWealthAfterTax',
+                                value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                                color: SERIES_COLORS.netWealthAfterTax,
+                                type: 'line',
+                              },
+                            ];
+                            if (planHasReinvestedCash) {
+                              extraEntries.push({
+                                dataKey: 'investedRent',
+                                value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+                                color: SERIES_COLORS.investedRent,
+                                type: 'line',
+                              });
+                            }
+                            const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                            return (
                               <ChartLegend
                                 {...props}
+                                payload={legendPayload}
                                 activeSeries={planChartSeriesActive}
                                 onToggle={togglePlanChartSeries}
-                                excludedKeys={planHasReinvestedCash ? [] : ['investedRent']}
                               />
-                            )}
-                          />
+                            );
+                          }}
+                        />
                         {planChartFocus ? (
                           <ReferenceLine
                             x={planChartFocus.year}
