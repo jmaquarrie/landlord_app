@@ -225,6 +225,7 @@ const SERIES_COLORS = {
   cumulativeDiscounted: '#0f172a',
   cumulativeUndiscounted: '#94a3b8',
   discountFactor: '#64748b',
+  cash: '#10b981',
   cashflowAfterTax: '#10b981',
   netWealthAfterTax: '#1e293b',
   netWealthBeforeTax: '#0369a1',
@@ -262,6 +263,7 @@ const SERIES_LABELS = {
   cumulativeDiscounted: 'NPV to date',
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
+  cash: 'Cash',
   cashflowAfterTax: 'Cashflow after tax',
   netWealthAfterTax: 'Net wealth after tax (minus injections, taxes & loans)',
   netWealthBeforeTax: 'Net wealth (before tax)',
@@ -1072,6 +1074,7 @@ const EXPANDED_SERIES_ORDER = [
 const CORE_WEALTH_SERIES = [
   'indexFund',
   'cashflowAfterTax',
+  'cash',
   'propertyValue',
   'netWealthAfterTax',
   'investedCashflow',
@@ -1822,6 +1825,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       propertyGross,
       propertyNet,
       propertyNetAfterTax,
+      cash: planState.cumulativeCash,
       cashflowAfterTax: planState.cumulativeCash,
       cashflowNet: planState.cumulativeCash,
       cashflowGross: planState.cumulativeCash,
@@ -1846,6 +1850,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         totals: {
           propertyValue,
           propertyNetAfterTax,
+          cash: planState.cumulativeCash,
           cashflowAfterTax: planState.cumulativeCash,
           investedCashflow: planState.investedBalance,
           externalInjection: -planState.cumulativeExternal,
@@ -1877,7 +1882,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     totalIndexFundContribution: planState.totalInvestedContributions,
     finalPropertyNetAfterTax: lastPoint?.propertyNetAfterTax ?? 0,
     finalNetWealth: lastPoint?.netWealthAfterTax ?? 0,
-    finalCashPosition: lastPoint?.cashflowAfterTax ?? 0,
+    finalCashPosition: lastPoint?.cash ?? lastPoint?.cashflowAfterTax ?? 0,
     finalExternalPosition: planState.cumulativeExternal,
     finalIndexFundValue: planState.investedBalance,
     finalInvestedCashflow: planState.investedBalance,
@@ -6427,7 +6432,7 @@ export default function App() {
   const [planExpandedRows, setPlanExpandedRows] = useState({});
   const [planChartExpanded, setPlanChartExpanded] = useState(false);
   const [planChartSeriesActive, setPlanChartSeriesActive] = useState(() => ({
-    cashflowAfterTax: true,
+    cash: true,
     propertyValue: true,
     netWealthAfterTax: true,
     investedCashflow: true,
@@ -17108,13 +17113,13 @@ export default function App() {
                           <Area
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
-                            stroke={SERIES_COLORS.cashflowAfterTax}
+                            dataKey="cash"
+                            name={SERIES_LABELS.cash ?? 'Cash'}
+                            stroke={SERIES_COLORS.cash}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.cashflowAfterTax === false}
+                            hide={planChartSeriesActive.cash === false}
                           />
                           <Area
                             yAxisId="currency"
@@ -17624,7 +17629,7 @@ export default function App() {
                         ) : null}
                         {planChartFocus && planChartFocus.data
                           ? [
-                              'cashflowAfterTax',
+                              'cash',
                               'propertyValue',
                               'netWealthAfterTax',
                               'investedCashflow',
@@ -17653,13 +17658,13 @@ export default function App() {
                           <Area
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
-                            stroke={SERIES_COLORS.cashflowAfterTax}
+                            dataKey="cash"
+                            name={SERIES_LABELS.cash ?? 'Cash'}
+                            stroke={SERIES_COLORS.cash}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.cashflowAfterTax === false}
+                            hide={planChartSeriesActive.cash === false}
                           />
                           <Area
                             yAxisId="currency"
@@ -18515,6 +18520,7 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Market growth to date', value: value - basis });
       break;
     }
+    case 'cash':
     case 'cashflowAfterTax':
     case 'cashflow': {
       const yearly = meta.yearly ?? {};
@@ -19089,9 +19095,9 @@ function PlanWealthChartOverlay({
       value: point.propertyValue,
     },
     {
-      key: 'cashflowAfterTax',
-      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax',
-      value: point.cashflowAfterTax ?? point.cumulativeCash,
+      key: 'cash',
+      label: SERIES_LABELS.cash ?? 'Cash',
+      value: point.cash ?? point.cashflowAfterTax ?? point.cumulativeCash,
     },
     {
       key: 'investedCashflow',
