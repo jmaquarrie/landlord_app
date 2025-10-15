@@ -6730,7 +6730,7 @@ export default function App() {
     propertyValue: true,
     propertyNetAfterTax: false,
     netWealthAfterTax: true,
-    investedRent: false,
+    investedRent: true,
   });
   const [rateSeriesActive, setRateSeriesActive] = useState({
     capRate: false,
@@ -8545,7 +8545,13 @@ export default function App() {
 
   const planTooltipFormatter = useCallback((value) => currency(value), []);
   const planHasReinvestedCash = useMemo(
-    () => planAnalysis.chart.some((point) => Number(point?.investedRent) > 0),
+    () =>
+      planAnalysis.chart.some(
+        (point) =>
+          Number(
+            point?.investedRent ?? point?.reinvestedCash ?? point?.meta?.totals?.reinvestedCash ?? 0
+          ) > 0
+      ),
     [planAnalysis.chart]
   );
   const planChartFocusPoint = useMemo(() => {
@@ -9100,15 +9106,24 @@ export default function App() {
             0
         );
         const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue ?? 0);
+        const investedRent = Number(
+          point?.investedRent ??
+            point?.reinvestFund ??
+            point?.meta?.investedRentValue ??
+            point?.meta?.reinvestFundValue ??
+            0
+        );
         const propertyNetAfterTaxValue = Number(point?.propertyNetAfterTax) || 0;
-        const netWealthAfterTax = Number(
+        const netWealthAfterTaxBase = Number(
           point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ?? propertyNetAfterTaxValue + indexFundValue
         );
+        const netWealthAfterTax = netWealthAfterTaxBase + Math.max(0, investedRent);
         return {
           ...point,
           cashflowAfterTax,
           netWealthAfterTax,
           indexFundValue,
+          investedRent,
         };
       });
   }, [equity.chart, chartRange]);
@@ -10302,19 +10317,32 @@ export default function App() {
   const exitCumCash = Number.isFinite(equity.exitCumCash) ? equity.exitCumCash : 0;
   const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
   const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
-  const reinvestActive = Boolean(inputs.reinvestIncome) && reinvestRate > 0 && reinvestFundValue > 0;
+  const reinvestSelected = Boolean(inputs.reinvestIncome) && reinvestRate > 0;
+  const reinvestSeriesHasBalance = useMemo(
+    () =>
+      Array.isArray(equity.chart) &&
+      equity.chart.some((point) =>
+        Number(
+          point?.investedRent ??
+            point?.reinvestFund ??
+            point?.meta?.investedRentValue ??
+            point?.meta?.reinvestFundValue ??
+            0
+        ) > 0
+      ),
+    [equity.chart]
+  );
+  const reinvestActive = reinvestSelected && reinvestSeriesHasBalance;
 
   useEffect(() => {
-    if (reinvestActive) {
-      return;
-    }
     setActiveSeries((prev) => {
-      if (prev.investedRent === false) {
+      const shouldEnable = reinvestSelected;
+      if ((prev.investedRent ?? false) === shouldEnable) {
         return prev;
       }
-      return { ...prev, investedRent: false };
+      return { ...prev, investedRent: shouldEnable };
     });
-  }, [reinvestActive]);
+  }, [reinvestSelected]);
   const reinvestRateLabel = formatPercent(reinvestRate);
 
   const exitCumCashPreTaxNet = exitCumCash - reinvestFundValue;
@@ -14125,7 +14153,7 @@ export default function App() {
                                 type: 'line',
                               },
                             ];
-                            if (reinvestActive) {
+                            if (reinvestSelected) {
                               extraEntries.push({
                                 dataKey: 'investedRent',
                                 value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
@@ -14192,7 +14220,7 @@ export default function App() {
                           strokeWidth={2}
                           dot={false}
                           isAnimationActive={false}
-                          hide={!activeSeries.investedRent || !reinvestActive}
+                          hide={!activeSeries.investedRent || !reinvestSelected}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -15745,7 +15773,7 @@ export default function App() {
                     { key: 'investedRent', label: 'Reinvested cash (after tax)' },
                   ].map((option) => {
                     const checked = activeSeries[option.key] !== false;
-                    const disabled = option.key === 'investedRent' && !reinvestActive;
+                    const disabled = option.key === 'investedRent' && !reinvestSelected;
                     return (
                       <label
                         key={option.key}
@@ -15804,7 +15832,7 @@ export default function App() {
                                   type: 'line',
                                 },
                               ];
-                              if (reinvestActive) {
+                              if (reinvestSelected) {
                                 extraEntries.push({
                                   dataKey: 'investedRent',
                                   value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
@@ -15902,7 +15930,7 @@ export default function App() {
                             dot={false}
                             yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.investedRent}
+                            hide={!activeSeries.investedRent || !reinvestSelected}
                           />
                           <Area
                             type="monotone"
