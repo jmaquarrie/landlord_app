@@ -962,6 +962,7 @@ const DEFAULT_INPUTS = {
   annualAppreciation: 0.03,
   rentGrowth: 0.02,
   exitYear: 20,
+  neverSell: false,
   sellingCostsPct: 0.02,
   discountRate: 0.07,
   irrHurdle: 0.12,
@@ -2312,6 +2313,7 @@ function transformCloneForExport(root) {
 
 function calculateEquity(rawInputs) {
   const inputs = { ...DEFAULT_INPUTS, ...rawInputs };
+  const neverSell = Boolean(inputs.neverSell);
 
   const stampDuty = calcStampDuty(
     inputs.purchasePrice,
@@ -2465,6 +2467,7 @@ function calculateEquity(rawInputs) {
   let exitCumCash = 0;
   let exitCumCashAfterTax = 0;
   let exitNetSaleProceeds = 0;
+  let exitPropertyEquityValue = 0;
   let indexVal = indexInitialInvestment;
   let reinvestFundValue = 0;
   let investedRentValue = 0;
@@ -2480,11 +2483,12 @@ function calculateEquity(rawInputs) {
   const annualNoiValues = [];
   const annualCashflowsPreTax = [];
   const annualCashflowsAfterTax = [];
-  const initialNetEquity =
-    inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
   const initialSaleValue = inputs.purchasePrice;
   const initialSaleCosts = initialSaleValue * inputs.sellingCostsPct;
-  const initialNetSaleProceeds = initialSaleValue - initialSaleCosts - loan;
+  const initialPropertyEquity = initialSaleValue - loan;
+  const initialAppliedSaleCosts = neverSell ? 0 : initialSaleCosts;
+  const initialNetEquity = initialPropertyEquity - initialAppliedSaleCosts;
+  const initialNetSaleProceeds = initialPropertyEquity - initialSaleCosts;
   chart.push({
     year: 0,
     indexFund: indexVal,
@@ -2506,8 +2510,10 @@ function calculateEquity(rawInputs) {
       propertyValue: initialSaleValue,
       saleValue: initialSaleValue,
       saleCosts: initialSaleCosts,
+      appliedSaleCosts: initialAppliedSaleCosts,
       remainingLoan: loan,
       netSaleIfSold: initialNetSaleProceeds,
+      propertyEquityValue: initialPropertyEquity,
       cumulativeCashPreTax: 0,
       cumulativeCashPreTaxNet: 0,
       cumulativeCashAfterTax: 0,
@@ -2525,6 +2531,7 @@ function calculateEquity(rawInputs) {
       indexBasis,
       reinvestShare,
       shouldReinvest,
+      neverSell,
       purchasePrice: inputs.purchasePrice,
       projectCost,
       cashInvested: cashIn,
@@ -2610,7 +2617,9 @@ function calculateEquity(rawInputs) {
 
     const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     const saleCostsEstimate = vt * inputs.sellingCostsPct;
-    const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
+    const appliedSaleCosts = neverSell ? 0 : saleCostsEstimate;
+    const propertyEquityValue = vt - remainingLoanYear;
+    const netSaleIfSold = propertyEquityValue - saleCostsEstimate;
     const capRateYear = vt > 0 ? noi / vt : 0;
     const yieldRateYear = projectCost > 0 ? noi / projectCost : 0;
     const cashOnCashYear = cashIn > 0 ? cash / cashIn : 0;
@@ -2626,24 +2635,22 @@ function calculateEquity(rawInputs) {
       ? cumulativeCashAfterTax - cumulativeReinvested
       : cumulativeCashAfterTax;
     const propertyGrossValue = vt + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
+    const propertyNetContribution = neverSell ? propertyEquityValue : netSaleIfSold;
+    const propertyNetValue = propertyNetContribution + cumulativeCashPreTaxNet + reinvestFundValue;
+    const propertyNetAfterTaxValue = propertyNetContribution + cumulativeCashAfterTaxNet + reinvestFundValue;
 
     let yearCashflowForCf = cash;
     let yearCashflowForNpv = afterTaxCash;
     if (y === inputs.exitYear) {
-      const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
-      const sell = fv * inputs.sellingCostsPct;
-      const rem =
-        inputs.loanType === 'interest_only'
-          ? loan
-          : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
-      const netSaleProceeds = fv - sell - rem;
-      yearCashflowForCf = cash + netSaleProceeds;
-      yearCashflowForNpv = afterTaxCash + netSaleProceeds;
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
-      exitNetSaleProceeds = netSaleProceeds;
+      exitPropertyEquityValue = neverSell ? propertyEquityValue : 0;
+      if (!neverSell) {
+        const netSaleProceeds = netSaleIfSold;
+        yearCashflowForCf = cash + netSaleProceeds;
+        yearCashflowForNpv = afterTaxCash + netSaleProceeds;
+        exitNetSaleProceeds = netSaleProceeds;
+      }
     }
     cf.push(yearCashflowForCf);
     npvCashflows.push(yearCashflowForNpv);
@@ -2682,8 +2689,10 @@ function calculateEquity(rawInputs) {
         propertyValue: vt,
         saleValue: vt,
         saleCosts: saleCostsEstimate,
+        appliedSaleCosts,
         remainingLoan: remainingLoanYear,
         netSaleIfSold,
+        propertyEquityValue,
         cumulativeCashPreTax,
         cumulativeCashPreTaxNet,
         cumulativeCashAfterTax,
@@ -2701,6 +2710,7 @@ function calculateEquity(rawInputs) {
         indexBasis,
         reinvestShare,
         shouldReinvest,
+        neverSell,
         purchasePrice: inputs.purchasePrice,
         projectCost,
         cashInvested: cashIn,
@@ -2746,12 +2756,12 @@ function calculateEquity(rawInputs) {
   });
   const score = scoreResult.total;
 
-  const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
+  const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash + exitPropertyEquityValue;
   const propertyGrossWealthAtExit = futureValue + exitCumCash;
   const wealthDelta = propertyNetWealthAtExit - indexVal;
   const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
   const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
-  const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTax;
+  const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTax + exitPropertyEquityValue;
   const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
   const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
   
@@ -2795,6 +2805,7 @@ function calculateEquity(rawInputs) {
     exitCumCash,
     exitCumCashAfterTax,
     exitNetSaleProceeds,
+    exitPropertyEquityValue,
     propertyNetWealthAtExit,
     propertyGrossWealthAtExit,
     wealthDelta,
@@ -2808,6 +2819,7 @@ function calculateEquity(rawInputs) {
     wealthDeltaAfterTax,
     wealthDeltaAfterTaxPct,
     exitYear: inputs.exitYear,
+    neverSell,
     annualGrossRents,
     annualOperatingExpenses,
     annualNoiValues,
@@ -5095,7 +5107,8 @@ export default function App() {
       : scenarioStatus.tone === 'info'
       ? 'text-slate-600'
       : 'text-slate-500';
-  const estimatedExitEquity = equity.futureValue - equity.remaining - equity.sellingCosts;
+  const neverSell = Boolean(inputs.neverSell);
+  const estimatedExitEquity = equity.futureValue - equity.remaining - (neverSell ? 0 : equity.sellingCosts);
   const amortisationYears = Math.min(exitYears, Number(inputs.mortgageYears) || 0);
   const amortisationPayments = Math.min(exitYears * 12, (Number(inputs.mortgageYears) || 0) * 12);
 
@@ -5132,25 +5145,43 @@ export default function App() {
         </div>
       );
 
-  const sellingCostsTooltip = (
-    <div>
-      <div>Future value × selling cost rate.</div>
-      <div>
-        {currency(equity.futureValue)} × {formatPercent(sellingCostsRate)} = {currency(equity.sellingCosts)}
-      </div>
-    </div>
-  );
+  const sellingCostsTooltip = neverSell
+    ? (
+        <div>
+          <div>Selling costs shown for reference; "Never sell" keeps them out of net equity.</div>
+          <div>
+            {currency(equity.futureValue)} × {formatPercent(sellingCostsRate)} = {currency(equity.sellingCosts)}
+          </div>
+        </div>
+      )
+    : (
+        <div>
+          <div>Future value × selling cost rate.</div>
+          <div>
+            {currency(equity.futureValue)} × {formatPercent(sellingCostsRate)} = {currency(equity.sellingCosts)}
+          </div>
+        </div>
+      );
 
-  const estimatedEquityTooltip = (
-    <div>
-      <div>Future value − remaining loan − selling costs.</div>
-      <div>
-        {currency(equity.futureValue)} − {currency(equity.remaining)} − {currency(equity.sellingCosts)} = {currency(
-          estimatedExitEquity
-        )}
-      </div>
-    </div>
-  );
+  const estimatedEquityTooltip = neverSell
+    ? (
+        <div>
+          <div>Future value − remaining loan (selling costs not deducted).</div>
+          <div>
+            {currency(equity.futureValue)} − {currency(equity.remaining)} = {currency(estimatedExitEquity)}
+          </div>
+        </div>
+      )
+    : (
+        <div>
+          <div>Future value − remaining loan − selling costs.</div>
+          <div>
+            {currency(equity.futureValue)} − {currency(equity.remaining)} − {currency(equity.sellingCosts)} = {currency(
+              estimatedExitEquity
+            )}
+          </div>
+        </div>
+      );
 
   const indexGrowthRate = Number(inputs.indexFundGrowth) || 0;
   const indexMultiplier = 1 + indexGrowthRate;
@@ -5175,6 +5206,9 @@ export default function App() {
   const reinvestFundValue = Number.isFinite(equity.reinvestFundValue) ? equity.reinvestFundValue : 0;
   const exitCumCash = Number.isFinite(equity.exitCumCash) ? equity.exitCumCash : 0;
   const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
+  const exitPropertyEquityValue = Number.isFinite(equity.exitPropertyEquityValue)
+    ? equity.exitPropertyEquityValue
+    : 0;
   const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
   const reinvestActive = Boolean(inputs.reinvestIncome) && reinvestRate > 0 && reinvestFundValue > 0;
 
@@ -5208,7 +5242,12 @@ export default function App() {
     </div>
   );
 
-  const netSaleTooltip = (
+  const netSaleTooltip = neverSell ? (
+    <div>
+      <div>"Never sell" is enabled, so sale proceeds are excluded.</div>
+      <div>Property equity (value − remaining loan): {currency(exitPropertyEquityValue)}.</div>
+    </div>
+  ) : (
     <div>
       <div>Future value − selling costs − remaining loan.</div>
       <div>
@@ -5218,6 +5257,11 @@ export default function App() {
     </div>
   );
 
+  const propertyNetBaseDisplay = neverSell
+    ? `${currency(exitPropertyEquityValue)} (equity)`
+    : currency(equity.exitNetSaleProceeds);
+  const propertyNetAfterTaxBaseDisplay = propertyNetBaseDisplay;
+
   const propertyNetTooltip = (
     <div className="space-y-1">
       {netSaleTooltip}
@@ -5226,7 +5270,7 @@ export default function App() {
         <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
       ) : null}
       <div>
-        Property net = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashPreTaxNet)}
+        Property net = {propertyNetBaseDisplay} + {currency(exitCumCashPreTaxNet)}
         {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAtExit)}
       </div>
     </div>
@@ -5243,7 +5287,7 @@ export default function App() {
         <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
       ) : null}
       <div>
-        {propertyNetAfterTaxLabel} = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)}
+        {propertyNetAfterTaxLabel} = {propertyNetAfterTaxBaseDisplay} + {currency(exitCumCashAfterTaxNet)}
         {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAfterTax)}
       </div>
     </div>
@@ -6367,6 +6411,46 @@ export default function App() {
     </div>
   );
 
+  const exitYearInput = (idSuffix = 'exit') => {
+    const inputId = `exit-year-${idSuffix}`;
+    const toggleId = `never-sell-${idSuffix}`;
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-slate-600" htmlFor={inputId}>
+            Exit year
+          </label>
+          <label
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600"
+            htmlFor={toggleId}
+          >
+            <input
+              id={toggleId}
+              type="checkbox"
+              checked={Boolean(inputs.neverSell)}
+              onChange={(event) =>
+                setInputs((prev) => ({
+                  ...prev,
+                  neverSell: event.target.checked,
+                }))
+              }
+            />
+            <span>Never sell</span>
+          </label>
+        </div>
+        <input
+          id={inputId}
+          type="number"
+          value={Number.isFinite(inputs.exitYear) ? roundTo(inputs.exitYear, 0) : ''}
+          onChange={(event) => onNum('exitYear', Number(event.target.value), 0)}
+          step={1}
+          min={0}
+          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+        />
+      </div>
+    );
+  };
+
   const stepperInput = (key, label, { min = 0, max = Number.POSITIVE_INFINITY, step = 1 } = {}) => {
     const rawValue = Number.isFinite(inputs[key]) ? inputs[key] : min;
     const value = Number.isFinite(rawValue) ? rawValue : 0;
@@ -7290,7 +7374,7 @@ export default function App() {
                   {pctInput('annualAppreciation', 'Appreciation %')}
                   {pctInput('rentGrowth', 'Rent growth %')}
                   {pctInput('indexFundGrowth', 'Index fund growth %')}
-                  {smallInput('exitYear', 'Exit year', 1)}
+                  {exitYearInput('main')}
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
@@ -7513,6 +7597,13 @@ export default function App() {
                   className="h-full"
                   knowledgeKey="exitComparison"
                 >
+                  {neverSell ? (
+                    <Line
+                      label="Exit plan"
+                      value="Never sell (hold asset)"
+                      tooltip={'Sale proceeds are excluded because "Never sell" is enabled.'}
+                    />
+                  ) : null}
                   <Line
                     label="Index fund value"
                     value={currency(equity.indexValEnd)}
@@ -7712,6 +7803,39 @@ export default function App() {
                           strokeDasharray="5 3"
                           isAnimationActive={false}
                           hide={!activeSeries.investedRent || !reinvestActive}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="indexFund1_5x"
+                          name="Index fund 1.5×"
+                          stroke="#fb7185"
+                          fillOpacity={0}
+                          strokeWidth={1.5}
+                          strokeDasharray="6 3"
+                          isAnimationActive={false}
+                          hide={!activeSeries.indexFund1_5x}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="indexFund2x"
+                          name="Index fund 2×"
+                          stroke="#ec4899"
+                          fillOpacity={0}
+                          strokeWidth={1.5}
+                          strokeDasharray="4 2"
+                          isAnimationActive={false}
+                          hide={!activeSeries.indexFund2x}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="indexFund4x"
+                          name="Index fund 4×"
+                          stroke="#c026d3"
+                          fillOpacity={0}
+                          strokeWidth={1.5}
+                          strokeDasharray="2 2"
+                          isAnimationActive={false}
+                          hide={!activeSeries.indexFund4x}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -9309,7 +9433,7 @@ export default function App() {
                           />
                         </AreaChart>
                       </ResponsiveContainer>
-                      {chartFocus && chartFocus.data ? (
+                      {chartFocusLocked && chartFocus?.data ? (
                         <WealthChartOverlay
                           overlayRef={chartOverlayRef}
                           year={chartFocus.year}
@@ -9333,7 +9457,7 @@ export default function App() {
                 <div>
                   <h3 className="text-sm font-semibold text-slate-700">Exit & growth assumptions</h3>
                   <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {smallInput('exitYear', 'Exit year', 1)}
+                    {exitYearInput('modal')}
                     {pctInput('annualAppreciation', 'Capital growth %')}
                     {pctInput('rentGrowth', 'Rent growth %')}
                     {pctInput('indexFundGrowth', 'Index fund growth %')}
@@ -10600,19 +10724,38 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       break;
     }
     case 'propertyNet': {
-      breakdowns.push({ label: 'Sale price (est.)', value: meta.saleValue || 0 });
-      breakdowns.push({ label: 'Selling costs', value: -(meta.saleCosts || 0) });
-      breakdowns.push({ label: 'Remaining loan balance', value: -(meta.remainingLoan || 0) });
-      breakdowns.push({ label: 'Net sale proceeds', value: meta.netSaleIfSold || 0 });
-      breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxNet || 0 });
-      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+      if (meta.neverSell) {
+        breakdowns.push({ label: 'Property equity (value − debt)', value: meta.propertyEquityValue || 0 });
+        breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxNet || 0 });
+        breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+        if (Number(meta.saleCosts)) {
+          breakdowns.push({ label: 'Selling costs (if sold)', value: -(meta.saleCosts || 0) });
+        }
+      } else {
+        breakdowns.push({ label: 'Sale price (est.)', value: meta.saleValue || 0 });
+        breakdowns.push({ label: 'Selling costs', value: -(meta.saleCosts || 0) });
+        breakdowns.push({ label: 'Remaining loan balance', value: -(meta.remainingLoan || 0) });
+        breakdowns.push({ label: 'Net sale proceeds', value: meta.netSaleIfSold || 0 });
+        breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxNet || 0 });
+        breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+      }
       break;
     }
     case 'propertyNetAfterTax': {
-      breakdowns.push({ label: 'Net sale proceeds after debt & costs', value: meta.netSaleIfSold || 0 });
-      breakdowns.push({ label: `${propertyNetAfterTaxLabel} cash retained`, value: meta.cumulativeCashAfterTaxNet || 0 });
-      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
-      breakdowns.push({ label: rentalTaxCumulativeLabel, value: meta.cumulativePropertyTax || 0 });
+      if (meta.neverSell) {
+        breakdowns.push({ label: 'Property equity (value − debt)', value: meta.propertyEquityValue || 0 });
+        breakdowns.push({ label: `${propertyNetAfterTaxLabel} cash retained`, value: meta.cumulativeCashAfterTaxNet || 0 });
+        breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+        breakdowns.push({ label: rentalTaxCumulativeLabel, value: meta.cumulativePropertyTax || 0 });
+        if (Number(meta.saleCosts)) {
+          breakdowns.push({ label: 'Selling costs (if sold)', value: -(meta.saleCosts || 0) });
+        }
+      } else {
+        breakdowns.push({ label: 'Net sale proceeds after debt & costs', value: meta.netSaleIfSold || 0 });
+        breakdowns.push({ label: `${propertyNetAfterTaxLabel} cash retained`, value: meta.cumulativeCashAfterTaxNet || 0 });
+        breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+        breakdowns.push({ label: rentalTaxCumulativeLabel, value: meta.cumulativePropertyTax || 0 });
+      }
       break;
     }
     case 'investedRent': {
