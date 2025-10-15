@@ -235,7 +235,7 @@ const SERIES_LABELS = {
   propertyNetAfterTax: 'Property value after tax',
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
-  investedRent: 'Invested rent',
+  investedRent: 'Reinvested after-tax cash',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
@@ -1394,6 +1394,7 @@ const PLAN_ANALYSIS_EMPTY_TOTALS = {
   finalCashPosition: 0,
   finalExternalPosition: 0,
   finalIndexFundValue: 0,
+  finalReinvestedCash: 0,
   finalTotalNetWealth: 0,
   averageRentalYield: 0,
   averageCapRate: 0,
@@ -1753,8 +1754,16 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     }
 
     const portfolioCashAdjustment = cumulativeCash - propertyCashflowNet;
-    const combinedNetWealthBeforeTax = propertyNet + portfolioCashAdjustment;
-    const combinedNetWealthAfterTax = propertyNetAfterTax + portfolioCashAdjustment;
+    const propertyNetBeforeTaxExcludingReinvest = propertyNet - propertyInvestedRent;
+    const propertyNetAfterTaxExcludingReinvest = propertyNetAfterTax - propertyInvestedRent;
+    const combinedNetWealthBeforeTaxBase =
+      propertyNetBeforeTaxExcludingReinvest + portfolioCashAdjustment;
+    const combinedNetWealthAfterTaxBase =
+      propertyNetAfterTaxExcludingReinvest + portfolioCashAdjustment;
+    const combinedNetWealthBeforeTax =
+      combinedNetWealthBeforeTaxBase + propertyInvestedRent;
+    const combinedNetWealthAfterTax =
+      combinedNetWealthAfterTaxBase + propertyInvestedRent;
     const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
 
     chart.push({
@@ -1771,8 +1780,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
-      netWealthAfterTax: totalNetWealthWithIndex,
-      netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+      netWealthAfterTax: combinedNetWealthAfterTax,
+      netWealthBeforeTax: combinedNetWealthBeforeTax,
       cashFlow,
       cumulativeCash,
       externalCashFlow,
@@ -1781,6 +1790,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       indexFundValue,
       indexFundContribution,
       cumulativeIndexFundContribution,
+      reinvestedCash: propertyInvestedRent,
       meta: {
         propertyBreakdown,
         totals: {
@@ -1791,12 +1801,13 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           cashflowAfterTax: cumulativeCash,
           combinedNetWealth: combinedNetWealthAfterTax,
           combinedNetWealthBeforeTax,
-          netWealthAfterTax: totalNetWealthWithIndex,
-          netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+          netWealthAfterTax: combinedNetWealthAfterTax,
+          netWealthBeforeTax: combinedNetWealthBeforeTax,
           cumulativeCash,
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
           cumulativeExternal,
+          reinvestedCash: propertyInvestedRent,
         },
       },
     });
@@ -1879,10 +1890,16 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       0,
     finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
     finalIndexFundValue: lastPoint?.indexFundValue ?? lastPoint?.indexFund ?? 0,
+    finalReinvestedCash:
+      lastPoint?.reinvestedCash ??
+      lastPoint?.investedRent ??
+      lastPoint?.meta?.totals?.reinvestedCash ??
+      0,
     finalTotalNetWealth:
       lastPoint?.netWealthAfterTax ??
-      lastPoint?.totalNetWealthWithIndex ??
-      ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
+      lastPoint?.combinedNetWealth ??
+      lastPoint?.meta?.totals?.netWealthAfterTax ??
+      0,
     averageRentalYield,
     averageCapRate,
   };
@@ -6422,6 +6439,7 @@ export default function App() {
     indexFund: true,
     cashflowAfterTax: true,
     propertyValue: true,
+    investedRent: true,
     netWealthAfterTax: true,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
@@ -8355,6 +8373,10 @@ export default function App() {
 
 
   const planTooltipFormatter = useCallback((value) => currency(value), []);
+  const planHasReinvestedCash = useMemo(
+    () => planAnalysis.chart.some((point) => Number(point?.investedRent) > 0),
+    [planAnalysis.chart]
+  );
   const planChartFocusPoint = useMemo(() => {
     if (!Number.isFinite(planChartFocusYear)) {
       return null;
@@ -17026,6 +17048,7 @@ export default function App() {
                                 {...props}
                                 activeSeries={planChartSeriesActive}
                                 onToggle={togglePlanChartSeries}
+                                excludedKeys={planHasReinvestedCash ? [] : ['investedRent']}
                               />
                             )}
                           />
@@ -17061,6 +17084,19 @@ export default function App() {
                             strokeWidth={2}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyValue === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="investedRent"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested after-tax cash'}
+                            stroke={SERIES_COLORS.investedRent}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={
+                              planChartSeriesActive.investedRent === false || !planHasReinvestedCash
+                            }
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -17484,15 +17520,16 @@ export default function App() {
                           formatter={(value) => planTooltipFormatter(value)}
                           labelFormatter={(value) => `Year ${value}`}
                         />
-                        <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={planChartSeriesActive}
-                              onToggle={togglePlanChartSeries}
-                            />
-                          )}
-                        />
+                          <Legend
+                            content={(props) => (
+                              <ChartLegend
+                                {...props}
+                                activeSeries={planChartSeriesActive}
+                                onToggle={togglePlanChartSeries}
+                                excludedKeys={planHasReinvestedCash ? [] : ['investedRent']}
+                              />
+                            )}
+                          />
                         {planChartFocus ? (
                           <ReferenceLine
                             x={planChartFocus.year}
@@ -17559,6 +17596,19 @@ export default function App() {
                             strokeWidth={2}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyValue === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="investedRent"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested after-tax cash'}
+                            stroke={SERIES_COLORS.investedRent}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={
+                              planChartSeriesActive.investedRent === false || !planHasReinvestedCash
+                            }
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -18923,6 +18973,7 @@ function PlanWealthChartOverlay({
     return null;
   }
 
+  const reinvestedValue = Number(point.reinvestedCash ?? point.investedRent ?? 0);
   const summaryMetrics = [
     {
       key: 'indexFund',
@@ -18938,6 +18989,12 @@ function PlanWealthChartOverlay({
       key: 'cashflowAfterTax',
       label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax',
       value: point.cashflowAfterTax ?? point.cumulativeCash,
+    },
+    {
+      key: 'investedRent',
+      label: SERIES_LABELS.investedRent ?? 'Reinvested after-tax cash',
+      value:
+        Number.isFinite(reinvestedValue) && reinvestedValue > 0 ? reinvestedValue : NaN,
     },
     {
       key: 'netWealthAfterTax',
