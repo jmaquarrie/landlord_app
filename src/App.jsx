@@ -1257,6 +1257,7 @@ const DEFAULT_INPUTS = {
   rentGrowth: 0.02,
   exitYear: 20,
   sellingCostsPct: 0.02,
+  neverExit: false,
   discountRate: 0.07,
   irrHurdle: 0.12,
   buyerType: 'individual',
@@ -1366,8 +1367,11 @@ const sanitizePlanItem = (item) => {
   const inputExitYear = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const rawExit = Number(item.exitYearOverride ?? item.exitYear);
   const exitYearOverride = Number.isFinite(rawExit) && rawExit >= 0
-    ? clamp(Math.round(rawExit), 0, PLAN_MAX_PURCHASE_YEAR)
+    ? Math.max(0, Math.round(rawExit))
     : inputExitYear;
+  const neverExit = inputs.neverExit === true || item.neverExit === true;
+  inputs.exitYear = inputExitYear;
+  inputs.neverExit = neverExit;
   return {
     id,
     name,
@@ -1379,6 +1383,7 @@ const sanitizePlanItem = (item) => {
     incomeContribution,
     exitYearOverride,
     isPrimary,
+    neverExit,
   };
 };
 
@@ -1426,11 +1431,41 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     };
   }
 
-  const items = futurePlanItems.map((rawItem, index) => {
-    const sanitized = sanitizePlanItem(rawItem);
+  const sanitizedEntries = futurePlanItems
+    .map((rawItem, index) => {
+      const sanitized = sanitizePlanItem(rawItem);
+      if (!sanitized) {
+        return null;
+      }
+      return { sanitized, index };
+    })
+    .filter(Boolean);
+
+  const requestedHorizon = sanitizedEntries.reduce((max, entry) => {
+    const { sanitized } = entry;
+    const desired = Math.max(
+      0,
+      Math.round(Number(sanitized.exitYearOverride ?? sanitized.inputs?.exitYear ?? 0))
+    );
+    return Math.max(max, desired);
+  }, 0);
+
+  const items = sanitizedEntries.map(({ sanitized, index }) => {
+    const desiredExitYear = Math.max(
+      0,
+      Math.round(Number(sanitized.exitYearOverride ?? sanitized.inputs?.exitYear ?? 0))
+    );
+    const effectiveExitYear = sanitized.neverExit
+      ? Math.max(desiredExitYear, requestedHorizon)
+      : desiredExitYear;
+    const metricsInputs = {
+      ...sanitized.inputs,
+      exitYear: effectiveExitYear,
+      neverExit: Boolean(sanitized.neverExit),
+    };
     let metrics = null;
     try {
-      metrics = calculateEquity(sanitized.inputs);
+      metrics = calculateEquity(metricsInputs);
     } catch (error) {
       console.warn('Unable to evaluate future plan item:', sanitized?.name ?? sanitized?.id ?? 'item', error);
     }
@@ -1490,11 +1525,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     }
 
     const chart = Array.from(chartByYear.values()).sort((a, b) => a.year - b.year);
-    const exitYearFromChart = chart.length > 0 ? chart[chart.length - 1].year : 0;
-    const metricsExitYear = Math.max(0, Math.round(Number(metrics?.exitYear) || 0));
-    const exitYearBase = Math.max(exitYearFromChart, metricsExitYear);
-    const desiredExitYear = Math.max(0, Math.round(Number(sanitized.exitYearOverride) || exitYearBase));
-    const exitYear = exitYearBase > 0 ? Math.min(desiredExitYear, exitYearBase) : desiredExitYear;
+    const exitYear = effectiveExitYear;
 
     const annualCashflows = Array.isArray(metrics?.annualCashflowsAfterTax)
       ? metrics.annualCashflowsAfterTax.map((value) => (Number.isFinite(Number(value)) ? Number(value) : 0))
@@ -1600,6 +1631,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   );
 
   const itemStates = new Map();
+  const reinvestmentStates = new Map();
   orderedIncluded.forEach((item) => {
     itemStates.set(item.id, {
       available: 0,
@@ -1607,6 +1639,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       injection: Math.max(0, item.initialOutlay),
       indexContribution: item.useIncomeForDeposit ? 0 : Math.max(0, item.initialOutlay),
     });
+    reinvestmentStates.set(item.id, { balance: 0, contributions: 0 });
   });
 
   const chart = [];
@@ -1635,9 +1668,33 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     const yearStartingCash = cumulativeCash;
     let availableCashPool = yearStartingCash;
 
+    const reinvestGrowthMultiplier = 1 + clampPercentage(indexFundGrowthRate, -0.99, 10);
+
     orderedIncluded.forEach((item, index) => {
       const propertyYear = year - item.purchaseYear;
-      if (propertyYear < 0 || propertyYear > item.exitYear) {
+      const reinvestState = reinvestmentStates.get(item.id) || { balance: 0, contributions: 0 };
+      reinvestmentStates.set(item.id, reinvestState);
+
+      if (propertyYear < 0) {
+        if (reinvestState.balance > 0) {
+          reinvestedFundBalance += reinvestState.balance;
+          reinvestedFundContributionTotal += reinvestState.contributions;
+        }
+        return;
+      }
+
+      if (propertyYear > item.exitYear) {
+        if (reinvestState.balance > 0) {
+          const priorBalance = reinvestState.balance;
+          const grownBalance = priorBalance * reinvestGrowthMultiplier;
+          reinvestState.balance = grownBalance;
+          const growthDelta = grownBalance - priorBalance;
+          if (growthDelta > 0) {
+            reinvestGrowthYear += growthDelta;
+          }
+          reinvestedFundBalance += reinvestState.balance;
+          reinvestedFundContributionTotal += reinvestState.contributions;
+        }
         return;
       }
 
@@ -1649,7 +1706,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         propertyYear,
         exitYear: item.exitYear,
         phase:
-          propertyYear === 0 ? 'purchase' : propertyYear === item.exitYear ? 'exit' : 'hold',
+          propertyYear === 0
+            ? 'purchase'
+            : !item.neverExit && propertyYear === item.exitYear
+            ? 'exit'
+            : 'hold',
         propertyValue: chartPoint?.propertyValue || 0,
         propertyGross: chartPoint?.propertyGross || 0,
         propertyNet: chartPoint?.propertyNet || 0,
@@ -1695,6 +1756,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         if (propertyAfterTaxCashYear > 0) {
           reinvestEligibleCashYear += propertyAfterTaxCashYear;
         }
+        reinvestState.balance = propertyReinvestedValue;
+        reinvestState.contributions = propertyReinvestedContributions;
+      } else if (reinvestState.balance > 0) {
+        reinvestedFundBalance += reinvestState.balance;
+        reinvestedFundContributionTotal += reinvestState.contributions;
       }
 
       const propertyState = itemStates.get(item.id);
@@ -1743,7 +1809,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const annualCash = item.annualCashflows[cashIndex] ?? 0;
         contribution.operatingCashflow = annualCash;
         contribution.cashFlow += annualCash;
-        if (propertyYear === item.exitYear) {
+        if (!item.neverExit && propertyYear === item.exitYear) {
           contribution.saleProceeds = item.exitProceeds;
           contribution.cashFlow += item.exitProceeds;
         }
@@ -5400,7 +5466,7 @@ function calculateEquity(rawInputs) {
     let yearCashflowForCf = cash;
     let yearCashflowForNpv = afterTaxCash;
     let realizedSaleProceeds = 0;
-    if (y === inputs.exitYear) {
+    if (!inputs.neverExit && y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
       const rem =
@@ -5432,7 +5498,7 @@ function calculateEquity(rawInputs) {
     const reinvestFundGrowth = Math.max(0, reinvestFundValue - cumulativeReinvested);
     const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
 
-    const propertyValueForChart = y === inputs.exitYear ? 0 : vt;
+    const propertyValueForChart = !inputs.neverExit && y === inputs.exitYear ? 0 : vt;
     const netWealthAfterTaxValue = propertyNetAfterTaxValue + indexVal;
     const netWealthBeforeTaxValue = propertyNetValue + indexVal;
 
@@ -5496,6 +5562,7 @@ function calculateEquity(rawInputs) {
         yieldRate: yieldRateYear,
         cashOnCash: cashOnCashYear,
         irrSeries: irrToDate,
+        neverExit: Boolean(inputs.neverExit),
         yearly: {
           gross,
           operatingExpenses: varOpex + fixed,
@@ -5516,6 +5583,18 @@ function calculateEquity(rawInputs) {
     });
 
     rent *= 1 + inputs.rentGrowth;
+  }
+
+  if (inputs.neverExit) {
+    const cumulativeCashPreTaxNetFinal = shouldReinvest
+      ? cumulativeCashPreTax - cumulativeReinvested
+      : cumulativeCashPreTax;
+    const cumulativeCashAfterTaxNetFinal = shouldReinvest
+      ? cumulativeCashAfterTax - cumulativeReinvested
+      : cumulativeCashAfterTax;
+    exitCumCash = cumulativeCashPreTaxNetFinal + reinvestFundValue;
+    exitCumCashAfterTax = cumulativeCashAfterTaxNetFinal + reinvestFundValue;
+    exitNetSaleProceeds = 0;
   }
 
   if (chart.length > 0) {
@@ -5554,13 +5633,28 @@ function calculateEquity(rawInputs) {
       lastPoint.netWealthBeforeTax ?? extensionPropertyNet + extensionIndexFund
     );
     const extensionPropertyGross = Number(lastPoint.propertyGross) || extensionPropertyNet;
+    const extensionPropertyValue = inputs.neverExit
+      ? Number(lastPoint.propertyValue ?? lastMeta.propertyValue) || extensionPropertyGross
+      : 0;
+    const extensionMetaPropertyValue = inputs.neverExit
+      ? lastMeta.propertyValue ?? extensionPropertyValue
+      : 0;
+    const extensionMetaSaleValue = inputs.neverExit
+      ? lastMeta.saleValue ?? extensionMetaPropertyValue
+      : 0;
+    const extensionMetaRemainingLoan = inputs.neverExit
+      ? lastMeta.remainingLoan ?? 0
+      : 0;
+    const extensionMetaNetSaleIfSold = inputs.neverExit
+      ? lastMeta.netSaleIfSold ?? extensionPropertyNet
+      : 0;
     chart.push({
       year: extensionYear,
       indexFund: extensionIndexFund,
       indexFund1_5x: extensionIndexFund * 1.5,
       indexFund2x: extensionIndexFund * 2,
       indexFund4x: extensionIndexFund * 4,
-      propertyValue: 0,
+      propertyValue: extensionPropertyValue,
       propertyGross: extensionPropertyGross,
       propertyNet: extensionPropertyNet,
       propertyNetAfterTax: extensionPropertyNetAfterTax,
@@ -5579,10 +5673,10 @@ function calculateEquity(rawInputs) {
       netWealthBeforeTax: extensionNetWealthBeforeTax,
       meta: {
         ...lastMeta,
-        propertyValue: 0,
-        saleValue: 0,
-        remainingLoan: 0,
-        netSaleIfSold: 0,
+        propertyValue: extensionMetaPropertyValue,
+        saleValue: extensionMetaSaleValue,
+        remainingLoan: extensionMetaRemainingLoan,
+        netSaleIfSold: extensionMetaNetSaleIfSold,
         cumulativeCashAfterTaxRealized: extensionCashflowGross,
         cumulativeCashAfterTaxNetRealized: extensionCashflowNet,
         cumulativeCashAfterTaxKeptRealized: extensionCashflowKept,
@@ -5591,6 +5685,7 @@ function calculateEquity(rawInputs) {
         realizedSaleProceeds: 0,
         netWealthAfterTax: extensionNetWealthAfterTax,
         netWealthBeforeTax: extensionNetWealthBeforeTax,
+        neverExit: Boolean(inputs.neverExit),
         extension: true,
       },
     });
@@ -5698,6 +5793,7 @@ function calculateEquity(rawInputs) {
     wealthDeltaAfterTax,
     wealthDeltaAfterTaxPct,
     exitYear: inputs.exitYear,
+    neverExit: Boolean(inputs.neverExit),
     annualGrossRents,
     annualOperatingExpenses,
     annualNoiValues,
@@ -12329,17 +12425,28 @@ export default function App() {
   const handlePlanExitYearChange = useCallback(
     (id, value) => {
       const numeric = Math.round(Number(value));
-      const sanitizedValue = clamp(
-        Number.isFinite(numeric) ? numeric : 0,
-        0,
-        PLAN_MAX_PURCHASE_YEAR
-      );
+      const sanitizedValue = Math.max(0, Number.isFinite(numeric) ? numeric : 0);
       updatePlanItem(id, (current) => ({
         ...current,
         exitYearOverride: sanitizedValue,
         inputs: {
           ...(current?.inputs ?? {}),
           exitYear: sanitizedValue,
+        },
+      }));
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanNeverExitToggle = useCallback(
+    (id, enabled) => {
+      const nextValue = Boolean(enabled);
+      updatePlanItem(id, (current) => ({
+        ...current,
+        neverExit: nextValue,
+        inputs: {
+          ...(current?.inputs ?? {}),
+          neverExit: nextValue,
         },
       }));
     },
@@ -12471,13 +12578,18 @@ export default function App() {
       if (!next || typeof next !== 'object') {
         return;
       }
-      updatePlanItem(id, (current) => ({
-        ...current,
-        inputs: {
+      updatePlanItem(id, (current) => {
+        const mergedInputs = {
           ...(current?.inputs ?? {}),
           ...next,
-        },
-      }));
+        };
+        const nextNeverExit = Boolean(mergedInputs.neverExit);
+        return {
+          ...current,
+          neverExit: nextNeverExit,
+          inputs: mergedInputs,
+        };
+      });
     },
     [updatePlanItem]
   );
@@ -13552,6 +13664,19 @@ export default function App() {
                   </div>
                   {pctInput('rentGrowth', 'Rent growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
+                  <label className="col-span-2 inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(inputs.neverExit)}
+                      onChange={(event) =>
+                        setInputs((prev) => ({
+                          ...prev,
+                          neverExit: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>Never exit this property</span>
+                  </label>
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
@@ -16708,9 +16833,11 @@ export default function App() {
                         );
                         const isExpanded = planExpandedRows[item.id] === true;
                         const isPrimaryRow = item.isPrimary === true || index === 0;
-                        const exitYearDisplay = Number.isFinite(Number(item.exitYearOverride))
+                        const exitYearInputValue = Number.isFinite(Number(item.exitYearOverride))
                           ? Math.max(0, Math.round(Number(item.exitYearOverride)))
                           : Math.max(0, Math.round(Number(item.exitYear)));
+                        const modeledExitYear = Math.max(0, Math.round(Number(item.exitYear)));
+                        const exitYearDisplay = item.neverExit ? modeledExitYear : exitYearInputValue;
                         return (
                           <Fragment key={item.id}>
                             <tr
@@ -16831,13 +16958,22 @@ export default function App() {
                                 <input
                                   type="number"
                                   min={0}
-                                  max={PLAN_MAX_PURCHASE_YEAR}
-                                  value={exitYearDisplay}
+                                  value={exitYearInputValue}
                                   onChange={(event) => handlePlanExitYearChange(item.id, event.target.value)}
                                   className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
                                 />
+                                <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-500">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(item.neverExit)}
+                                    onChange={(event) => handlePlanNeverExitToggle(item.id, event.target.checked)}
+                                  />
+                                  <span>Never exit</span>
+                                </div>
                                 <div className="mt-1 text-[10px] text-slate-500">
-                                  Hold for {exitYearDisplay} year{exitYearDisplay === 1 ? '' : 's'}
+                                  {item.neverExit
+                                    ? `Modelled for ${modeledExitYear} year${modeledExitYear === 1 ? '' : 's'} while holding`
+                                    : `Hold for ${exitYearDisplay} year${exitYearDisplay === 1 ? '' : 's'}`}
                                 </div>
                               </td>
                               <td className="px-3 py-3">
@@ -19823,11 +19959,18 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
             <input
               type="number"
               min={0}
-              max={PLAN_MAX_PURCHASE_YEAR}
               value={exitYearValue}
               onChange={(event) => onExitYearChange?.(event.target.value)}
               className="rounded-lg border border-slate-300 px-3 py-1.5"
             />
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+            <input
+              type="checkbox"
+              checked={Boolean(inputs.neverExit)}
+              onChange={(event) => handleCheckboxChange('neverExit', event.target.checked)}
+            />
+            <span>Never exit this property</span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="font-medium text-slate-600">Selling costs %</span>
