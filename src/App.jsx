@@ -227,7 +227,7 @@ const SERIES_COLORS = {
 };
 
 const SERIES_LABELS = {
-  indexFund: 'Index fund value',
+  indexFund: 'Index fund',
   cashflow: 'Cashflow',
   propertyValue: 'Property value',
   propertyGross: 'Property gross',
@@ -235,7 +235,7 @@ const SERIES_LABELS = {
   propertyNetAfterTax: 'Property value after tax',
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
-  investedRent: 'Reinvested after-tax cash',
+  investedRent: 'Reinvested cash (after tax)',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
@@ -254,7 +254,7 @@ const SERIES_LABELS = {
   cumulativeDiscounted: 'NPV to date',
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
-  cashflowAfterTax: 'Cashflow after tax',
+  cashflowAfterTax: 'Cashflow (after tax)',
   netWealthAfterTax: 'Net wealth (after tax)',
   netWealthBeforeTax: 'Net wealth (before tax)',
 };
@@ -6595,7 +6595,7 @@ export default function App() {
     indexFund4x: false,
     cashflowAfterTax: true,
     propertyValue: true,
-    propertyNetAfterTax: true,
+    propertyNetAfterTax: false,
     netWealthAfterTax: true,
     investedRent: false,
   });
@@ -8449,24 +8449,11 @@ export default function App() {
       if (planChartFocusLocked) {
         return;
       }
-      if (!event || event.isTooltipActive === false) {
+      if ((!event || event.isTooltipActive === false) && planChartFocusYear !== null) {
         setPlanChartFocusYear(null);
-        return;
       }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setPlanChartFocusYear(null);
-        return;
-      }
-      const year = Math.max(0, Math.round(activeYear));
-      const match = planAnalysis.chart.find((point) => Number(point?.year) === year);
-      if (!match) {
-        setPlanChartFocusYear(null);
-        return;
-      }
-      setPlanChartFocusYear(year);
     },
-    [planChartFocusLocked, planAnalysis.chart]
+    [planChartFocusLocked, planChartFocusYear]
   );
 
   const handlePlanChartMouseLeave = useCallback(() => {
@@ -9992,28 +9979,11 @@ export default function App() {
       if (chartFocusLocked) {
         return;
       }
-      if (!event || event.isTooltipActive === false) {
+      if ((!event || event.isTooltipActive === false) && chartFocus !== null) {
         setChartFocus(null);
-        return;
       }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setChartFocus(null);
-        return;
-      }
-      const match = filteredChartData.find((point) => Number(point?.year) === activeYear);
-      if (!match) {
-        setChartFocus(null);
-        return;
-      }
-      setChartFocus((prev) => {
-        if (prev?.year === activeYear && prev.data === match) {
-          return prev;
-        }
-        return { year: activeYear, data: match };
-      });
     },
-    [chartFocusLocked, filteredChartData]
+    [chartFocusLocked, chartFocus]
   );
 
   const handleChartMouseLeave = useCallback(() => {
@@ -13996,7 +13966,7 @@ export default function App() {
                         <Area
                           type="monotone"
                           dataKey="indexFund"
-                          name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                          name={SERIES_LABELS.indexFund ?? 'Index fund'}
                           stroke={SERIES_COLORS.indexFund}
                           fill="rgba(249,115,22,0.2)"
                           strokeWidth={2}
@@ -14006,7 +13976,7 @@ export default function App() {
                         <Area
                           type="monotone"
                           dataKey="cashflowAfterTax"
-                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                           stroke={SERIES_COLORS.cashflowAfterTax}
                           fill="rgba(16,185,129,0.18)"
                           strokeWidth={2}
@@ -14023,16 +13993,6 @@ export default function App() {
                           isAnimationActive={false}
                           hide={!activeSeries.propertyValue}
                         />
-                        <Area
-                          type="monotone"
-                          dataKey="propertyNetAfterTax"
-                          name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
-                          stroke={SERIES_COLORS.propertyNetAfterTax}
-                          fill="rgba(147,51,234,0.2)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={!activeSeries.propertyNetAfterTax}
-                        />
                         <RechartsLine
                           type="monotone"
                           dataKey="netWealthAfterTax"
@@ -14043,14 +14003,13 @@ export default function App() {
                           isAnimationActive={false}
                           hide={!activeSeries.netWealthAfterTax}
                         />
-                        <Area
+                        <RechartsLine
                           type="monotone"
                           dataKey="investedRent"
-                          name="Invested rent"
-                          stroke="#0d9488"
-                          fill="rgba(13,148,136,0.15)"
+                          name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                          stroke={SERIES_COLORS.investedRent}
                           strokeWidth={2}
-                          strokeDasharray="5 3"
+                          dot={false}
                           isAnimationActive={false}
                           hide={!activeSeries.investedRent || !reinvestActive}
                         />
@@ -15602,7 +15561,7 @@ export default function App() {
                     { key: 'indexFund1_5x', label: 'Index fund 1.5×' },
                     { key: 'indexFund2x', label: 'Index fund 2×' },
                     { key: 'indexFund4x', label: 'Index fund 4×' },
-                    { key: 'investedRent', label: 'Invested rent' },
+                    { key: 'investedRent', label: 'Reinvested cash (after tax)' },
                   ].map((option) => {
                     const checked = activeSeries[option.key] !== false;
                     const disabled = option.key === 'investedRent' && !reinvestActive;
@@ -15660,12 +15619,11 @@ export default function App() {
                                 {...props}
                                 activeSeries={activeSeries}
                                 onToggle={toggleSeries}
-                                excludedKeys={[
-                                  'indexFund1_5x',
-                                  'indexFund2x',
-                                  'indexFund4x',
-                                  'investedRent',
-                                ]}
+                                excludedKeys={
+                                  reinvestActive
+                                    ? ['indexFund1_5x', 'indexFund2x', 'indexFund4x']
+                                    : ['indexFund1_5x', 'indexFund2x', 'indexFund4x', 'investedRent']
+                                }
                               />
                             )}
                           />
@@ -15697,7 +15655,7 @@ export default function App() {
                           <Area
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -15708,7 +15666,7 @@ export default function App() {
                           <Area
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -15727,17 +15685,6 @@ export default function App() {
                             isAnimationActive={false}
                             hide={!activeSeries.propertyValue}
                           />
-                          <Area
-                            type="monotone"
-                            dataKey="propertyNetAfterTax"
-                            name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
-                            stroke={SERIES_COLORS.propertyNetAfterTax}
-                            fill="rgba(147,51,234,0.2)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.propertyNetAfterTax}
-                          />
                           <RechartsLine
                             type="monotone"
                             dataKey="netWealthAfterTax"
@@ -15749,14 +15696,13 @@ export default function App() {
                             isAnimationActive={false}
                             hide={!activeSeries.netWealthAfterTax}
                           />
-                          <Area
+                          <RechartsLine
                             type="monotone"
                             dataKey="investedRent"
-                            name="Invested rent"
-                            stroke="#0d9488"
-                            fill="rgba(13,148,136,0.15)"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                            stroke={SERIES_COLORS.investedRent}
                             strokeWidth={2}
-                            strokeDasharray="5 3"
+                            dot={false}
                             yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.investedRent}
@@ -17094,7 +17040,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -17105,7 +17051,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17127,7 +17073,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="investedRent"
-                            name={SERIES_LABELS.investedRent ?? 'Reinvested after-tax cash'}
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
                             stroke={SERIES_COLORS.investedRent}
                             strokeWidth={2}
                             dot={false}
@@ -17606,7 +17552,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -17617,7 +17563,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17639,7 +17585,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="investedRent"
-                            name={SERIES_LABELS.investedRent ?? 'Reinvested after-tax cash'}
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
                             stroke={SERIES_COLORS.investedRent}
                             strokeWidth={2}
                             dot={false}
@@ -19015,7 +18961,7 @@ function PlanWealthChartOverlay({
   const summaryMetrics = [
     {
       key: 'indexFund',
-      label: SERIES_LABELS.indexFund ?? 'Index fund value',
+      label: SERIES_LABELS.indexFund ?? 'Index fund',
       value: point.indexFund ?? point.indexFundValue,
     },
     {
@@ -19025,12 +18971,12 @@ function PlanWealthChartOverlay({
     },
     {
       key: 'cashflowAfterTax',
-      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax',
+      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)',
       value: point.cashflowAfterTax ?? point.cumulativeCash,
     },
     {
       key: 'investedRent',
-      label: SERIES_LABELS.investedRent ?? 'Reinvested after-tax cash',
+      label: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
       value:
         Number.isFinite(reinvestedValue) && reinvestedValue > 0 ? reinvestedValue : NaN,
     },
