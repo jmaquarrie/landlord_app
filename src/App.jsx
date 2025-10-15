@@ -1869,12 +1869,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         ? clampPercentage(reinvestContributionYear / reinvestEligibleCashYear, 0, 1)
         : null;
     const portfolioCashAdjustment = cumulativeCash - propertyCashflowNet;
-    const propertyNetBeforeTaxExcludingReinvest = propertyNet - reinvestedFundBalance;
-    const propertyNetAfterTaxExcludingReinvest = propertyNetAfterTax - reinvestedFundBalance;
-    const combinedNetWealthBeforeTaxBase =
-      propertyNetBeforeTaxExcludingReinvest + portfolioCashAdjustment;
-    const combinedNetWealthAfterTaxBase =
-      propertyNetAfterTaxExcludingReinvest + portfolioCashAdjustment;
+    const combinedNetWealthBeforeTaxBase = propertyNet + portfolioCashAdjustment;
+    const combinedNetWealthAfterTaxBase = propertyNetAfterTax + portfolioCashAdjustment;
     const combinedNetWealthBeforeTax =
       combinedNetWealthBeforeTaxBase + reinvestedFundBalance;
     const combinedNetWealthAfterTax =
@@ -5478,9 +5474,9 @@ function calculateEquity(rawInputs) {
     const cumulativeCashAfterTaxNet = shouldReinvest
       ? cumulativeCashAfterTax - cumulativeReinvested
       : cumulativeCashAfterTax;
-    const propertyGrossValue = vt + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
+    const propertyGrossValue = vt + cumulativeCashPreTaxNet;
+    const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet;
+    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet;
 
     let yearCashflowForCf = cash;
     let yearCashflowForNpv = afterTaxCash;
