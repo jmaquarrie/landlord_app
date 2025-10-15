@@ -1624,7 +1624,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     let propertyNetAfterTax = 0;
     let propertyCashflowNet = 0;
     let propertyCashflowGross = 0;
-    let propertyInvestedRent = 0;
+    let reinvestedFundBalance = 0;
+    let reinvestedFundContributionTotal = 0;
+    let reinvestContributionYear = 0;
+    let reinvestGrowthYear = 0;
+    let reinvestEligibleCashYear = 0;
     let cashFlow = 0;
     let externalCashFlow = 0;
     let indexFundContribution = 0;
@@ -1672,7 +1676,25 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const grossCashValue = Number(chartPoint.cashflowGross ?? chartPoint.cashflow) || 0;
         propertyCashflowNet += netCashValue;
         propertyCashflowGross += grossCashValue;
-        propertyInvestedRent += Number(chartPoint.investedRent) || 0;
+        const propertyReinvestedValue =
+          Number(chartPoint.reinvestFund ?? chartPoint.investedRent ?? chartPoint.meta?.reinvestFundValue) || 0;
+        const propertyReinvestedContributions =
+          Number(
+            chartPoint.meta?.investedRentContributions ?? chartPoint.meta?.cumulativeReinvested ?? 0
+          ) || 0;
+        const propertyReinvestContributionYear =
+          Number(chartPoint.meta?.yearly?.reinvestContribution ?? 0) || 0;
+        const propertyReinvestGrowthYear =
+          Number(chartPoint.meta?.yearly?.investedRentGrowth ?? 0) || 0;
+        const propertyAfterTaxCashYear =
+          Number(chartPoint.meta?.yearly?.cashAfterTax ?? 0);
+        reinvestedFundBalance += propertyReinvestedValue;
+        reinvestedFundContributionTotal += propertyReinvestedContributions;
+        reinvestContributionYear += propertyReinvestContributionYear;
+        reinvestGrowthYear += propertyReinvestGrowthYear;
+        if (propertyAfterTaxCashYear > 0) {
+          reinvestEligibleCashYear += propertyAfterTaxCashYear;
+        }
       }
 
       const propertyState = itemStates.get(item.id);
@@ -1753,17 +1775,25 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cumulativeIndexFundContribution += indexFundContribution;
     }
 
+    const reinvestedFundGrowthTotal = Math.max(
+      0,
+      reinvestedFundBalance - reinvestedFundContributionTotal
+    );
+    const reinvestShare =
+      reinvestEligibleCashYear > 0
+        ? clampPercentage(reinvestContributionYear / reinvestEligibleCashYear, 0, 1)
+        : null;
     const portfolioCashAdjustment = cumulativeCash - propertyCashflowNet;
-    const propertyNetBeforeTaxExcludingReinvest = propertyNet - propertyInvestedRent;
-    const propertyNetAfterTaxExcludingReinvest = propertyNetAfterTax - propertyInvestedRent;
+    const propertyNetBeforeTaxExcludingReinvest = propertyNet - reinvestedFundBalance;
+    const propertyNetAfterTaxExcludingReinvest = propertyNetAfterTax - reinvestedFundBalance;
     const combinedNetWealthBeforeTaxBase =
       propertyNetBeforeTaxExcludingReinvest + portfolioCashAdjustment;
     const combinedNetWealthAfterTaxBase =
       propertyNetAfterTaxExcludingReinvest + portfolioCashAdjustment;
     const combinedNetWealthBeforeTax =
-      combinedNetWealthBeforeTaxBase + propertyInvestedRent;
+      combinedNetWealthBeforeTaxBase + reinvestedFundBalance;
     const combinedNetWealthAfterTax =
-      combinedNetWealthAfterTaxBase + propertyInvestedRent;
+      combinedNetWealthAfterTaxBase + reinvestedFundBalance;
     const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
 
     chart.push({
@@ -1776,7 +1806,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cashflowNet: propertyCashflowNet,
       cashflowGross: propertyCashflowGross,
       cashflowAfterTax: cumulativeCash,
-      investedRent: propertyInvestedRent,
+      investedRent: reinvestedFundBalance,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
@@ -1790,9 +1820,17 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       indexFundValue,
       indexFundContribution,
       cumulativeIndexFundContribution,
-      reinvestedCash: propertyInvestedRent,
+      reinvestedCash: reinvestedFundBalance,
       meta: {
         propertyBreakdown,
+        shouldReinvest: reinvestedFundBalance > 0,
+        reinvestShare,
+        investedRentContributions: reinvestedFundContributionTotal,
+        investedRentGrowth: reinvestedFundGrowthTotal,
+        yearly: {
+          reinvestContribution: reinvestContributionYear,
+          investedRentGrowth: reinvestGrowthYear,
+        },
         totals: {
           propertyValue,
           propertyNet,
@@ -1807,7 +1845,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
           cumulativeExternal,
-          reinvestedCash: propertyInvestedRent,
+          reinvestedCash: reinvestedFundBalance,
         },
       },
     });
