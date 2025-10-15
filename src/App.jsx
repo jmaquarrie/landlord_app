@@ -1484,47 +1484,24 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const cashAfterTaxRetained = Number.isFinite(Number(yearlyMeta?.cashAfterTaxRetained))
           ? Number(yearlyMeta.cashAfterTaxRetained)
           : cashAfterTaxYear;
-        const cashflowKept = Number(
-          point?.meta?.cumulativeCashAfterTaxKeptRealized ??
-            point?.cashflow ??
-            point?.meta?.cumulativeCashAfterTaxKept ??
-            0
-        );
-        const cashflowNet = Number(
-          point?.meta?.cumulativeCashAfterTaxNetRealized ??
-            point?.cashflowNet ??
-            point?.meta?.cumulativeCashAfterTaxNet ??
-            cashflowKept
-        );
-        const cashflowGross = Number(
-          point?.meta?.cumulativeCashAfterTaxRealized ??
-            point?.cashflowGross ??
-            point?.meta?.cumulativeCashAfterTax ??
-            cashflowKept
-        );
-        const netWealthAfterTaxValue = Number(
-          point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ??
-            (Number(point?.propertyNetAfterTax) || 0) + indexFundValue
-        );
-        const netWealthBeforeTaxValue = Number(
-          point?.netWealthBeforeTax ?? point?.meta?.netWealthBeforeTax ??
-            (Number(point?.propertyNet) || 0) + indexFundValue
-        );
         chartByYear.set(year, {
           year,
           propertyValue: Number(point?.propertyValue) || 0,
           propertyGross: Number(point?.propertyGross) || 0,
           propertyNet: Number(point?.propertyNet) || 0,
           propertyNetAfterTax: Number(point?.propertyNetAfterTax) || 0,
-          cashflow: cashflowNet,
-          cashflowNet,
-          cashflowGross,
-          cashflowKept,
+          cashflow: Number(point?.cashflowNet ?? point?.cashflow) || 0,
+          cashflowNet: Number(point?.cashflowNet ?? point?.cashflow) || 0,
+          cashflowGross: Number(point?.cashflowGross ?? point?.cashflow) || 0,
+          cashflowKept: Number(point?.cashflowNet ?? point?.cashflow) || 0,
           indexFund: indexFundValue,
-          investedRent: Number(point?.investedRent) || 0,
           reinvestFund: Number(point?.reinvestFund ?? point?.meta?.reinvestFundValue) || 0,
-          netWealthAfterTax: netWealthAfterTaxValue,
-          netWealthBeforeTax: netWealthBeforeTaxValue,
+          netWealthAfterTax:
+            Number(point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ?? 0) ||
+            (Number(point?.propertyNetAfterTax) || 0) + indexFundValue,
+          netWealthBeforeTax:
+            Number(point?.netWealthBeforeTax ?? point?.meta?.netWealthBeforeTax ?? 0) ||
+            (Number(point?.propertyNet) || 0) + indexFundValue,
           yearlyReinvestContribution: reinvestContribution,
           yearlyTax: taxPaid,
           yearlyCashAfterTax: cashAfterTaxYear,
@@ -1638,353 +1615,241 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     return (a.order ?? 0) - (b.order ?? 0);
   });
 
-  const maxYear = orderedIncluded.reduce(
-    (acc, item) => Math.max(acc, item.purchaseYear + Math.max(0, item.exitYear)),
-    0
-  );
-
-  const itemStates = new Map();
-  orderedIncluded.forEach((item) => {
-    itemStates.set(item.id, {
-      available: 0,
-      applied: 0,
-      injection: Math.max(0, item.initialOutlay),
-      indexContribution: item.useIncomeForDeposit ? 0 : Math.max(0, item.initialOutlay),
-      cumulativeTax: 0,
-    });
-  });
-
-  const chart = [];
-  const planCashflows = [];
-  let cumulativeCash = 0;
-  let cumulativeExternal = 0;
-  let cumulativeTaxes = 0;
-  let indexFundValue = 0;
-  let cumulativeIndexFundContribution = 0;
-  let cumulativeInvestedCash = 0;
-  let investedCashBalance = 0;
-
   const planIndexGrowthRate = clampPercentage(indexFundGrowthRate, -0.99, 10);
+  const itemTimelines = new Map();
+  let maxYear = 0;
 
-  for (let year = 0; year <= maxYear; year++) {
-    const propertyBreakdown = [];
-    let propertyValue = 0;
-    let propertyGross = 0;
-    let propertyNet = 0;
-    let propertyNetAfterTax = 0;
-    let propertyCashflowNet = 0;
-    let propertyCashflowGross = 0;
-    const yearStartingInvestedBalance = investedCashBalance;
-    if (Number.isFinite(yearStartingInvestedBalance) && yearStartingInvestedBalance !== 0) {
-      investedCashBalance = yearStartingInvestedBalance * (1 + planIndexGrowthRate);
-    }
-    let totalLoanBalance = 0;
-    let cashFlow = 0;
-    let externalCashFlow = 0;
-    let indexFundContribution = 0;
-    let investedCashContribution = 0;
-    let annualTaxes = 0;
-    const yearStartingCash = cumulativeCash;
-    let availableCashPool = yearStartingCash;
+  orderedIncluded.forEach((item, orderIndex) => {
+    const propertyYears = new Set(Array.from(item.chartByYear.keys()).map((value) => Number(value) || 0));
+    propertyYears.add(0);
+    const sortedYears = Array.from(propertyYears).sort((a, b) => a - b);
 
-    orderedIncluded.forEach((item, index) => {
-      const propertyYear = year - item.purchaseYear;
-      if (propertyYear < 0 || propertyYear > item.exitYear) {
+    let cumulativeCash = 0;
+    let cumulativeExternal = 0;
+    let cumulativeInvested = 0;
+    let cumulativeTax = 0;
+    let totalReinvested = 0;
+    let lastPropertyYear = 0;
+    const timelineByYear = new Map();
+
+    sortedYears.forEach((propertyYear) => {
+      const chartPoint = item.chartByYear.get(propertyYear);
+      if (!chartPoint) {
         return;
       }
 
-      const chartPoint = item.chartByYear.get(propertyYear);
-      const rawReinvestContribution = Number(chartPoint?.yearlyReinvestContribution ?? 0);
-      const reinvestContribution = Number.isFinite(rawReinvestContribution)
-        ? rawReinvestContribution
+      lastPropertyYear = Math.max(lastPropertyYear, propertyYear);
+      const planYear = item.purchaseYear + propertyYear;
+      const rawReinvest = Number.isFinite(Number(chartPoint.yearlyReinvestContribution))
+        ? Number(chartPoint.yearlyReinvestContribution)
         : 0;
-      const taxPaid = Number.isFinite(Number(chartPoint?.yearlyTax))
-        ? Number(chartPoint?.yearlyTax)
+      const taxPaid = Number.isFinite(Number(chartPoint.yearlyTax)) ? Number(chartPoint.yearlyTax) : 0;
+      const yearlyCashAfterTax = Number.isFinite(Number(chartPoint.yearlyCashAfterTax))
+        ? Number(chartPoint.yearlyCashAfterTax)
+        : propertyYear > 0
+        ? Number(item.annualCashflows[propertyYear - 1] ?? 0)
         : 0;
+      const yearlyCashAfterTaxRetained = Number.isFinite(Number(chartPoint.yearlyCashAfterTaxRetained))
+        ? Number(chartPoint.yearlyCashAfterTaxRetained)
+        : propertyYear > 0
+        ? Number(item.annualCashflows[propertyYear - 1] ?? yearlyCashAfterTax)
+        : 0;
+
+      let reinvestContribution = rawReinvest;
+      if (propertyYear > 0 && reinvestContribution === 0) {
+        const inferredReinvest = yearlyCashAfterTax - yearlyCashAfterTaxRetained;
+        if (Number.isFinite(inferredReinvest) && inferredReinvest > 0) {
+          reinvestContribution = inferredReinvest;
+        }
+      }
+
+      let operatingCashflow = 0;
+      let cashChange = 0;
+      let externalChange = 0;
+      let saleProceeds = 0;
+
+      if (propertyYear === 0) {
+        operatingCashflow = -item.initialOutlay;
+        externalChange = item.initialOutlay;
+      } else {
+        operatingCashflow = yearlyCashAfterTax;
+        cashChange += yearlyCashAfterTaxRetained;
+        if (!item.neverSell && propertyYear === item.exitYear) {
+          saleProceeds = item.exitProceeds;
+          cashChange += item.exitProceeds;
+        }
+      }
+
+      cumulativeCash += cashChange;
+      cumulativeExternal += externalChange;
+      cumulativeInvested += reinvestContribution;
+      cumulativeTax += taxPaid;
+      if (reinvestContribution > 0) {
+        totalReinvested += reinvestContribution;
+      }
+
       const contribution = {
         id: item.id,
-        name: item.displayName || item.name || `Plan property ${index + 1}`,
+        name: item.displayName || item.name || `Plan property ${orderIndex + 1}`,
         purchaseYear: item.purchaseYear,
         propertyYear,
         exitYear: item.exitYear,
         phase:
           propertyYear === 0
             ? 'purchase'
-            : propertyYear === item.exitYear && !item.neverSell
+            : !item.neverSell && propertyYear === item.exitYear
             ? 'exit'
             : 'hold',
-        propertyValue: chartPoint?.propertyValue || 0,
-        propertyGross: chartPoint?.propertyGross || 0,
-        propertyNet: chartPoint?.propertyNet || 0,
-        propertyNetAfterTax: chartPoint?.propertyNetAfterTax || 0,
-        operatingCashflow: 0,
-        saleProceeds: 0,
-        cashFlow: 0,
-        externalCashFlow: 0,
-        indexFundContribution: 0,
-        cumulativeCash: 0,
-        cumulativeExternal: 0,
-        cumulativeIndexFundContribution: 0,
-        reinvestContribution: 0,
-        cumulativeInvested: 0,
-        tax: 0,
-        cumulativeTax: 0,
-        appliedIncomeContribution: 0,
+        propertyValue: Number(chartPoint.propertyValue) || 0,
+        propertyGross: Number(chartPoint.propertyGross) || 0,
+        propertyNet: Number(chartPoint.propertyNet) || 0,
+        propertyNetAfterTax: Number(chartPoint.propertyNetAfterTax) || 0,
+        operatingCashflow,
+        saleProceeds,
+        cashFlow: cashChange,
+        externalCashFlow: externalChange,
+        indexFundContribution: reinvestContribution,
+        reinvestContribution,
+        tax: taxPaid,
+        loanBalance: Number(chartPoint?.meta?.remainingLoan ?? chartPoint?.meta?.loanBalance ?? 0) || 0,
+        cumulativeCash,
+        cumulativeExternal,
+        cumulativeIndexFundContribution: cumulativeInvested,
+        cumulativeInvested,
+        cumulativeTax,
         initialOutlay: item.initialOutlay,
-        externalOutlay: 0,
+        externalOutlay: externalChange,
+        appliedIncomeContribution: 0,
       };
 
-      if (chartPoint) {
-        propertyValue += Number(chartPoint.propertyValue) || 0;
-        propertyGross += Number(chartPoint.propertyGross) || 0;
-        propertyNet += Number(chartPoint.propertyNet) || 0;
-        propertyNetAfterTax += Number(chartPoint.propertyNetAfterTax) || 0;
-        const netCashValue = Number(chartPoint.cashflowNet ?? chartPoint.cashflow) || 0;
-        const grossCashValue = Number(chartPoint.cashflowGross ?? chartPoint.cashflow) || 0;
-        propertyCashflowNet += netCashValue;
-        propertyCashflowGross += grossCashValue;
-        const remainingLoan = Number(chartPoint?.meta?.remainingLoan ?? 0);
-        if (Number.isFinite(remainingLoan) && remainingLoan > 0) {
-          totalLoanBalance += remainingLoan;
-        }
-        if (reinvestContribution !== 0) {
-          investedCashContribution += reinvestContribution;
-        }
-        contribution.tax = taxPaid;
-        contribution.loanBalance = Number.isFinite(remainingLoan) ? Math.max(0, remainingLoan) : 0;
-        annualTaxes += taxPaid;
-      }
-
-      const propertyState = itemStates.get(item.id);
-      contribution.reinvestContribution = reinvestContribution;
-      if (propertyYear === 0) {
-        const depositTarget = item.initialOutlay;
-        const requested = item.useIncomeForDeposit
-          ? Math.min(
-              depositTarget,
-              item.requestedIncomeContribution > 0
-                ? item.requestedIncomeContribution
-                : depositTarget
-            )
-          : 0;
-        const availableBefore = Math.max(0, availableCashPool);
-        let applied = 0;
-        if (item.useIncomeForDeposit) {
-          applied = Math.min(requested, availableBefore);
-        }
-        const injection = Math.max(0, depositTarget - applied);
-        const indexContribution = injection;
-
-        contribution.operatingCashflow = -depositTarget;
-        if (applied > 0) {
-          contribution.cashFlow -= applied;
-        }
-        contribution.externalCashFlow += injection;
-        contribution.appliedIncomeContribution = applied;
-        contribution.externalOutlay = injection;
-
-        if (indexContribution > 0) {
-          contribution.indexFundContribution = indexContribution;
-          indexFundContribution += indexContribution;
-        }
-
-        if (propertyState) {
-          propertyState.available = availableBefore;
-          propertyState.depositTarget = depositTarget;
-          propertyState.applied = applied;
-          propertyState.injection = injection;
-          propertyState.indexContribution = indexContribution;
-        }
-
-        availableCashPool = Math.max(0, availableCashPool - applied);
-      } else if (propertyYear > 0) {
-        const cashIndex = propertyYear - 1;
-        const annualCash = item.annualCashflows[cashIndex] ?? 0;
-        contribution.operatingCashflow = annualCash;
-        contribution.cashFlow += annualCash;
-        if (!item.neverSell && propertyYear === item.exitYear) {
-          contribution.saleProceeds = item.exitProceeds;
-          contribution.cashFlow += item.exitProceeds;
-        }
-        if (reinvestContribution !== 0) {
-          contribution.indexFundContribution += reinvestContribution;
-          indexFundContribution += reinvestContribution;
-          contribution.cashFlow -= reinvestContribution;
-        }
-      }
-
-      if (propertyState) {
-        propertyState.cumulativeCash = (propertyState.cumulativeCash || 0) + contribution.cashFlow;
-        propertyState.cumulativeExternal =
-          (propertyState.cumulativeExternal || 0) + contribution.externalCashFlow;
-        propertyState.cumulativeIndexFundContribution =
-          (propertyState.cumulativeIndexFundContribution || 0) +
-          (contribution.indexFundContribution || 0);
-        if (reinvestContribution > 0) {
-          propertyState.indexContribution =
-            (propertyState.indexContribution || 0) + reinvestContribution;
-        }
-        propertyState.cumulativeInvested =
-          (propertyState.cumulativeInvested || 0) + reinvestContribution;
-        propertyState.cumulativeTax = (propertyState.cumulativeTax || 0) + taxPaid;
-        propertyState.loanBalance = contribution.loanBalance;
-        contribution.cumulativeCash = propertyState.cumulativeCash;
-        contribution.cumulativeExternal = propertyState.cumulativeExternal;
-        contribution.cumulativeIndexFundContribution =
-          propertyState.cumulativeIndexFundContribution;
-        contribution.cumulativeInvested = propertyState.cumulativeInvested;
-        contribution.cumulativeTax = propertyState.cumulativeTax;
-        if (Number.isFinite(propertyState.loanBalance)) {
-          contribution.loanBalance = propertyState.loanBalance;
-        }
-      }
-
-      cashFlow += contribution.cashFlow;
-      externalCashFlow += contribution.externalCashFlow;
-      propertyBreakdown.push(contribution);
+      timelineByYear.set(planYear, contribution);
     });
 
-    cumulativeCash += cashFlow;
-    cumulativeExternal += externalCashFlow;
-    cumulativeTaxes += annualTaxes;
-    cumulativeInvestedCash += investedCashContribution;
-    if (investedCashContribution !== 0) {
-      investedCashBalance += investedCashContribution;
-    }
-    const investedCashflowValue = investedCashBalance;
-    indexFundValue = indexFundValue * (1 + planIndexGrowthRate);
-    if (indexFundContribution > 0) {
-      indexFundValue += indexFundContribution;
-      cumulativeIndexFundContribution += indexFundContribution;
-    }
-
-    const propertyEquityBeforeTax =
-      propertyNet - propertyCashflowGross - investedCashflowValue;
-    const propertyEquityAfterTax =
-      propertyNetAfterTax - propertyCashflowNet - investedCashflowValue;
-    const externalOffset = cumulativeExternal;
-    const taxOffset = cumulativeTaxes;
-    const combinedNetWealthBeforeTax =
-      propertyEquityBeforeTax + cumulativeCash + investedCashflowValue - externalOffset;
-    const combinedNetWealthAfterTax =
-      propertyEquityAfterTax + cumulativeCash + investedCashflowValue - externalOffset - taxOffset;
-    const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
-
-    chart.push({
-      year,
-      propertyValue,
-      propertyGross,
-      propertyNet,
-      propertyNetAfterTax,
-      cashflow: propertyCashflowNet,
-      cashflowNet: propertyCashflowNet,
-      cashflowGross: propertyCashflowGross,
-      cashflowAfterTax: cumulativeCash,
-      investedRent: investedCashflowValue,
-      investedCashflow: investedCashflowValue,
-      combinedNetWealth: combinedNetWealthAfterTax,
-      combinedNetWealthBeforeTax,
-      totalNetWealthWithIndex,
-      netWealthAfterTax: combinedNetWealthAfterTax,
-      netWealthBeforeTax: combinedNetWealthBeforeTax,
-      cashFlow,
-      cumulativeCash,
-      externalCashFlow,
-      cumulativeExternal,
-      investedCashContribution,
-      cumulativeInvestedCash,
-      taxes: annualTaxes,
-      cumulativeTaxes,
-      externalInjection: -cumulativeExternal,
-      taxLiability: -cumulativeTaxes,
-      loanLiabilities: -totalLoanBalance,
-      totalLoanBalance,
-      indexFund: indexFundValue,
-      indexFundValue,
-      indexFundContribution,
-      cumulativeIndexFundContribution,
-      meta: {
-        propertyBreakdown,
-        totals: {
-          propertyValue,
-          propertyNet,
-          propertyNetAfterTax,
-          cashflow: propertyCashflowNet,
-          cashflowAfterTax: cumulativeCash,
-          combinedNetWealth: combinedNetWealthAfterTax,
-          combinedNetWealthBeforeTax,
-          netWealthAfterTax: combinedNetWealthAfterTax,
-          netWealthBeforeTax: combinedNetWealthBeforeTax,
-          cumulativeCash,
-          indexFund: indexFundValue,
-          totalNetWealthWithIndex,
-          cumulativeExternal,
-          investedCashContribution,
-          investedCashflow: investedCashflowValue,
-          externalInjection: -cumulativeExternal,
-          taxes: cumulativeTaxes,
-          taxLiability: -cumulativeTaxes,
-          loanLiabilities: -totalLoanBalance,
-          totalLoanBalance,
-        },
-      },
+    itemTimelines.set(item.id, {
+      timelineByYear,
+      lastPropertyYear,
+      totalReinvested,
     });
 
-    planCashflows.push(cashFlow - externalCashFlow);
-  }
-
-  if (chart.length > 0) {
-    const lastPoint = chart[chart.length - 1];
-    const extensionYear = (Number(lastPoint?.year) || maxYear) + 1;
-    chart.push({
-      ...lastPoint,
-      year: extensionYear,
-    });
-  }
-
-  orderedIncluded.forEach((item) => {
-    const state = itemStates.get(item.id);
-    if (!state) {
-      return;
-    }
-    const availableForDeposit = Math.max(0, Number(state.available) || 0);
-    const appliedContribution = Math.max(0, Number(state.applied) || 0);
-    const injection = Math.max(0, Number(state.injection) || 0);
-    const depositTarget = Math.max(
-      0,
-      Number(state.depositTarget ?? item.initialOutlay ?? 0) || 0
-    );
-    item.appliedIncomeContribution = appliedContribution;
-    item.availableCashForDeposit = availableForDeposit;
-    item.depositRequirement = depositTarget;
-    item.cashInjection = injection;
-    item.externalOutlay = injection;
-    item.indexFundContribution = Math.max(0, Number(state.indexContribution) || 0);
-  });
-
-  items.forEach((item) => {
-    if (itemStates.has(item.id)) {
-      return;
-    }
     item.appliedIncomeContribution = 0;
     item.availableCashForDeposit = 0;
     item.depositRequirement = item.initialOutlay;
     item.cashInjection = item.initialOutlay;
     item.externalOutlay = item.initialOutlay;
-    item.indexFundContribution = item.useIncomeForDeposit ? 0 : item.initialOutlay;
+    item.indexFundContribution = totalReinvested;
+
+    const finalPlanYear = item.purchaseYear + lastPropertyYear;
+    if (finalPlanYear > maxYear) {
+      maxYear = finalPlanYear;
+    }
   });
 
-  const baseTotals = {
-    properties: includedItems.length,
-    savedProperties: items.length,
-    totalInitialOutlay: includedItems.reduce((sum, item) => sum + item.initialOutlay, 0),
-    totalExternalCash: includedItems.reduce((sum, item) => sum + (item.cashInjection || 0), 0),
-    totalIncomeFunding: includedItems.reduce((sum, item) => sum + (item.appliedIncomeContribution || 0), 0),
-    totalIndexFundContribution: includedItems.reduce(
-      (sum, item) => sum + (item.indexFundContribution || 0),
-      0
-    ),
+  const chart = [];
+  const planCashflows = [];
+  const planState = {
+    cumulativeCash: 0,
+    cumulativeExternal: 0,
+    cumulativeTaxes: 0,
+    investedBalance: 0,
+    totalInvestedContributions: 0,
   };
+
+  for (let year = 0; year <= maxYear; year++) {
+    let propertyValue = 0;
+    let propertyGross = 0;
+    let propertyNet = 0;
+    let propertyNetAfterTax = 0;
+    let totalLoanBalance = 0;
+    let cashChange = 0;
+    let externalChange = 0;
+    let investedContribution = 0;
+    let taxesThisYear = 0;
+    const propertyBreakdown = [];
+
+    orderedIncluded.forEach((item) => {
+      const timeline = itemTimelines.get(item.id);
+      if (!timeline) {
+        return;
+      }
+      const contribution = timeline.timelineByYear.get(year);
+      if (!contribution) {
+        return;
+      }
+
+      propertyBreakdown.push({ ...contribution });
+      propertyValue += Number(contribution.propertyValue) || 0;
+      propertyGross += Number(contribution.propertyGross) || 0;
+      propertyNet += Number(contribution.propertyNet) || 0;
+      propertyNetAfterTax += Number(contribution.propertyNetAfterTax) || 0;
+      totalLoanBalance += Number(contribution.loanBalance) || 0;
+      cashChange += Number(contribution.cashFlow) || 0;
+      externalChange += Number(contribution.externalCashFlow) || 0;
+      investedContribution += Number(contribution.reinvestContribution) || 0;
+      taxesThisYear += Number(contribution.tax) || 0;
+    });
+
+    planState.cumulativeCash += cashChange;
+    planState.cumulativeExternal += externalChange;
+    planState.cumulativeTaxes += taxesThisYear;
+    planState.investedBalance = planState.investedBalance * (1 + planIndexGrowthRate) + investedContribution;
+    if (investedContribution > 0) {
+      planState.totalInvestedContributions += investedContribution;
+    }
+
+    const netWealth =
+      propertyNetAfterTax +
+      planState.cumulativeCash +
+      planState.investedBalance -
+      planState.cumulativeExternal -
+      planState.cumulativeTaxes -
+      totalLoanBalance;
+
+    const point = {
+      year,
+      propertyValue,
+      propertyGross,
+      propertyNet,
+      propertyNetAfterTax,
+      cashflowAfterTax: planState.cumulativeCash,
+      cashflowNet: planState.cumulativeCash,
+      cashflowGross: planState.cumulativeCash,
+      cashflow: planState.cumulativeCash,
+      cumulativeCash: planState.cumulativeCash,
+      cumulativeExternal: planState.cumulativeExternal,
+      cumulativeTaxes: planState.cumulativeTaxes,
+      cumulativeInvestedCash: planState.totalInvestedContributions,
+      indexFund: planState.investedBalance,
+      indexFundValue: planState.investedBalance,
+      investedCashflow: planState.investedBalance,
+      investedCashContribution: investedContribution,
+      externalInjection: -planState.cumulativeExternal,
+      taxes: -planState.cumulativeTaxes,
+      taxLiability: -planState.cumulativeTaxes,
+      loanLiabilities: -totalLoanBalance,
+      totalLoanBalance,
+      netWealthAfterTax: netWealth,
+      combinedNetWealth: netWealth,
+      propertyBreakdown,
+      meta: {
+        totals: {
+          propertyValue,
+          propertyNetAfterTax,
+          cashflowAfterTax: planState.cumulativeCash,
+          investedCashflow: planState.investedBalance,
+          externalInjection: -planState.cumulativeExternal,
+          taxes: -planState.cumulativeTaxes,
+          taxLiability: -planState.cumulativeTaxes,
+          loanLiabilities: -totalLoanBalance,
+          totalLoanBalance,
+          combinedNetWealth: netWealth,
+        },
+        propertyBreakdown,
+      },
+    };
+
+    chart.push(point);
+    planCashflows.push(cashChange - externalChange);
+  }
 
   const lastPoint = chart[chart.length - 1] ?? null;
   const averageRentalYield =
@@ -1992,51 +1857,23 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   const averageCapRate = totalPurchasePrice > 0 ? totalNoiYear1 / totalPurchasePrice : 0;
 
   const totals = {
-    ...baseTotals,
-    finalPropertyNetAfterTax:
-      lastPoint?.meta?.totals?.propertyNetAfterTax ?? lastPoint?.propertyNetAfterTax ?? 0,
-    finalNetWealth:
-      lastPoint?.combinedNetWealth ??
-      lastPoint?.netWealthAfterTax ??
-      lastPoint?.meta?.totals?.combinedNetWealth ??
-      lastPoint?.meta?.totals?.propertyNetAfterTax ??
-      lastPoint?.propertyNetAfterTax ??
-      0,
-    finalCashPosition:
-      lastPoint?.cashflowAfterTax ??
-      lastPoint?.meta?.totals?.cashflowAfterTax ??
-      lastPoint?.cumulativeCash ??
-      0,
-    finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
-    finalIndexFundValue: lastPoint?.indexFundValue ?? lastPoint?.indexFund ?? 0,
-    finalInvestedCashflow:
-      lastPoint?.investedCashflow ??
-      lastPoint?.meta?.totals?.investedCashflow ??
-      lastPoint?.cumulativeInvestedCash ??
-      0,
-    finalExternalInjection:
-      lastPoint?.externalInjection ??
-      lastPoint?.meta?.totals?.externalInjection ??
-      -(lastPoint?.cumulativeExternal ?? 0),
-    finalTaxes:
-      lastPoint?.cumulativeTaxes ??
-      lastPoint?.meta?.totals?.taxes ??
-      0,
-    finalTaxLiability:
-      lastPoint?.taxLiability ??
-      lastPoint?.meta?.totals?.taxLiability ??
-      -(lastPoint?.cumulativeTaxes ?? 0),
-    finalLoanLiabilities:
-      lastPoint?.loanLiabilities ??
-      lastPoint?.meta?.totals?.loanLiabilities ??
-      -(lastPoint?.meta?.totals?.totalLoanBalance ?? 0),
-    finalTotalNetWealth:
-      lastPoint?.combinedNetWealth ??
-      lastPoint?.netWealthAfterTax ??
-      lastPoint?.meta?.totals?.combinedNetWealth ??
-      lastPoint?.meta?.totals?.propertyNetAfterTax ??
-      lastPoint?.propertyNetAfterTax ??
-      0,
+    properties: includedItems.length,
+    savedProperties: items.length,
+    totalInitialOutlay: includedItems.reduce((sum, item) => sum + item.initialOutlay, 0),
+    totalExternalCash: includedItems.reduce((sum, item) => sum + (item.cashInjection || 0), 0),
+    totalIncomeFunding: includedItems.reduce((sum, item) => sum + (item.appliedIncomeContribution || 0), 0),
+    totalIndexFundContribution: planState.totalInvestedContributions,
+    finalPropertyNetAfterTax: lastPoint?.propertyNetAfterTax ?? 0,
+    finalNetWealth: lastPoint?.netWealthAfterTax ?? 0,
+    finalCashPosition: lastPoint?.cashflowAfterTax ?? 0,
+    finalExternalPosition: planState.cumulativeExternal,
+    finalIndexFundValue: planState.investedBalance,
+    finalInvestedCashflow: planState.investedBalance,
+    finalExternalInjection: planState.cumulativeExternal,
+    finalTaxes: planState.cumulativeTaxes,
+    finalTaxLiability: -planState.cumulativeTaxes,
+    finalLoanLiabilities: lastPoint?.totalLoanBalance ?? 0,
+    finalTotalNetWealth: lastPoint?.netWealthAfterTax ?? 0,
     averageRentalYield,
     averageCapRate,
   };
@@ -2051,7 +1888,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     maxYear,
     totals,
     cashflows: planCashflows,
-    irr: planIrr,
+    irr: Number.isFinite(planIrr) ? planIrr : null,
   };
 };
 
