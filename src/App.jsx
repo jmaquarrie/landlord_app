@@ -9098,30 +9098,44 @@ export default function App() {
       })
       .map((point) => {
         const cashflowAfterTax = Number(
-          point?.meta?.cumulativeCashAfterTaxKeptRealized ??
+          point?.cashflowAfterTax ??
+            point?.meta?.cumulativeCashAfterTaxKeptRealized ??
             point?.cashflow ??
             point?.meta?.cumulativeCashAfterTaxNetRealized ??
             point?.meta?.cumulativeCashAfterTaxNet ??
             point?.meta?.cumulativeCashAfterTax ??
             0
         );
-        const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue ?? 0);
+        const indexFundValue = Number(
+          point?.indexFund ??
+            point?.meta?.indexFundValue ??
+            point?.meta?.totals?.indexFund ??
+            0
+        );
         const investedRent = Number(
           point?.investedRent ??
             point?.reinvestFund ??
+            point?.reinvestedCash ??
+            point?.meta?.totals?.reinvestedCash ??
             point?.meta?.investedRentValue ??
             point?.meta?.reinvestFundValue ??
             0
         );
-        const propertyNetAfterTaxValue = Number(point?.propertyNetAfterTax) || 0;
+        const propertyNetAfterTaxValue = Number(
+          point?.propertyNetAfterTax ?? point?.meta?.propertyNetAfterTax ?? 0
+        );
         const netWealthAfterTaxBase = Number(
-          point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ?? propertyNetAfterTaxValue + indexFundValue
+          point?.netWealthAfterTax ??
+            point?.meta?.netWealthAfterTax ??
+            point?.meta?.totals?.combinedNetWealth ??
+            propertyNetAfterTaxValue + indexFundValue
         );
         const netWealthAfterTax = netWealthAfterTaxBase + Math.max(0, investedRent);
         return {
           ...point,
           cashflowAfterTax,
           netWealthAfterTax,
+          indexFund: indexFundValue,
           indexFundValue,
           investedRent,
         };
@@ -10325,6 +10339,8 @@ export default function App() {
         Number(
           point?.investedRent ??
             point?.reinvestFund ??
+            point?.reinvestedCash ??
+            point?.meta?.totals?.reinvestedCash ??
             point?.meta?.investedRentValue ??
             point?.meta?.reinvestFundValue ??
             0
