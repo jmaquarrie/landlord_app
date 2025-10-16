@@ -152,6 +152,7 @@ const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
 const FUTURE_PLAN_STORAGE_KEY = 'qc_future_plan_v1';
+const FUTURE_PLAN_VIEWS_STORAGE_KEY = 'qc_future_plan_views_v1';
 const PLAN_MAX_PURCHASE_YEAR = 20;
 const {
   VITE_SCENARIO_API_URL,
@@ -190,6 +191,11 @@ const KnowledgeBaseContext = createContext(null);
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
+const RESIDENTIAL_CGT_ANNUAL_ALLOWANCE = 3000;
+const RESIDENTIAL_CGT_BASIC_RATE_LIMIT = PERSONAL_ALLOWANCE + BASIC_RATE_BAND;
+const RESIDENTIAL_CGT_BASIC_RATE = 0.18;
+const RESIDENTIAL_CGT_HIGHER_RATE = 0.28;
+const CORPORATION_TAX_RATE = 0.19;
 const SCENARIO_USERNAME = 'pi';
 const SCENARIO_PASSWORD = 'jmaq2460';
 
@@ -203,6 +209,7 @@ const SERIES_COLORS = {
   combinedNetWealth: '#1e293b',
   combinedNetWealthBeforeTax: '#0369a1',
   investedRent: '#0d9488',
+  cashInvested: '#f59e0b',
   indexFund1_5x: '#fb7185',
   indexFund2x: '#ec4899',
   indexFund4x: '#c026d3',
@@ -211,7 +218,8 @@ const SERIES_COLORS = {
   capRate: '#1e293b',
   yieldRate: '#0369a1',
   cashOnCash: '#0f766e',
-  irrSeries: '#7c3aed',
+  irrIfSold: '#7c3aed',
+  irrAverage: '#4c1d95',
   irrHurdle: '#f43f5e',
   npvToDate: '#0f172a',
   operatingCash: '#0ea5e9',
@@ -227,15 +235,17 @@ const SERIES_COLORS = {
 };
 
 const SERIES_LABELS = {
-  indexFund: 'Index fund value',
+  indexFund: 'Index fund',
   cashflow: 'Cashflow',
+  cashflowAfterTax: 'Cashflow',
   propertyValue: 'Property value',
   propertyGross: 'Property gross',
   propertyNet: 'Property net',
-  propertyNetAfterTax: 'Property value after tax',
+  propertyNetAfterTax: 'Property net after tax',
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
-  investedRent: 'Invested rent',
+  investedRent: 'Reinvested cash (after tax)',
+  cashInvested: 'Cash invested',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
@@ -244,7 +254,8 @@ const SERIES_LABELS = {
   capRate: 'Cap rate',
   yieldRate: 'Yield rate',
   cashOnCash: 'Cash on cash',
-  irrSeries: 'IRR',
+  irrIfSold: 'IRR (if sold)',
+  irrAverage: 'Average IRR',
   irrHurdle: 'IRR hurdle',
   npvToDate: 'Net present value',
   operatingCash: 'After-tax cash flow',
@@ -254,9 +265,215 @@ const SERIES_LABELS = {
   cumulativeDiscounted: 'NPV to date',
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
-  cashflowAfterTax: 'Cashflow after tax',
   netWealthAfterTax: 'Net wealth (after tax)',
   netWealthBeforeTax: 'Net wealth (before tax)',
+};
+
+const CASHFLOW_SERIES_OPTIONS = [
+  { key: 'rentIncome', label: 'Rent income' },
+  { key: 'operatingExpenses', label: 'Operating expenses' },
+  { key: 'mortgagePayments', label: 'Mortgage payments' },
+  { key: 'netCashflow', label: 'After-tax cash flow' },
+];
+
+const ROI_HEATMAP_METRIC_OPTIONS = [
+  { key: 'irr', label: 'IRR' },
+  { key: 'roi', label: 'Total ROI' },
+];
+
+const AI_RESPONSE_FORMAT_INSTRUCTIONS =
+  'Respond with 2-4 concise, conclusion-level bullet points. Use a single leading "*" for each bullet and wrap any phrases that should be bold in *asterisks*. Focus on the most important implications for the investor.';
+
+const applyAiFormatInstructions = (prompt) => {
+  const base = typeof prompt === 'string' ? prompt.trim() : '';
+  if (!base) {
+    return AI_RESPONSE_FORMAT_INSTRUCTIONS;
+  }
+  if (base.includes(AI_RESPONSE_FORMAT_INSTRUCTIONS)) {
+    return base;
+  }
+  return `${base}\n\n${AI_RESPONSE_FORMAT_INSTRUCTIONS}`;
+};
+
+const toFiniteNumber = (value, fallback = 0) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+};
+
+const mergeLegendPayload = (payload, entries) => {
+  const base = Array.isArray(payload) ? [...payload] : [];
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return base;
+  }
+  const existing = new Set(
+    base.map((entry) => (entry && entry.dataKey) || (entry && entry.value) || null).filter(Boolean)
+  );
+  entries.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const key = entry.dataKey || entry.value;
+    if (!key || existing.has(key)) {
+      return;
+    }
+    base.push(entry);
+    existing.add(key);
+  });
+  return base;
+};
+
+const MAX_SUMMARY_POINTS = 60;
+
+const formatSummaryNumber = (value) => {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const abs = Math.abs(value);
+  const decimals = abs >= 1_000_000 ? 0 : abs >= 1_000 ? 1 : 2;
+  return value.toFixed(decimals);
+};
+
+const deriveSummaryKeys = (data, providedKeys) => {
+  if (Array.isArray(providedKeys) && providedKeys.length > 0) {
+    return providedKeys;
+  }
+  const keySet = new Set();
+  data.forEach((point) => {
+    if (!point || typeof point !== 'object') {
+      return;
+    }
+    Object.keys(point).forEach((key) => {
+      keySet.add(key);
+    });
+  });
+  return Array.from(keySet);
+};
+
+const formatPointForSummary = (point, keys) => {
+  if (!point || typeof point !== 'object') {
+    return null;
+  }
+  const formatted = {};
+  keys.forEach((key) => {
+    if (!(key in point)) {
+      return;
+    }
+    const value = point[key];
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const abs = Math.abs(value);
+      const decimals = abs >= 1_000_000 ? 0 : abs >= 1_000 ? 1 : 2;
+      formatted[key] = Number(value.toFixed(decimals));
+    } else if (value !== null && value !== undefined) {
+      formatted[key] = value;
+    }
+  });
+  return Object.keys(formatted).length > 0 ? formatted : null;
+};
+
+const sampleDataForSummary = (data, keys, limit = MAX_SUMMARY_POINTS) => {
+  if (!Array.isArray(data) || data.length === 0) {
+    return [];
+  }
+  const safeLimit = Math.max(1, limit);
+  const summaryKeys = deriveSummaryKeys(data, keys);
+  const step = Math.max(1, Math.floor(data.length / safeLimit));
+  const sampled = [];
+  for (let index = 0; index < data.length && sampled.length < safeLimit; index += step) {
+    const point = formatPointForSummary(data[index], summaryKeys);
+    if (point) {
+      sampled.push(point);
+    }
+  }
+  const lastPoint = formatPointForSummary(data[data.length - 1], summaryKeys);
+  if (lastPoint && sampled.length > 0) {
+    const lastSampled = sampled[sampled.length - 1];
+    const differs = summaryKeys.some((key) => lastSampled?.[key] !== lastPoint?.[key]);
+    if (differs && sampled.length < safeLimit) {
+      sampled.push(lastPoint);
+    }
+  } else if (lastPoint && sampled.length === 0) {
+    sampled.push(lastPoint);
+  }
+  return sampled;
+};
+
+const computeSummaryStats = (data, numericKeys) => {
+  if (!Array.isArray(data) || data.length === 0) {
+    return {};
+  }
+  const stats = {};
+  const keys = Array.isArray(numericKeys) && numericKeys.length > 0 ? numericKeys : deriveSummaryKeys(data);
+  keys.forEach((key) => {
+    let first = null;
+    let last = null;
+    let min = Infinity;
+    let max = -Infinity;
+    data.forEach((point) => {
+      const value = Number(point?.[key]);
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      if (first === null) {
+        first = value;
+      }
+      last = value;
+      if (value < min) {
+        min = value;
+      }
+      if (value > max) {
+        max = value;
+      }
+    });
+    if (first !== null) {
+      stats[key] = { first, last, min, max };
+    }
+  });
+  return stats;
+};
+
+const formatSummaryStats = (stats) => {
+  const entries = Object.entries(stats);
+  if (entries.length === 0) {
+    return '';
+  }
+  return entries
+    .map(([key, value]) => {
+      const first = formatSummaryNumber(value.first);
+      const last = formatSummaryNumber(value.last);
+      const min = formatSummaryNumber(value.min);
+      const max = formatSummaryNumber(value.max);
+      return `${key}: start=${first}, end=${last}, min=${min}, max=${max}`;
+    })
+    .join('\n');
+};
+
+const buildChartSummaryContext = (
+  chartLabel,
+  description,
+  keys,
+  sample,
+  stats,
+  totalCount
+) => {
+  const lines = [
+    `Chart: ${chartLabel}`,
+    description ? `Description: ${description}` : null,
+    Number.isFinite(totalCount) ? `Total data points: ${totalCount}` : null,
+    Array.isArray(keys) && keys.length > 0 ? `Fields included: ${keys.join(', ')}` : null,
+  ].filter(Boolean);
+  const statsText = formatSummaryStats(stats);
+  if (statsText) {
+    lines.push('', 'Field statistics:', statsText);
+  }
+  if (Array.isArray(sample) && sample.length > 0) {
+    lines.push('', `Sampled data (${sample.length}${
+      Number.isFinite(totalCount) ? ` of ${totalCount}` : ''
+    } points):`, JSON.stringify(sample, null, 2));
+  }
+  return lines.join('\n');
 };
 
 const CASHFLOW_BAR_COLORS = {
@@ -726,6 +943,94 @@ const resolveGeocodeAddressDetails = (geocodeData, fallbackAddress) => {
   };
 };
 
+const splitAiMessageBlocks = (text) => {
+  if (typeof text !== 'string') {
+    return [];
+  }
+  const normalized = text.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  const blocks = [];
+  let listItems = [];
+  const flushList = () => {
+    if (listItems.length > 0) {
+      blocks.push({ type: 'list', items: listItems });
+      listItems = [];
+    }
+  };
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed === '') {
+      flushList();
+      return;
+    }
+    if (trimmed.startsWith('*')) {
+      const content = trimmed.replace(/^\*\s*/, '').trim();
+      if (content) {
+        listItems.push(content);
+      }
+      return;
+    }
+    flushList();
+    blocks.push({ type: 'paragraph', text: trimmed });
+  });
+  flushList();
+  return blocks;
+};
+
+const renderAiInlineSegments = (text, keyPrefix) => {
+  if (typeof text !== 'string' || text === '') {
+    return null;
+  }
+  const segments = text.split(/(\*[^*]+\*)/g);
+  return segments
+    .filter((segment) => segment !== '')
+    .map((segment, index) => {
+      if (segment.startsWith('*') && segment.endsWith('*') && segment.length > 2) {
+        return <strong key={`${keyPrefix}-bold-${index}`}>{segment.slice(1, -1)}</strong>;
+      }
+      return <span key={`${keyPrefix}-text-${index}`}>{segment}</span>;
+    });
+};
+
+function AiFormattedText({ text, className }) {
+  if (typeof text !== 'string') {
+    return null;
+  }
+  const trimmed = text.trim();
+  if (trimmed === '') {
+    return null;
+  }
+  const blocks = splitAiMessageBlocks(text);
+  if (blocks.length === 0) {
+    return (
+      <p className={className ? `${className} leading-snug` : 'leading-snug'}>{text}</p>
+    );
+  }
+  const containerClass = ['space-y-1', className].filter(Boolean).join(' ');
+  return (
+    <div className={containerClass}>
+      {blocks.map((block, index) => {
+        if (block.type === 'list') {
+          return (
+            <ul key={`list-${index}`} className="list-disc space-y-1 pl-4">
+              {block.items.map((item, itemIndex) => (
+                <li key={`list-${index}-item-${itemIndex}`} className="leading-snug">
+                  {renderAiInlineSegments(item, `list-${index}-item-${itemIndex}`)}
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p key={`paragraph-${index}`} className="leading-snug">
+            {renderAiInlineSegments(block.text, `paragraph-${index}`)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 const fetchNeighbourhoodBoundary = async ({ lat, lon, postcode, addressQuery, signal }) => {
   const queries = [];
   if (hasUsableCoordinates(lat, lon)) {
@@ -1048,21 +1353,21 @@ const summarizeCrimeData = (
 
 const INITIAL_CRIME_STATE = { status: 'idle', data: null, error: '' };
 
-const EXPANDED_SERIES_ORDER = [
+const WEALTH_SERIES_ORDER = [
   'indexFund',
-  'cashflow',
+  'cashflowAfterTax',
+  'cashInvested',
   'propertyValue',
   'propertyGross',
   'propertyNet',
-  'propertyNetAfterTax',
-  'investedRent',
-  'indexFund1_5x',
-  'indexFund2x',
-  'indexFund4x',
 ];
 
-const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
-const RATE_STATIC_PERCENT_KEYS = ['irrHurdle'];
+const WEALTH_LINE_KEYS = new Set(['cashInvested', 'propertyGross', 'propertyNet']);
+
+const EXPANDED_SERIES_ORDER = WEALTH_SERIES_ORDER;
+
+const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrIfSold'];
+const RATE_STATIC_PERCENT_KEYS = ['irrAverage', 'irrHurdle'];
 const RATE_PERCENT_SERIES = [...RATE_PERCENT_KEYS, ...RATE_STATIC_PERCENT_KEYS];
 const RATE_VALUE_KEYS = ['npvToDate'];
 const RATE_SERIES_KEYS = [...RATE_PERCENT_SERIES, ...RATE_VALUE_KEYS];
@@ -1257,6 +1562,7 @@ const DEFAULT_INPUTS = {
   rentGrowth: 0.02,
   exitYear: 20,
   sellingCostsPct: 0.02,
+  neverExit: false,
   discountRate: 0.07,
   irrHurdle: 0.12,
   buyerType: 'individual',
@@ -1366,8 +1672,11 @@ const sanitizePlanItem = (item) => {
   const inputExitYear = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const rawExit = Number(item.exitYearOverride ?? item.exitYear);
   const exitYearOverride = Number.isFinite(rawExit) && rawExit >= 0
-    ? clamp(Math.round(rawExit), 0, PLAN_MAX_PURCHASE_YEAR)
+    ? Math.max(0, Math.round(rawExit))
     : inputExitYear;
+  const neverExit = inputs.neverExit === true || item.neverExit === true;
+  inputs.exitYear = inputExitYear;
+  inputs.neverExit = neverExit;
   return {
     id,
     name,
@@ -1379,6 +1688,7 @@ const sanitizePlanItem = (item) => {
     incomeContribution,
     exitYearOverride,
     isPrimary,
+    neverExit,
   };
 };
 
@@ -1394,6 +1704,7 @@ const PLAN_ANALYSIS_EMPTY_TOTALS = {
   finalCashPosition: 0,
   finalExternalPosition: 0,
   finalIndexFundValue: 0,
+  finalReinvestedCash: 0,
   finalTotalNetWealth: 0,
   averageRentalYield: 0,
   averageCapRate: 0,
@@ -1425,11 +1736,48 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     };
   }
 
-  const items = futurePlanItems.map((rawItem, index) => {
-    const sanitized = sanitizePlanItem(rawItem);
+  const sanitizedEntries = futurePlanItems
+    .map((rawItem, index) => {
+      const sanitized = sanitizePlanItem(rawItem);
+      if (!sanitized) {
+        return null;
+      }
+      return { sanitized, index };
+    })
+    .filter(Boolean);
+
+  const requestedHorizon = sanitizedEntries.reduce((max, entry) => {
+    const { sanitized } = entry;
+    const desiredHoldYears = Math.max(
+      0,
+      Math.round(Number(sanitized.exitYearOverride ?? sanitized.inputs?.exitYear ?? 0))
+    );
+    const purchaseOffset = Math.max(
+      0,
+      Math.round(Number(sanitized.purchaseYear ?? 0))
+    );
+    const timelineEnd = purchaseOffset + desiredHoldYears;
+    return Math.max(max, timelineEnd);
+  }, 0);
+
+  const items = sanitizedEntries.map(({ sanitized, index }) => {
+    const desiredExitYear = Math.max(
+      0,
+      Math.round(Number(sanitized.exitYearOverride ?? sanitized.inputs?.exitYear ?? 0))
+    );
+    const purchaseOffset = Math.max(0, Math.round(Number(sanitized.purchaseYear ?? 0)));
+    const horizonAdjustedHold = Math.max(0, requestedHorizon - purchaseOffset);
+    const effectiveExitYear = sanitized.neverExit
+      ? Math.max(desiredExitYear, horizonAdjustedHold)
+      : desiredExitYear;
+    const metricsInputs = {
+      ...sanitized.inputs,
+      exitYear: effectiveExitYear,
+      neverExit: Boolean(sanitized.neverExit),
+    };
     let metrics = null;
     try {
-      metrics = calculateEquity(sanitized.inputs);
+      metrics = calculateEquity(metricsInputs);
     } catch (error) {
       console.warn('Unable to evaluate future plan item:', sanitized?.name ?? sanitized?.id ?? 'item', error);
     }
@@ -1443,6 +1791,24 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         }
         const year = Math.max(0, Math.round(yearValue));
         const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue) || 0;
+        const reinvestFundValue = Number(
+          point?.reinvestFund ?? point?.meta?.reinvestFundValue ?? point?.investedRent
+        ) || 0;
+        const reinvestContributions = Number(
+          point?.cashInvested ??
+            point?.reinvestContributions ??
+            point?.meta?.investedRentContributions ??
+            point?.meta?.cumulativeReinvestedCashAfterTax ??
+            point?.meta?.cumulativeReinvestedCash ??
+            point?.meta?.totals?.cashInvested ??
+            point?.meta?.totals?.reinvestedCashContributions ??
+            0
+        ) || 0;
+        const reinvestEnabled = Boolean(
+          point?.meta?.shouldReinvest ??
+            point?.shouldReinvest ??
+            (reinvestFundValue > 0 || reinvestContributions > 0)
+        );
         const cashflowKept = Number(
           point?.meta?.cumulativeCashAfterTaxKeptRealized ??
             point?.cashflow ??
@@ -1461,14 +1827,18 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
             point?.meta?.cumulativeCashAfterTax ??
             cashflowKept
         );
-        const netWealthAfterTaxValue = Number(
-          point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ??
-            (Number(point?.propertyNetAfterTax) || 0) + indexFundValue
-        );
-        const netWealthBeforeTaxValue = Number(
-          point?.netWealthBeforeTax ?? point?.meta?.netWealthBeforeTax ??
-            (Number(point?.propertyNet) || 0) + indexFundValue
-        );
+        const netWealthAfterTaxValue =
+          toFiniteNumber(point?.netWealthAfterTax, null) ??
+          toFiniteNumber(point?.meta?.netWealthAfterTax, null) ??
+          toFiniteNumber(point?.netWealthAfterTaxValue, null) ??
+          toFiniteNumber(point?.propertyNetAfterTax, null) ??
+          toFiniteNumber(point?.meta?.propertyNetAfterTax, 0);
+        const netWealthBeforeTaxValue =
+          toFiniteNumber(point?.netWealthBeforeTax, null) ??
+          toFiniteNumber(point?.meta?.netWealthBeforeTax, null) ??
+          toFiniteNumber(point?.netWealthBeforeTaxValue, null) ??
+          toFiniteNumber(point?.propertyNet, null) ??
+          toFiniteNumber(point?.meta?.propertyNet, 0);
         chartByYear.set(year, {
           year,
           propertyValue: Number(point?.propertyValue) || 0,
@@ -1481,7 +1851,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           cashflowKept,
           indexFund: indexFundValue,
           investedRent: Number(point?.investedRent) || 0,
-          reinvestFund: Number(point?.reinvestFund ?? point?.meta?.reinvestFundValue) || 0,
+          reinvestFund: reinvestFundValue,
+          cashInvested: reinvestEnabled ? reinvestContributions : null,
           netWealthAfterTax: netWealthAfterTaxValue,
           netWealthBeforeTax: netWealthBeforeTaxValue,
         });
@@ -1489,11 +1860,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     }
 
     const chart = Array.from(chartByYear.values()).sort((a, b) => a.year - b.year);
-    const exitYearFromChart = chart.length > 0 ? chart[chart.length - 1].year : 0;
-    const metricsExitYear = Math.max(0, Math.round(Number(metrics?.exitYear) || 0));
-    const exitYearBase = Math.max(exitYearFromChart, metricsExitYear);
-    const desiredExitYear = Math.max(0, Math.round(Number(sanitized.exitYearOverride) || exitYearBase));
-    const exitYear = exitYearBase > 0 ? Math.min(desiredExitYear, exitYearBase) : desiredExitYear;
+    const exitYear = effectiveExitYear;
 
     const annualCashflows = Array.isArray(metrics?.annualCashflowsAfterTax)
       ? metrics.annualCashflowsAfterTax.map((value) => (Number.isFinite(Number(value)) ? Number(value) : 0))
@@ -1599,6 +1966,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   );
 
   const itemStates = new Map();
+  const reinvestmentStates = new Map();
   orderedIncluded.forEach((item) => {
     itemStates.set(item.id, {
       available: 0,
@@ -1606,6 +1974,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       injection: Math.max(0, item.initialOutlay),
       indexContribution: item.useIncomeForDeposit ? 0 : Math.max(0, item.initialOutlay),
     });
+    reinvestmentStates.set(item.id, { balance: 0, contributions: 0 });
   });
 
   const chart = [];
@@ -1623,20 +1992,49 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     let propertyNetAfterTax = 0;
     let propertyCashflowNet = 0;
     let propertyCashflowGross = 0;
-    let propertyInvestedRent = 0;
+    let reinvestedFundBalance = 0;
+    let reinvestedFundContributionTotal = 0;
+    let reinvestContributionYear = 0;
+    let reinvestGrowthYear = 0;
+    let reinvestEligibleCashYear = 0;
     let cashFlow = 0;
     let externalCashFlow = 0;
     let indexFundContribution = 0;
     const yearStartingCash = cumulativeCash;
     let availableCashPool = yearStartingCash;
 
+    const reinvestGrowthMultiplier = 1 + clampPercentage(indexFundGrowthRate, -0.99, 10);
+
     orderedIncluded.forEach((item, index) => {
       const propertyYear = year - item.purchaseYear;
-      if (propertyYear < 0 || propertyYear > item.exitYear) {
+      const reinvestState = reinvestmentStates.get(item.id) || { balance: 0, contributions: 0 };
+      reinvestmentStates.set(item.id, reinvestState);
+
+      if (propertyYear < 0) {
+        if (reinvestState.balance > 0) {
+          reinvestedFundBalance += reinvestState.balance;
+          reinvestedFundContributionTotal += reinvestState.contributions;
+        }
+        return;
+      }
+
+      if (propertyYear > item.exitYear) {
+        if (reinvestState.balance > 0) {
+          const priorBalance = reinvestState.balance;
+          const grownBalance = priorBalance * reinvestGrowthMultiplier;
+          reinvestState.balance = grownBalance;
+          const growthDelta = grownBalance - priorBalance;
+          if (growthDelta > 0) {
+            reinvestGrowthYear += growthDelta;
+          }
+          reinvestedFundBalance += reinvestState.balance;
+          reinvestedFundContributionTotal += reinvestState.contributions;
+        }
         return;
       }
 
       const chartPoint = item.chartByYear.get(propertyYear);
+      const chartMeta = (chartPoint && typeof chartPoint.meta === 'object' && chartPoint.meta) || {};
       const contribution = {
         id: item.id,
         name: item.displayName || item.name || `Plan property ${index + 1}`,
@@ -1644,11 +2042,16 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         propertyYear,
         exitYear: item.exitYear,
         phase:
-          propertyYear === 0 ? 'purchase' : propertyYear === item.exitYear ? 'exit' : 'hold',
+          propertyYear === 0
+            ? 'purchase'
+            : !item.neverExit && propertyYear === item.exitYear
+            ? 'exit'
+            : 'hold',
         propertyValue: chartPoint?.propertyValue || 0,
         propertyGross: chartPoint?.propertyGross || 0,
         propertyNet: chartPoint?.propertyNet || 0,
         propertyNetAfterTax: chartPoint?.propertyNetAfterTax || 0,
+        cashInvested: 0,
         operatingCashflow: 0,
         saleProceeds: 0,
         cashFlow: 0,
@@ -1671,7 +2074,40 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const grossCashValue = Number(chartPoint.cashflowGross ?? chartPoint.cashflow) || 0;
         propertyCashflowNet += netCashValue;
         propertyCashflowGross += grossCashValue;
-        propertyInvestedRent += Number(chartPoint.investedRent) || 0;
+        const propertyReinvestedValue =
+          Number(chartPoint.reinvestFund ?? chartPoint.investedRent ?? chartPoint.meta?.reinvestFundValue) || 0;
+        const propertyReinvestedContributions =
+          Number(
+            chartPoint.cashInvested ??
+              chartPoint.reinvestContributions ??
+              chartPoint.meta?.investedRentContributions ??
+              chartPoint.meta?.cumulativeReinvestedCashAfterTax ??
+              chartPoint.meta?.cumulativeReinvestedCash ??
+              chartPoint.meta?.cumulativeReinvested ??
+              chartPoint.meta?.totals?.cashInvested ??
+              chartPoint.meta?.totals?.reinvestedCashContributions ??
+              0
+          ) || 0;
+        const propertyReinvestContributionYear =
+          Number(chartPoint.meta?.yearly?.reinvestContribution ?? 0) || 0;
+        const propertyReinvestGrowthYear =
+          Number(chartPoint.meta?.yearly?.investedRentGrowth ?? 0) || 0;
+        const propertyAfterTaxCashYear =
+          Number(chartPoint.meta?.yearly?.cashAfterTax ?? 0);
+        reinvestedFundBalance += propertyReinvestedValue;
+        reinvestedFundContributionTotal += propertyReinvestedContributions;
+        reinvestContributionYear += propertyReinvestContributionYear;
+        reinvestGrowthYear += propertyReinvestGrowthYear;
+        if (propertyAfterTaxCashYear > 0) {
+          reinvestEligibleCashYear += propertyAfterTaxCashYear;
+        }
+        reinvestState.balance = propertyReinvestedValue;
+        reinvestState.contributions = propertyReinvestedContributions;
+        contribution.cashInvested = propertyReinvestedContributions;
+      } else if (reinvestState.balance > 0) {
+        reinvestedFundBalance += reinvestState.balance;
+        reinvestedFundContributionTotal += reinvestState.contributions;
+        contribution.cashInvested = reinvestState.contributions;
       }
 
       const propertyState = itemStates.get(item.id);
@@ -1720,9 +2156,20 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const annualCash = item.annualCashflows[cashIndex] ?? 0;
         contribution.operatingCashflow = annualCash;
         contribution.cashFlow += annualCash;
-        if (propertyYear === item.exitYear) {
-          contribution.saleProceeds = item.exitProceeds;
-          contribution.cashFlow += item.exitProceeds;
+        if (!item.neverExit && propertyYear === item.exitYear) {
+          const saleValue = Number(chartMeta.saleValue) || 0;
+          const saleCosts = Number(chartMeta.saleCosts) || 0;
+          const remainingLoan = Number(chartMeta.remainingLoan) || 0;
+          const realizedSale = Number(chartMeta.realizedSaleProceeds ?? chartMeta.netSaleIfSold);
+          const netSaleProceeds = Number.isFinite(realizedSale)
+            ? realizedSale
+            : Number(item.exitProceeds) || 0;
+
+          contribution.saleProceeds = netSaleProceeds;
+          contribution.saleValue = saleValue;
+          contribution.saleCosts = saleCosts;
+          contribution.debtPayoff = remainingLoan;
+          contribution.cashFlow += netSaleProceeds;
         }
       }
 
@@ -1752,9 +2199,21 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cumulativeIndexFundContribution += indexFundContribution;
     }
 
+    const reinvestedFundGrowthTotal = Math.max(
+      0,
+      reinvestedFundBalance - reinvestedFundContributionTotal
+    );
+    const reinvestShare =
+      reinvestEligibleCashYear > 0
+        ? clampPercentage(reinvestContributionYear / reinvestEligibleCashYear, 0, 1)
+        : null;
     const portfolioCashAdjustment = cumulativeCash - propertyCashflowNet;
-    const combinedNetWealthBeforeTax = propertyNet + portfolioCashAdjustment;
-    const combinedNetWealthAfterTax = propertyNetAfterTax + portfolioCashAdjustment;
+    const combinedNetWealthBeforeTaxBase = propertyNet + portfolioCashAdjustment;
+    const combinedNetWealthAfterTaxBase = propertyNetAfterTax + portfolioCashAdjustment;
+    const combinedNetWealthBeforeTax =
+      combinedNetWealthBeforeTaxBase + reinvestedFundBalance;
+    const combinedNetWealthAfterTax =
+      combinedNetWealthAfterTaxBase + reinvestedFundBalance;
     const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
 
     chart.push({
@@ -1767,12 +2226,13 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cashflowNet: propertyCashflowNet,
       cashflowGross: propertyCashflowGross,
       cashflowAfterTax: cumulativeCash,
-      investedRent: propertyInvestedRent,
+      cashInvested: reinvestedFundContributionTotal,
+      investedRent: reinvestedFundBalance,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
-      netWealthAfterTax: totalNetWealthWithIndex,
-      netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+      netWealthAfterTax: combinedNetWealthAfterTax,
+      netWealthBeforeTax: combinedNetWealthBeforeTax,
       cashFlow,
       cumulativeCash,
       externalCashFlow,
@@ -1781,22 +2241,35 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       indexFundValue,
       indexFundContribution,
       cumulativeIndexFundContribution,
+      reinvestedCash: reinvestedFundBalance,
       meta: {
         propertyBreakdown,
+        shouldReinvest: reinvestedFundBalance > 0,
+        reinvestShare,
+        investedRentContributions: reinvestedFundContributionTotal,
+        investedRentGrowth: reinvestedFundGrowthTotal,
+        cashInvested: reinvestedFundContributionTotal,
+        yearly: {
+          reinvestContribution: reinvestContributionYear,
+          investedRentGrowth: reinvestGrowthYear,
+        },
         totals: {
           propertyValue,
+          propertyGross,
           propertyNet,
           propertyNetAfterTax,
           cashflow: propertyCashflowNet,
           cashflowAfterTax: cumulativeCash,
           combinedNetWealth: combinedNetWealthAfterTax,
           combinedNetWealthBeforeTax,
-          netWealthAfterTax: totalNetWealthWithIndex,
-          netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+          netWealthAfterTax: combinedNetWealthAfterTax,
+          netWealthBeforeTax: combinedNetWealthBeforeTax,
           cumulativeCash,
+          cashInvested: reinvestedFundContributionTotal,
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
           cumulativeExternal,
+          reinvestedCash: reinvestedFundBalance,
         },
       },
     });
@@ -1879,10 +2352,16 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       0,
     finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
     finalIndexFundValue: lastPoint?.indexFundValue ?? lastPoint?.indexFund ?? 0,
+    finalReinvestedCash:
+      lastPoint?.reinvestedCash ??
+      lastPoint?.investedRent ??
+      lastPoint?.meta?.totals?.reinvestedCash ??
+      0,
     finalTotalNetWealth:
       lastPoint?.netWealthAfterTax ??
-      lastPoint?.totalNetWealthWithIndex ??
-      ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
+      lastPoint?.combinedNetWealth ??
+      lastPoint?.meta?.totals?.netWealthAfterTax ??
+      0,
     averageRentalYield,
     averageCapRate,
   };
@@ -1899,6 +2378,130 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     cashflows: planCashflows,
     irr: planIrr,
   };
+};
+
+const sanitizeStoredPlanView = (entry) => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const planItems = Array.isArray(entry.plan)
+    ? entry.plan.map((item) => sanitizePlanItem(item)).filter(Boolean)
+    : [];
+  if (planItems.length === 0) {
+    return null;
+  }
+  const id =
+    typeof entry.id === 'string' && entry.id.trim() !== ''
+      ? entry.id.trim()
+      : `plan-view-${Math.random().toString(36).slice(2, 10)}`;
+  const name =
+    typeof entry.name === 'string' && entry.name.trim() !== ''
+      ? entry.name.trim()
+      : 'Saved plan view';
+  const savedAt =
+    typeof entry.savedAt === 'string' && entry.savedAt.trim() !== ''
+      ? entry.savedAt
+      : new Date().toISOString();
+  return {
+    id,
+    name,
+    savedAt,
+    plan: planItems,
+  };
+};
+
+const sortPlanViews = (views) => {
+  if (!Array.isArray(views)) {
+    return [];
+  }
+  return [...views].sort((a, b) => {
+    const aTime = new Date(a?.savedAt ?? 0).getTime();
+    const bTime = new Date(b?.savedAt ?? 0).getTime();
+    return bTime - aTime;
+  });
+};
+
+const loadStoredPlanViews = () => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(FUTURE_PLAN_VIEWS_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return sortPlanViews(parsed.map((entry) => sanitizeStoredPlanView(entry)).filter(Boolean));
+  } catch (error) {
+    console.warn('Unable to read saved future plan views from storage:', error);
+    return [];
+  }
+};
+
+const getPlanItemExitYear = (item) => {
+  if (!item || typeof item !== 'object') {
+    return 0;
+  }
+  const override = Number.isFinite(item.exitYearOverride)
+    ? Math.max(0, Math.round(item.exitYearOverride))
+    : NaN;
+  const inputExit = Number.isFinite(item.inputs?.exitYear)
+    ? Math.max(0, Math.round(item.inputs.exitYear))
+    : 0;
+  return Number.isFinite(override) ? override : inputExit;
+};
+
+const describePlanScheduleChanges = (baselinePlan, comparisonPlan, planItemsById = new Map()) => {
+  if (!Array.isArray(baselinePlan) || !Array.isArray(comparisonPlan)) {
+    return [];
+  }
+  const baselineById = new Map(
+    baselinePlan.map((item) => [item?.id, item]).filter((entry) => entry[0])
+  );
+  return comparisonPlan
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const base = baselineById.get(item.id);
+      if (!base) {
+        return null;
+      }
+      const basePurchase = Number.isFinite(base.purchaseYear) ? base.purchaseYear : 0;
+      const nextPurchase = Number.isFinite(item.purchaseYear) ? item.purchaseYear : 0;
+      const baseExit = getPlanItemExitYear(base);
+      const nextExit = getPlanItemExitYear(item);
+      const baseNeverExit = base.neverExit === true;
+      const nextNeverExit = item.neverExit === true;
+      if (
+        basePurchase === nextPurchase &&
+        baseExit === nextExit &&
+        baseNeverExit === nextNeverExit
+      ) {
+        return null;
+      }
+      const planEntry = planItemsById.get(item.id);
+      const label =
+        typeof planEntry?.displayName === 'string' && planEntry.displayName.trim() !== ''
+          ? planEntry.displayName
+          : typeof item.name === 'string' && item.name.trim() !== ''
+            ? item.name.trim()
+            : 'Plan property';
+      return {
+        id: item.id,
+        label,
+        purchaseYear: nextPurchase,
+        basePurchaseYear: basePurchase,
+        exitYear: nextExit,
+        baseExitYear: baseExit,
+        neverExit: nextNeverExit,
+        baseNeverExit,
+      };
+    })
+    .filter(Boolean);
 };
 
 const loadStoredFuturePlan = () => {
@@ -1926,6 +2529,68 @@ const roundTo = (value, decimals = 2) => {
   const factor = Math.pow(10, decimals);
   return Math.round((value + Number.EPSILON) * factor) / factor;
 };
+
+function calcResidentialCapitalGainsTax({ gain, income }) {
+  if (!Number.isFinite(gain) || gain <= 0) {
+    return 0;
+  }
+  const allowance = RESIDENTIAL_CGT_ANNUAL_ALLOWANCE;
+  const taxableGain = Math.max(0, gain - allowance);
+  if (taxableGain <= 0) {
+    return 0;
+  }
+  const incomeForBand = Math.max(0, Number(income) || 0);
+  const remainingBasicBand = Math.max(0, RESIDENTIAL_CGT_BASIC_RATE_LIMIT - incomeForBand);
+  const gainAtBasic = Math.min(taxableGain, remainingBasicBand);
+  const gainAtHigher = Math.max(0, taxableGain - gainAtBasic);
+  const tax = gainAtBasic * RESIDENTIAL_CGT_BASIC_RATE + gainAtHigher * RESIDENTIAL_CGT_HIGHER_RATE;
+  return roundTo(tax, 2);
+}
+
+function calcCapitalGainsTax({ gain, buyerType, ownerIncomes = [], ownerShares = [] }) {
+  if (!Number.isFinite(gain) || gain <= 0) {
+    return 0;
+  }
+  if (buyerType === 'company') {
+    return roundTo(gain * CORPORATION_TAX_RATE, 2);
+  }
+
+  const incomes = Array.isArray(ownerIncomes) ? ownerIncomes : [];
+  const shares = Array.isArray(ownerShares) ? ownerShares : [];
+  let totalShares = 0;
+  const sanitizedShares = shares.map((share) => {
+    if (!Number.isFinite(share) || share <= 0) {
+      return 0;
+    }
+    totalShares += share;
+    return share;
+  });
+
+  if (totalShares <= 0) {
+    if (incomes.length === 0) {
+      return calcResidentialCapitalGainsTax({ gain, income: 0 });
+    }
+    const equalShareGain = gain / incomes.length;
+    const totalTax = incomes.reduce(
+      (sum, income) => sum + calcResidentialCapitalGainsTax({ gain: equalShareGain, income }),
+      0
+    );
+    return roundTo(totalTax, 2);
+  }
+
+  let totalTax = 0;
+  sanitizedShares.forEach((share, index) => {
+    if (share <= 0) {
+      return;
+    }
+    const normalizedShare = share / totalShares;
+    const shareGain = gain * normalizedShare;
+    const income = incomes[index] ?? 0;
+    totalTax += calcResidentialCapitalGainsTax({ gain: shareGain, income });
+  });
+
+  return roundTo(totalTax, 2);
+}
 
 const formatPercent = (value, decimals = 2) => {
   if (!Number.isFinite(value)) {
@@ -3395,7 +4060,7 @@ const KNOWLEDGE_GROUPS = {
   exitComparison: {
     label: 'Exit comparison',
     description: 'Compares exit-year wealth between the property and the index fund alternative.',
-    metrics: ['indexFundValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'rentalTaxTotal'],
+    metrics: ['indexFundValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'capitalGainsTax', 'rentalTaxTotal'],
   },
   exit: {
     label: 'Equity at exit',
@@ -3405,12 +4070,20 @@ const KNOWLEDGE_GROUPS = {
   wealthTrajectory: {
     label: 'Wealth trajectory',
     description: 'Tracks how equity builds relative to the index fund over time.',
-    metrics: ['propertyValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'reinvestFund', 'indexFundValue'],
+    metrics: [
+      'propertyValue',
+      'propertyGross',
+      'propertyNet',
+      'propertyNetAfterTax',
+      'reinvestFund',
+      'cashInvested',
+      'indexFundValue',
+    ],
   },
   rateTrends: {
     label: 'Return ratios over time',
     description: 'Shows how return ratios evolve through the hold period.',
-    metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrHurdle', 'npvToDate'],
+    metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrAverage', 'irrHurdle', 'npvToDate'],
   },
   npv: {
     label: 'Net present value',
@@ -3628,6 +4301,14 @@ const KNOWLEDGE_METRICS = {
     importance: 'Captures time value of money and overall deal efficiency.',
     unit: 'percent',
   },
+  irrAverage: {
+    label: 'Average IRR to date',
+    groups: ['rateTrends'],
+    description: 'Realised IRR if you sold in the selected year based on cash flows received so far.',
+    calculation: 'Solve IRR from initial investment, cash flows to date, and hypothetical sale proceeds in the given year.',
+    importance: 'Highlights the compounded return achieved so far compared with the final projection.',
+    unit: 'percent',
+  },
   irrHurdle: {
     label: 'IRR hurdle',
     groups: ['keyRatios', 'rateTrends', 'leverage'],
@@ -3678,19 +4359,30 @@ const KNOWLEDGE_METRICS = {
     unit: 'currency',
   },
   propertyNet: {
-    label: 'Property net wealth',
+    label: 'Property net',
     groups: ['exitComparison', 'wealthTrajectory'],
-    description: 'Net sale proceeds plus cumulative pre-tax cash retained and reinvested balance.',
-    calculation: 'Net sale proceeds + cumulative pre-tax cash kept + reinvested fund.',
-    importance: 'Represents investor wealth before tax when exiting the property.',
+    description: 'Net sale proceeds plus cumulative after-tax cash retained, including the reinvested fund balance.',
+    calculation: 'Net sale proceeds + cumulative after-tax cash kept + reinvested fund balance.',
+    importance: 'Represents investor wealth tied directly to the property including reinvested cash.',
     unit: 'currency',
   },
   propertyNetAfterTax: {
     label: 'Property net after tax',
     groups: ['exitComparison', 'wealthTrajectory', 'leverage'],
-    description: 'Net sale proceeds plus cumulative after-tax cash retained and reinvested balance.',
-    calculation: 'Net sale proceeds + cumulative after-tax cash kept + reinvested fund.',
-    importance: 'Illustrates investor wealth after paying rental taxes and selling costs.',
+    description:
+      'Property net after accounting for rental taxes on cash flow, capital gains tax on exit, and the reinvested fund balance.',
+    calculation:
+      'After-tax net sale proceeds + cumulative after-tax cash retained (net of reinvest contributions) + reinvested fund balance.',
+    importance: 'Illustrates property wealth after all tax drag while keeping reinvested cash growth.',
+    unit: 'currency',
+  },
+  capitalGainsTax: {
+    label: 'Capital gains tax',
+    groups: ['exitComparison'],
+    description: 'Tax due on the gain realised when the property is sold.',
+    calculation:
+      'Applies residential CGT bands for individuals or corporation tax for companies to sale proceeds after costs and purchase basis.',
+    importance: 'Reduces exit proceeds and explains the gap between gross and after-tax net wealth.',
     unit: 'currency',
   },
   rentalTaxTotal: {
@@ -3747,6 +4439,14 @@ const KNOWLEDGE_METRICS = {
     description: 'Value of after-tax cash reinvested each year per the reinvestment setting.',
     calculation: 'Compounded balance of reinvested cash flows.',
     importance: 'Captures additional wealth created by recycling surplus cash.',
+    unit: 'currency',
+  },
+  cashInvested: {
+    label: 'Cash invested',
+    groups: ['wealthTrajectory'],
+    description: 'Total upfront capital contributed after accounting for deposits, fees, and any bridging finance.',
+    calculation: 'Deposit + closing costs + renovations − bridging loan proceeds.',
+    importance: 'Sets the equity at risk and baseline capital that long-term wealth should exceed.',
     unit: 'currency',
   },
   loanBalance: {
@@ -3825,7 +4525,7 @@ const KNOWLEDGE_METRICS = {
     label: 'Total ROI',
     groups: ['leverage', 'roiHeatmap'],
     description: 'Total return on investment based on equity built relative to cash invested.',
-    calculation: 'Property net wealth at exit ÷ total cash required − 1.',
+    calculation: 'Net wealth at exit ÷ total cash required − 1.',
     importance: 'Summarises overall growth of invested capital ignoring timing.',
     unit: 'percent',
   },
@@ -5169,7 +5869,10 @@ function calculateEquity(rawInputs) {
   let cumulativePropertyTax = 0;
   let exitCumCash = 0;
   let exitCumCashAfterTax = 0;
+  let exitCumCashAfterTaxNet = 0;
   let exitNetSaleProceeds = 0;
+  let exitNetSaleProceedsAfterTax = 0;
+  let exitCapitalGainsTax = 0;
   let indexVal = indexInitialInvestment;
   let reinvestFundValue = 0;
   let investedRentValue = 0;
@@ -5203,12 +5906,14 @@ function calculateEquity(rawInputs) {
     reinvestFund: 0,
     cashflow: 0,
     investedRent: shouldReinvest ? 0 : null,
+    cashInvested: shouldReinvest ? 0 : null,
     capRate: null,
     yieldRate: null,
     cashOnCash: null,
-    irrSeries: null,
-    netWealthAfterTax: initialNetEquity + indexVal,
-    netWealthBeforeTax: initialNetEquity + indexVal,
+    irrIfSold: null,
+    irrAverage: null,
+    netWealthAfterTax: initialNetEquity,
+    netWealthBeforeTax: initialNetEquity,
     meta: {
       propertyValue: initialSaleValue,
       saleValue: initialSaleValue,
@@ -5244,8 +5949,8 @@ function calculateEquity(rawInputs) {
       bridgingLoanInterestRate: bridgingMonthlyRate,
       initialOutlay,
       realizedSaleProceeds: 0,
-      netWealthAfterTax: initialNetEquity + indexVal,
-      netWealthBeforeTax: initialNetEquity + indexVal,
+      netWealthAfterTax: initialNetEquity,
+      netWealthBeforeTax: initialNetEquity,
       yearly: {
         gross: 0,
         operatingExpenses: 0,
@@ -5284,12 +5989,12 @@ function calculateEquity(rawInputs) {
     const principalPaid = annualPrincipal[y - 1] ?? (inputs.loanType === 'interest_only' ? 0 : debtService - interestPaid);
     const taxableBase = deductOperatingExpensesForTax ? noi : gross;
     const taxableProfit = taxableBase - interestPaid;
+    const shareOwnerA = taxableProfit * normalizedShare1;
+    const shareOwnerB = taxableProfit * normalizedShare2;
     let propertyTax = 0;
     if (isCompanyBuyer) {
-      propertyTax = roundTo(Math.max(0, taxableProfit) * 0.19, 2);
+      propertyTax = roundTo(Math.max(0, taxableProfit) * CORPORATION_TAX_RATE, 2);
     } else {
-      const shareOwnerA = taxableProfit * normalizedShare1;
-      const shareOwnerB = taxableProfit * normalizedShare2;
       const taxOwnerA = calcIncomeTax(baseIncome1 + shareOwnerA) - calcIncomeTax(baseIncome1);
       const taxOwnerB = calcIncomeTax(baseIncome2 + shareOwnerB) - calcIncomeTax(baseIncome2);
       propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
@@ -5324,6 +6029,24 @@ function calculateEquity(rawInputs) {
     const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     const saleCostsEstimate = vt * inputs.sellingCostsPct;
     const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
+    const saleProceedsBeforeLoan = vt - saleCostsEstimate;
+    const ownerIncomeA = isCompanyBuyer ? 0 : Math.max(0, baseIncome1 + shareOwnerA);
+    const ownerIncomeB = isCompanyBuyer ? 0 : Math.max(0, baseIncome2 + shareOwnerB);
+    const grossCapitalGain = saleProceedsBeforeLoan - projectCost;
+    let capitalGainsTaxEstimate = 0;
+    if (grossCapitalGain > 0) {
+      capitalGainsTaxEstimate = calcCapitalGainsTax({
+        gain: grossCapitalGain,
+        buyerType: inputs.buyerType,
+        ownerIncomes: isCompanyBuyer ? [] : [ownerIncomeA, ownerIncomeB],
+        ownerShares: isCompanyBuyer ? [] : [normalizedShare1, normalizedShare2],
+      });
+      const maxTaxBase = Math.max(0, saleProceedsBeforeLoan);
+      if (capitalGainsTaxEstimate > maxTaxBase) {
+        capitalGainsTaxEstimate = maxTaxBase;
+      }
+    }
+    const netSaleIfSoldAfterTax = netSaleIfSold - capitalGainsTaxEstimate;
     const capRateYear = vt > 0 ? noi / vt : 0;
     const yieldRateYear = projectCost > 0 ? noi / projectCost : 0;
     const cashOnCashYear = cashIn > 0 ? cash / cashIn : 0;
@@ -5338,14 +6061,14 @@ function calculateEquity(rawInputs) {
     const cumulativeCashAfterTaxNet = shouldReinvest
       ? cumulativeCashAfterTax - cumulativeReinvested
       : cumulativeCashAfterTax;
-    const propertyGrossValue = vt + cumulativeCashPreTaxNet + reinvestFundValue;
+    const propertyGrossValue = vt + cumulativeCashPreTaxNet;
     const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
+    const propertyNetAfterTaxValue = netSaleIfSoldAfterTax + cumulativeCashAfterTaxNet + reinvestFundValue;
 
     let yearCashflowForCf = cash;
     let yearCashflowForNpv = afterTaxCash;
     let realizedSaleProceeds = 0;
-    if (y === inputs.exitYear) {
+    if (!inputs.neverExit && y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
       const rem =
@@ -5353,12 +6076,16 @@ function calculateEquity(rawInputs) {
           ? loan
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
+      const netSaleProceedsAfterTax = netSaleProceeds - capitalGainsTaxEstimate;
       yearCashflowForCf = cash + netSaleProceeds;
-      yearCashflowForNpv = afterTaxCash + netSaleProceeds;
+      yearCashflowForNpv = afterTaxCash + netSaleProceedsAfterTax;
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
+      exitCumCashAfterTaxNet = cumulativeCashAfterTaxNet;
       exitNetSaleProceeds = netSaleProceeds;
-      realizedSaleProceeds = netSaleProceeds;
+      exitNetSaleProceedsAfterTax = netSaleProceedsAfterTax;
+      exitCapitalGainsTax = capitalGainsTaxEstimate;
+      realizedSaleProceeds = netSaleProceedsAfterTax;
     }
     cf.push(yearCashflowForCf);
     npvCashflows.push(yearCashflowForNpv);
@@ -5377,9 +6104,9 @@ function calculateEquity(rawInputs) {
     const reinvestFundGrowth = Math.max(0, reinvestFundValue - cumulativeReinvested);
     const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
 
-    const propertyValueForChart = y === inputs.exitYear ? 0 : vt;
-    const netWealthAfterTaxValue = propertyNetAfterTaxValue + indexVal;
-    const netWealthBeforeTaxValue = propertyNetValue + indexVal;
+    const propertyValueForChart = !inputs.neverExit && y === inputs.exitYear ? 0 : vt;
+    const netWealthAfterTaxValue = propertyNetAfterTaxValue;
+    const netWealthBeforeTaxValue = propertyNetValue;
 
     chart.push({
       year: y,
@@ -5392,6 +6119,7 @@ function calculateEquity(rawInputs) {
       propertyNet: propertyNetValue,
       propertyNetAfterTax: propertyNetAfterTaxValue,
       reinvestFund: reinvestFundValue,
+      cashInvested: shouldReinvest ? cumulativeReinvested : null,
       cashflow: cumulativeCashAfterTaxKeptRealized,
       cashflowNet: cumulativeCashAfterTaxNetRealized,
       cashflowGross: cumulativeCashAfterTaxRealized,
@@ -5399,7 +6127,8 @@ function calculateEquity(rawInputs) {
       capRate: capRateYear,
       yieldRate: yieldRateYear,
       cashOnCash: cashOnCashYear,
-      irrSeries: irrToDate,
+      irrIfSold: irrToDate,
+      irrAverage: null,
       irrHurdle: irrHurdleValue,
       npvToDate,
       netWealthAfterTax: netWealthAfterTaxValue,
@@ -5410,6 +6139,7 @@ function calculateEquity(rawInputs) {
         saleCosts: saleCostsEstimate,
         remainingLoan: remainingLoanYear,
         netSaleIfSold,
+        netSaleIfSoldAfterTax,
         cumulativeCashPreTax,
         cumulativeCashPreTaxNet,
         cumulativeCashAfterTax,
@@ -5440,7 +6170,9 @@ function calculateEquity(rawInputs) {
         capRate: capRateYear,
         yieldRate: yieldRateYear,
         cashOnCash: cashOnCashYear,
-        irrSeries: irrToDate,
+        irrIfSold: irrToDate,
+        neverExit: Boolean(inputs.neverExit),
+        capitalGainsTaxIfSold: capitalGainsTaxEstimate,
         yearly: {
           gross,
           operatingExpenses: varOpex + fixed,
@@ -5456,11 +6188,27 @@ function calculateEquity(rawInputs) {
           investedRentGrowth: reinvestGrowthThisYear,
           interest: interestPaid,
           principal: principalPaid,
+          capitalGainsTax: !inputs.neverExit && y === inputs.exitYear ? capitalGainsTaxEstimate : 0,
         },
       },
     });
 
     rent *= 1 + inputs.rentGrowth;
+  }
+
+  if (inputs.neverExit) {
+    const cumulativeCashPreTaxNetFinal = shouldReinvest
+      ? cumulativeCashPreTax - cumulativeReinvested
+      : cumulativeCashPreTax;
+    const cumulativeCashAfterTaxNetFinal = shouldReinvest
+      ? cumulativeCashAfterTax - cumulativeReinvested
+      : cumulativeCashAfterTax;
+    exitCumCash = cumulativeCashPreTaxNetFinal + reinvestFundValue;
+    exitCumCashAfterTax = cumulativeCashAfterTaxNetFinal + reinvestFundValue;
+    exitCumCashAfterTaxNet = cumulativeCashAfterTaxNetFinal;
+    exitNetSaleProceeds = 0;
+    exitNetSaleProceedsAfterTax = 0;
+    exitCapitalGainsTax = 0;
   }
 
   if (chart.length > 0) {
@@ -5471,6 +6219,9 @@ function calculateEquity(rawInputs) {
     const extensionIndexFund = Number(lastPoint.indexFund) || 0;
     const extensionReinvestFund = Number(
       lastPoint.reinvestFund ?? lastMeta.reinvestFundValue ?? 0
+    );
+    const extensionCashInvested = Number(
+      lastPoint.cashInvested ?? lastMeta.investedRentContributions ?? (shouldReinvest ? cumulativeReinvested : 0)
     );
     const extensionCashflowKept = Number(
       lastMeta.cumulativeCashAfterTaxKeptRealized ??
@@ -5493,23 +6244,45 @@ function calculateEquity(rawInputs) {
     const extensionPropertyNet = Number(lastPoint.propertyNet) || 0;
     const extensionPropertyNetAfterTax = Number(lastPoint.propertyNetAfterTax) || 0;
     const extensionNetWealthAfterTax = Number(
-      lastPoint.netWealthAfterTax ?? extensionPropertyNetAfterTax + extensionIndexFund
+      lastPoint.netWealthAfterTax ?? extensionPropertyNetAfterTax + extensionReinvestFund
     );
     const extensionNetWealthBeforeTax = Number(
-      lastPoint.netWealthBeforeTax ?? extensionPropertyNet + extensionIndexFund
+      lastPoint.netWealthBeforeTax ?? extensionPropertyNet + extensionReinvestFund
     );
     const extensionPropertyGross = Number(lastPoint.propertyGross) || extensionPropertyNet;
+    const extensionPropertyValue = inputs.neverExit
+      ? Number(lastPoint.propertyValue ?? lastMeta.propertyValue) || extensionPropertyGross
+      : 0;
+    const extensionMetaPropertyValue = inputs.neverExit
+      ? lastMeta.propertyValue ?? extensionPropertyValue
+      : 0;
+    const extensionMetaSaleValue = inputs.neverExit
+      ? lastMeta.saleValue ?? extensionMetaPropertyValue
+      : 0;
+    const extensionMetaRemainingLoan = inputs.neverExit
+      ? lastMeta.remainingLoan ?? 0
+      : 0;
+    const extensionMetaNetSaleIfSold = inputs.neverExit
+      ? lastMeta.netSaleIfSold ?? extensionPropertyNet
+      : 0;
+    const extensionMetaNetSaleAfterTax = inputs.neverExit
+      ? lastMeta.netSaleIfSoldAfterTax ?? extensionPropertyNetAfterTax
+      : 0;
+    const extensionMetaCapitalGains = inputs.neverExit
+      ? lastMeta.capitalGainsTaxIfSold ?? 0
+      : 0;
     chart.push({
       year: extensionYear,
       indexFund: extensionIndexFund,
       indexFund1_5x: extensionIndexFund * 1.5,
       indexFund2x: extensionIndexFund * 2,
       indexFund4x: extensionIndexFund * 4,
-      propertyValue: 0,
+      propertyValue: extensionPropertyValue,
       propertyGross: extensionPropertyGross,
       propertyNet: extensionPropertyNet,
       propertyNetAfterTax: extensionPropertyNetAfterTax,
       reinvestFund: extensionReinvestFund,
+      cashInvested: shouldReinvest ? extensionCashInvested : null,
       cashflow: extensionCashflowKept,
       cashflowNet: extensionCashflowNet,
       cashflowGross: extensionCashflowGross,
@@ -5517,25 +6290,31 @@ function calculateEquity(rawInputs) {
       capRate: null,
       yieldRate: null,
       cashOnCash: null,
-      irrSeries: lastPoint.irrSeries ?? null,
+      irrIfSold: lastPoint.irrIfSold ?? null,
+      irrAverage: lastPoint.irrAverage ?? null,
       irrHurdle: lastPoint.irrHurdle ?? irrHurdleValue,
       npvToDate: lastPoint.npvToDate ?? null,
       netWealthAfterTax: extensionNetWealthAfterTax,
       netWealthBeforeTax: extensionNetWealthBeforeTax,
       meta: {
         ...lastMeta,
-        propertyValue: 0,
-        saleValue: 0,
-        remainingLoan: 0,
-        netSaleIfSold: 0,
+        propertyValue: extensionMetaPropertyValue,
+        saleValue: extensionMetaSaleValue,
+        remainingLoan: extensionMetaRemainingLoan,
+        netSaleIfSold: extensionMetaNetSaleIfSold,
+        netSaleIfSoldAfterTax: extensionMetaNetSaleAfterTax,
         cumulativeCashAfterTaxRealized: extensionCashflowGross,
         cumulativeCashAfterTaxNetRealized: extensionCashflowNet,
         cumulativeCashAfterTaxKeptRealized: extensionCashflowKept,
         indexFundValue: extensionIndexFund,
         reinvestFundValue: extensionReinvestFund,
+        investedRentContributions:
+          lastMeta.investedRentContributions ?? (shouldReinvest ? cumulativeReinvested : 0),
         realizedSaleProceeds: 0,
+        capitalGainsTaxIfSold: extensionMetaCapitalGains,
         netWealthAfterTax: extensionNetWealthAfterTax,
         netWealthBeforeTax: extensionNetWealthBeforeTax,
+        neverExit: Boolean(inputs.neverExit),
         extension: true,
       },
     });
@@ -5543,6 +6322,18 @@ function calculateEquity(rawInputs) {
 
   const npvValue = npv(inputs.discountRate, npvCashflows);
   const irrValue = irr(cf);
+  const finalIrr = Number.isFinite(irrValue) ? irrValue : null;
+  chart.forEach((point) => {
+    if (!point || typeof point !== 'object') {
+      return;
+    }
+    const yearNumber = Number(point.year) || 0;
+    const value = finalIrr !== null && yearNumber > 0 ? finalIrr : null;
+    point.irrAverage = value;
+    if (point.meta && typeof point.meta === 'object') {
+      point.meta.irrAverage = value;
+    }
+  });
   const propertyTaxYear1 = propertyTaxes[0] ?? 0;
   const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
   const scoreResult = scoreDeal({
@@ -5585,7 +6376,7 @@ function calculateEquity(rawInputs) {
   const wealthDelta = propertyNetWealthAtExit - indexVal;
   const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
   const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
-  const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTax;
+  const propertyNetWealthAfterTax = exitNetSaleProceedsAfterTax + exitCumCashAfterTax;
   const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
   const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
   
@@ -5629,12 +6420,15 @@ function calculateEquity(rawInputs) {
     indexValEnd: indexVal,
     exitCumCash,
     exitCumCashAfterTax,
+    exitCumCashAfterTaxNet,
     exitNetSaleProceeds,
+    exitNetSaleProceedsAfterTax,
     propertyNetWealthAtExit,
     propertyGrossWealthAtExit,
     wealthDelta,
     wealthDeltaPct,
     totalPropertyTax,
+    capitalGainsTax: exitCapitalGainsTax,
     totalReinvested: cumulativeReinvested,
     reinvestFundValue,
     investedRentValue: reinvestFundValue,
@@ -5643,6 +6437,7 @@ function calculateEquity(rawInputs) {
     wealthDeltaAfterTax,
     wealthDeltaAfterTaxPct,
     exitYear: inputs.exitYear,
+    neverExit: Boolean(inputs.neverExit),
     annualGrossRents,
     annualOperatingExpenses,
     annualNoiValues,
@@ -6411,6 +7206,8 @@ export default function App() {
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
   const [futurePlan, setFuturePlan] = useState(() => loadStoredFuturePlan());
+  const [savedPlanViews, setSavedPlanViews] = useState(() => loadStoredPlanViews());
+  const [showPlanViewLoader, setShowPlanViewLoader] = useState(false);
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
@@ -6421,8 +7218,10 @@ export default function App() {
   const [planChartSeriesActive, setPlanChartSeriesActive] = useState(() => ({
     indexFund: true,
     cashflowAfterTax: true,
+    cashInvested: true,
     propertyValue: true,
-    netWealthAfterTax: true,
+    propertyGross: true,
+    propertyNet: true,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
@@ -6532,22 +7331,21 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [chatStatus, setChatStatus] = useState('idle');
   const [chatError, setChatError] = useState('');
+  const [chartSummaries, setChartSummaries] = useState({});
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
-    indexFund1_5x: false,
-    indexFund2x: false,
-    indexFund4x: false,
     cashflowAfterTax: true,
+    cashInvested: true,
     propertyValue: true,
-    propertyNetAfterTax: true,
-    netWealthAfterTax: true,
-    investedRent: false,
+    propertyGross: true,
+    propertyNet: true,
   });
   const [rateSeriesActive, setRateSeriesActive] = useState({
     capRate: false,
     yieldRate: false,
     cashOnCash: false,
-    irrSeries: true,
+    irrIfSold: true,
+    irrAverage: true,
     irrHurdle: true,
     npvToDate: true,
   });
@@ -6590,6 +7388,9 @@ export default function App() {
   const [showChartModal, setShowChartModal] = useState(false);
   const [showRatesModal, setShowRatesModal] = useState(false);
   const [showNpvModal, setShowNpvModal] = useState(false);
+  const [showEquityModal, setShowEquityModal] = useState(false);
+  const [showCashflowModal, setShowCashflowModal] = useState(false);
+  const [showRoiModal, setShowRoiModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
   const [rateChartRange, setRateChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
@@ -6691,6 +7492,9 @@ export default function App() {
   useOverlayEscape(planChartExpanded, closePlanChartOverlay);
   useOverlayEscape(showOptimizationModal, () => setShowOptimizationModal(false));
   useOverlayEscape(showPlanModal, () => setShowPlanModal(false));
+  useOverlayEscape(showEquityModal, () => setShowEquityModal(false));
+  useOverlayEscape(showCashflowModal, () => setShowCashflowModal(false));
+  useOverlayEscape(showRoiModal, () => setShowRoiModal(false));
 
   useEffect(() => {
     if (!planChartExpanded) {
@@ -8291,6 +9095,19 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
+      const payload = savedPlanViews.map((view) => ({
+        ...view,
+        plan: view.plan.map((item) => sanitizePlanItem(item)).filter(Boolean),
+      }));
+      window.localStorage.setItem(FUTURE_PLAN_VIEWS_STORAGE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      console.warn('Unable to persist future plan views:', error);
+    }
+  }, [savedPlanViews]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
       const sanitized = sanitizeCashflowColumns(cashflowColumnKeys);
       window.localStorage.setItem(CASHFLOW_COLUMNS_STORAGE_KEY, JSON.stringify(sanitized));
     } catch (error) {
@@ -8389,24 +9206,11 @@ export default function App() {
       if (planChartFocusLocked) {
         return;
       }
-      if (!event || event.isTooltipActive === false) {
+      if ((!event || event.isTooltipActive === false) && planChartFocusYear !== null) {
         setPlanChartFocusYear(null);
-        return;
       }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setPlanChartFocusYear(null);
-        return;
-      }
-      const year = Math.max(0, Math.round(activeYear));
-      const match = planAnalysis.chart.find((point) => Number(point?.year) === year);
-      if (!match) {
-        setPlanChartFocusYear(null);
-        return;
-      }
-      setPlanChartFocusYear(year);
     },
-    [planChartFocusLocked, planAnalysis.chart]
+    [planChartFocusLocked, planChartFocusYear]
   );
 
   const handlePlanChartMouseLeave = useCallback(() => {
@@ -8905,32 +9709,142 @@ export default function App() {
     }
     const startYear = Math.max(0, Math.min(chartRange.start, chartRange.end));
     const endYear = Math.max(startYear, chartRange.end);
-    return data
-      .filter((point) => {
-        const year = Number(point?.year);
-        return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
-      })
-      .map((point) => {
-        const cashflowAfterTax = Number(
+    const result = [];
+    let lastCashflow = 0;
+    let lastInvestedRent = 0;
+    let lastNetWealth = 0;
+    let lastCashInvested = 0;
+    let lastPropertyValue = 0;
+    let lastPropertyGross = 0;
+    data.forEach((point) => {
+      const year = Number(point?.year);
+      if (!Number.isFinite(year) || year < startYear || year > endYear) {
+        return;
+      }
+      const cashflowAfterTaxRaw = toFiniteNumber(
+        point?.cashflowAfterTax ??
           point?.meta?.cumulativeCashAfterTaxKeptRealized ??
-            point?.cashflow ??
-            point?.meta?.cumulativeCashAfterTaxNetRealized ??
-            point?.meta?.cumulativeCashAfterTaxNet ??
-            point?.meta?.cumulativeCashAfterTax ??
-            0
-        );
-        const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue ?? 0);
-        const propertyNetAfterTaxValue = Number(point?.propertyNetAfterTax) || 0;
-        const netWealthAfterTax = Number(
-          point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ?? propertyNetAfterTaxValue + indexFundValue
-        );
-        return {
-          ...point,
-          cashflowAfterTax,
-          netWealthAfterTax,
-          indexFundValue,
-        };
+          point?.cashflow ??
+          point?.meta?.cumulativeCashAfterTaxNetRealized ??
+          point?.meta?.cumulativeCashAfterTaxNet ??
+          point?.meta?.cumulativeCashAfterTax ??
+          lastCashflow,
+        lastCashflow
+      );
+      const cashflowAfterTax = Number.isFinite(cashflowAfterTaxRaw)
+        ? cashflowAfterTaxRaw
+        : lastCashflow;
+
+      const indexFundValue = toFiniteNumber(
+        point?.indexFund ??
+          point?.meta?.indexFundValue ??
+          point?.meta?.totals?.indexFund ??
+          0,
+        0
+      );
+
+      const propertyValueRaw = toFiniteNumber(
+        point?.propertyValue ??
+          point?.meta?.propertyValue ??
+          point?.meta?.wealth?.propertyValue ??
+          point?.meta?.totals?.propertyValue ??
+          lastPropertyValue,
+        lastPropertyValue
+      );
+      const propertyValue = Number.isFinite(propertyValueRaw) ? propertyValueRaw : lastPropertyValue;
+
+      const propertyGrossRaw = toFiniteNumber(
+        point?.propertyGross ??
+          point?.meta?.propertyGross ??
+          point?.meta?.wealth?.propertyGross ??
+          point?.meta?.totals?.propertyGross ??
+          lastPropertyGross,
+        lastPropertyGross
+      );
+      const propertyGross = Number.isFinite(propertyGrossRaw) ? propertyGrossRaw : lastPropertyGross;
+
+      const investedRentRaw = toFiniteNumber(
+        point?.investedRent ??
+          point?.reinvestFund ??
+          point?.reinvestedCash ??
+          point?.reinvestedCashAfterTax ??
+          point?.meta?.reinvestedCash ??
+          point?.meta?.reinvestedCashAfterTax ??
+          point?.meta?.cumulativeReinvestedCash ??
+          point?.meta?.cumulativeReinvestedCashAfterTax ??
+          point?.meta?.wealth?.reinvestedCash ??
+          point?.meta?.wealth?.reinvestedCashAfterTax ??
+          point?.meta?.totals?.reinvestedCash ??
+          point?.meta?.totals?.reinvestedCashAfterTax ??
+          point?.meta?.totals?.reinvestFundValue ??
+          point?.meta?.investedRentValue ??
+          point?.meta?.reinvestFundValue ??
+          lastInvestedRent,
+        lastInvestedRent
+      );
+      const investedRent = Number.isFinite(investedRentRaw) ? investedRentRaw : lastInvestedRent;
+
+      const propertyNetAfterTaxValue = toFiniteNumber(
+        point?.propertyNetAfterTax ??
+          point?.meta?.propertyNetAfterTax ??
+          point?.meta?.totals?.propertyNetAfterTax ??
+          point?.meta?.wealth?.propertyNetAfterTax ??
+          0,
+        0
+      );
+
+      const storedNetWealthAfterTax = toFiniteNumber(
+        point?.netWealthAfterTax ??
+          point?.meta?.netWealthAfterTax ??
+          point?.meta?.combinedNetWealthAfterTax ??
+          point?.meta?.totals?.combinedNetWealth ??
+          point?.meta?.totals?.combinedNetWealthAfterTax ??
+          point?.meta?.totals?.netWealthAfterTax ??
+          point?.meta?.wealth?.combinedNetWealth ??
+          point?.meta?.wealth?.netWealthAfterTax ??
+          Number.NaN,
+        Number.NaN
+      );
+      const reinvestBalance = Math.max(0, investedRent);
+      const netWealthAfterTax = Number.isFinite(storedNetWealthAfterTax)
+        ? storedNetWealthAfterTax
+        : propertyNetAfterTaxValue + reinvestBalance;
+
+      const cashInvestedCandidate = toFiniteNumber(
+        point?.cashInvested ??
+          point?.reinvestContributions ??
+          point?.meta?.investedRentContributions ??
+          point?.meta?.cumulativeReinvested ??
+          point?.meta?.totals?.reinvestedCashContributions ??
+          point?.meta?.totals?.reinvestedCash ??
+          Number.NaN,
+        Number.NaN
+      );
+      const cashInvested = Number.isFinite(cashInvestedCandidate)
+        ? Math.max(0, cashInvestedCandidate)
+        : Math.max(0, lastCashInvested);
+
+      lastCashflow = cashflowAfterTax;
+      lastInvestedRent = investedRent;
+      lastNetWealth = netWealthAfterTax;
+      lastCashInvested = cashInvested;
+      lastPropertyValue = propertyValue;
+      lastPropertyGross = propertyGross;
+
+      result.push({
+        ...point,
+        cashflowAfterTax,
+        netWealthAfterTax,
+        indexFund: indexFundValue,
+        indexFundValue,
+        investedRent,
+        cashInvested,
+        propertyValue,
+        propertyGross,
       });
+    });
+
+    return result;
   }, [equity.chart, chartRange]);
 
   const rateChartData = useMemo(() => {
@@ -9552,9 +10466,7 @@ export default function App() {
   const rentalTaxCumulativeLabel = isCompanyBuyer
     ? 'Corporation tax on rent (cumulative)'
     : 'Rental income tax (cumulative)';
-  const propertyNetAfterTaxLabel = isCompanyBuyer
-    ? 'Property net after corporation tax'
-    : 'Property net after tax';
+  const propertyNetAfterTaxLabel = 'Property net after tax';
 
   const leverageMetricOptions = useMemo(
     () => [
@@ -9932,28 +10844,11 @@ export default function App() {
       if (chartFocusLocked) {
         return;
       }
-      if (!event || event.isTooltipActive === false) {
+      if ((!event || event.isTooltipActive === false) && chartFocus !== null) {
         setChartFocus(null);
-        return;
       }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setChartFocus(null);
-        return;
-      }
-      const match = filteredChartData.find((point) => Number(point?.year) === activeYear);
-      if (!match) {
-        setChartFocus(null);
-        return;
-      }
-      setChartFocus((prev) => {
-        if (prev?.year === activeYear && prev.data === match) {
-          return prev;
-        }
-        return { year: activeYear, data: match };
-      });
     },
-    [chartFocusLocked, filteredChartData]
+    [chartFocusLocked, chartFocus]
   );
 
   const handleChartMouseLeave = useCallback(() => {
@@ -10138,24 +11033,66 @@ export default function App() {
   const reinvestFundValue = Number.isFinite(equity.reinvestFundValue) ? equity.reinvestFundValue : 0;
   const exitCumCash = Number.isFinite(equity.exitCumCash) ? equity.exitCumCash : 0;
   const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
+  const exitCumCashAfterTaxNetValue = Number.isFinite(equity.exitCumCashAfterTaxNet)
+    ? equity.exitCumCashAfterTaxNet
+    : exitCumCashAfterTax - reinvestFundValue;
   const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
-  const reinvestActive = Boolean(inputs.reinvestIncome) && reinvestRate > 0 && reinvestFundValue > 0;
-
-  useEffect(() => {
-    if (reinvestActive) {
-      return;
+  const reinvestSelected = Boolean(inputs.reinvestIncome) && reinvestRate > 0;
+  const reinvestSeriesBalance = useMemo(() => {
+    let maxBalance = 0;
+    if (Array.isArray(equity.chart)) {
+      equity.chart.forEach((point) => {
+        const candidates = [
+          point?.investedRent,
+          point?.reinvestFund,
+          point?.reinvestedCash,
+          point?.reinvestedCashAfterTax,
+          point?.meta?.reinvestedCash,
+          point?.meta?.reinvestedCashAfterTax,
+          point?.meta?.cumulativeReinvestedCash,
+          point?.meta?.cumulativeReinvestedCashAfterTax,
+          point?.meta?.wealth?.reinvestedCash,
+          point?.meta?.wealth?.reinvestedCashAfterTax,
+          point?.meta?.totals?.reinvestedCash,
+          point?.meta?.totals?.reinvestedCashAfterTax,
+          point?.meta?.totals?.reinvestFundValue,
+          point?.meta?.investedRentValue,
+          point?.meta?.reinvestFundValue,
+        ];
+        candidates.forEach((candidate) => {
+          const numeric = toFiniteNumber(candidate, 0);
+          if (numeric > maxBalance) {
+            maxBalance = numeric;
+          }
+        });
+      });
     }
-    setActiveSeries((prev) => {
-      if (prev.investedRent === false) {
-        return prev;
+    const summaryCandidates = [
+      equity.reinvestFundValue,
+      equity.investedRentValue,
+      equity.totalReinvested,
+      equity.totalReinvestedAfterTax,
+      equity.reinvestedCashAfterTax,
+    ];
+    summaryCandidates.forEach((candidate) => {
+      const numeric = toFiniteNumber(candidate, 0);
+      if (numeric > maxBalance) {
+        maxBalance = numeric;
       }
-      return { ...prev, investedRent: false };
     });
-  }, [reinvestActive]);
+    return maxBalance;
+  }, [equity.chart, equity.investedRentValue, equity.reinvestFundValue, equity.totalReinvested]);
+  const reinvestSeriesHasBalance = reinvestSeriesBalance > 0;
+  const reinvestActive = reinvestSelected || reinvestSeriesHasBalance;
+
   const reinvestRateLabel = formatPercent(reinvestRate);
 
   const exitCumCashPreTaxNet = exitCumCash - reinvestFundValue;
-  const exitCumCashAfterTaxNet = exitCumCashAfterTax - reinvestFundValue;
+  const exitCumCashAfterTaxNet = exitCumCashAfterTaxNetValue;
+  const capitalGainsTaxValue = Number(equity.capitalGainsTax) || 0;
+  const exitNetSaleAfterTax = Number.isFinite(equity.exitNetSaleProceedsAfterTax)
+    ? equity.exitNetSaleProceedsAfterTax
+    : (Number(equity.exitNetSaleProceeds) || 0) - capitalGainsTaxValue;
 
   const propertyGrossTooltip = (
     <div className="space-y-1">
@@ -10184,7 +11121,7 @@ export default function App() {
   const propertyNetTooltip = (
     <div className="space-y-1">
       {netSaleTooltip}
-      <div>Cumulative cash flow (pre-tax net of reinvest): {currency(exitCumCashPreTaxNet)}.</div>
+      <div>Cumulative cash flow (pre-tax, net of reinvest): {currency(exitCumCashPreTaxNet)}.</div>
       {reinvestActive ? (
         <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
       ) : null}
@@ -10195,18 +11132,23 @@ export default function App() {
     </div>
   );
 
-  const propertyNetAfterTaxTooltip = (
+  const netSaleAfterTaxTooltip = (
     <div className="space-y-1">
       {netSaleTooltip}
-      <div>
-        Cumulative cash flow after {isCompanyBuyer ? 'corporation' : 'income'} tax (net of reinvest):{' '}
-        {currency(exitCumCashAfterTaxNet)}.
-      </div>
+      <div>Capital gains tax on sale: {currency(capitalGainsTaxValue)}.</div>
+      <div>Net sale proceeds after tax = {currency(exitNetSaleAfterTax)}</div>
+    </div>
+  );
+
+  const propertyNetAfterTaxTooltip = (
+    <div className="space-y-1">
+      {netSaleAfterTaxTooltip}
+      <div>Cumulative cash flow after {isCompanyBuyer ? 'corporation' : 'income'} tax (net of reinvest): {currency(exitCumCashAfterTaxNet)}.</div>
       {reinvestActive ? (
         <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
       ) : null}
       <div>
-        {propertyNetAfterTaxLabel} = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)}
+        {propertyNetAfterTaxLabel} = {currency(exitNetSaleAfterTax)} + {currency(exitCumCashAfterTaxNet)}
         {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAfterTax)}
       </div>
     </div>
@@ -11081,18 +12023,19 @@ export default function App() {
       `Cap rate: ${formatPercent(equity.cap)}; Cash-on-cash: ${formatPercent(equity.coc)}; DSCR: ${equity.dscr.toFixed(2)}`,
       `NPV (${inputs.exitYear}-year cash flows): ${currency(equity.npv)}`,
       `Index fund value at exit: ${currency(equity.indexValEnd)}`,
-      `Property net wealth (pre-tax): ${currency(equity.propertyNetWealthAtExit)}; after-tax: ${currency(equity.propertyNetWealthAfterTax)}`,
+      `Property net: ${currency(equity.propertyNetWealthAtExit)}; Property net after tax: ${currency(equity.propertyNetWealthAfterTax)}`,
       `Wealth delta vs index: ${currency(equity.wealthDelta)} (${formatPercent(equity.wealthDeltaPct)}); after tax: ${currency(equity.wealthDeltaAfterTax)} (${formatPercent(equity.wealthDeltaAfterTaxPct)})`,
     ];
     return lines.join('\n');
   };
 
   const callCustomChat = async (question, extraSummary = '', extraContext = null) => {
+    const formattedQuestion = applyAiFormatInstructions(question);
     const response = await fetch(`${CHAT_API_URL}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        question,
+        question: formattedQuestion,
         inputs,
         metrics: {
           cashIn: equity.cashIn,
@@ -11118,6 +12061,7 @@ export default function App() {
         },
         extraSummary,
         metricContext: extraContext,
+        formatInstructions: AI_RESPONSE_FORMAT_INSTRUCTIONS,
       }),
     });
 
@@ -11150,7 +12094,9 @@ export default function App() {
     if (extraSummary && extraSummary.trim().length > 0) {
       promptLines.push('', 'Metric context:', extraSummary.trim());
     }
-    promptLines.push('', `Question: ${question}`);
+    const formattedQuestion = typeof question === 'string' ? question.trim() : '';
+    promptLines.push('', 'Response formatting instructions:', AI_RESPONSE_FORMAT_INSTRUCTIONS);
+    promptLines.push('', `Question: ${formattedQuestion}`);
     const prompt = promptLines.join('\n');
 
     const response = await fetch(
@@ -11196,6 +12142,149 @@ export default function App() {
       .join('\n\n');
 
     return text;
+  };
+
+  const summariseChart = useCallback(
+    async (chartKey, chartLabel, data, options = {}) => {
+      if (!chatEnabled) {
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: {
+            status: 'error',
+            error:
+              'AI summaries are unavailable. Add a Google Gemini API key or chat endpoint in the settings to enable this feature.',
+          },
+        }));
+        return;
+      }
+
+      const entries = Array.isArray(data) ? data : [];
+      if (entries.length === 0) {
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: {
+            status: 'error',
+            error: 'No data is available to summarise for this chart.',
+          },
+        }));
+        return;
+      }
+
+      const keys = deriveSummaryKeys(entries, options.keys);
+      const numericKeys = Array.isArray(options.numericKeys) && options.numericKeys.length > 0
+        ? options.numericKeys
+        : keys.filter((key) =>
+            entries.some((point) => {
+              const value = Number(point?.[key]);
+              return Number.isFinite(value);
+            })
+          );
+      const description = typeof options.description === 'string' ? options.description : '';
+      const totalCount = entries.length;
+      const sample = sampleDataForSummary(entries, keys, options.limit ?? MAX_SUMMARY_POINTS);
+      const stats = computeSummaryStats(entries, numericKeys);
+      const extraSummary = buildChartSummaryContext(
+        chartLabel,
+        description,
+        keys,
+        sample,
+        stats,
+        totalCount
+      );
+
+      setChartSummaries((prev) => ({
+        ...prev,
+        [chartKey]: { status: 'loading' },
+      }));
+
+      const question =
+        typeof options.prompt === 'string' && options.prompt.trim().length > 0
+          ? options.prompt.trim()
+          : `Provide a conclusion-level summary of the "${chartLabel}" data using concise bullet points. Highlight the key trends, how to interpret them, and how the results compare with typical UK market benchmarks for similar property investments.`;
+
+      try {
+        let answer = '';
+        if (GOOGLE_API_KEY) {
+          answer = await callGoogleChat(question, extraSummary);
+        } else if (CHAT_API_URL) {
+          const contextPayload = {
+            chartKey,
+            chartLabel,
+            description,
+            totalCount,
+            fields: keys,
+            numericFields: numericKeys,
+            sample,
+            stats,
+          };
+          answer = await callCustomChat(question, extraSummary, contextPayload);
+        } else {
+          throw new Error('AI summarisation is not currently configured.');
+        }
+
+        const content = answer && answer.trim().length > 0 ? answer.trim() : 'The AI service returned an empty response.';
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: { status: 'success', message: content },
+        }));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Unable to generate a summary at this time. Please try again.';
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: { status: 'error', error: message },
+        }));
+      }
+    },
+    [chatEnabled, setChartSummaries, callGoogleChat, callCustomChat]
+  );
+
+  const renderChartSummary = useCallback(
+    (key) => {
+      const summary = chartSummaries[key];
+      if (!summary) {
+        return null;
+      }
+      if (summary.status === 'loading') {
+        return (
+          <div className="mb-2 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-[11px] text-indigo-700">
+            Summarising chart data…
+          </div>
+        );
+      }
+      if (summary.status === 'error') {
+        return (
+          <div className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700" role="alert">
+            {summary.error}
+          </div>
+        );
+      }
+      if (summary.status === 'success') {
+        return (
+          <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-700">
+            <AiFormattedText text={summary.message} />
+          </div>
+        );
+      }
+      return null;
+    },
+    [chartSummaries]
+  );
+
+  const renderSummariseButton = (key, chartLabel, data, options = {}) => {
+    const summary = chartSummaries[key];
+    const loading = summary?.status === 'loading';
+    return (
+      <button
+        type="button"
+        onClick={() => summariseChart(key, chartLabel, data, options)}
+        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 disabled:opacity-60"
+        disabled={loading}
+        title="Send this chart to Gemini for an AI-generated summary"
+      >
+        {loading ? 'Summarising…' : 'Summarise'}
+      </button>
+    );
   };
 
   const handleSendChat = async (event) => {
@@ -11720,7 +12809,7 @@ export default function App() {
               dataKey="irr"
               name="IRR"
               yAxisId="left"
-              stroke={SERIES_COLORS.irrSeries}
+              stroke={SERIES_COLORS.irrIfSold}
               strokeWidth={2}
               dot={{ r: 3 }}
               isAnimationActive={false}
@@ -12299,17 +13388,28 @@ export default function App() {
   const handlePlanExitYearChange = useCallback(
     (id, value) => {
       const numeric = Math.round(Number(value));
-      const sanitizedValue = clamp(
-        Number.isFinite(numeric) ? numeric : 0,
-        0,
-        PLAN_MAX_PURCHASE_YEAR
-      );
+      const sanitizedValue = Math.max(0, Number.isFinite(numeric) ? numeric : 0);
       updatePlanItem(id, (current) => ({
         ...current,
         exitYearOverride: sanitizedValue,
         inputs: {
           ...(current?.inputs ?? {}),
           exitYear: sanitizedValue,
+        },
+      }));
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanNeverExitToggle = useCallback(
+    (id, enabled) => {
+      const nextValue = Boolean(enabled);
+      updatePlanItem(id, (current) => ({
+        ...current,
+        neverExit: nextValue,
+        inputs: {
+          ...(current?.inputs ?? {}),
+          neverExit: nextValue,
         },
       }));
     },
@@ -12372,6 +13472,67 @@ export default function App() {
       setPlanNotice(`Cloned "${sourceLabel}" as "${cloneLabel}".`);
     },
     [futurePlan, setFuturePlan, setPlanNotice]
+  );
+
+  const handlePlanClear = useCallback(() => {
+    if (futurePlan.length === 0) {
+      return;
+    }
+    setFuturePlan([]);
+    setPlanNotice('Cleared future plan.');
+    setShowPlanViewLoader(false);
+  }, [futurePlan.length, setFuturePlan, setPlanNotice]);
+
+  const handlePlanSaveView = useCallback(() => {
+    const sanitizedPlan = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+    if (sanitizedPlan.length === 0) {
+      setPlanNotice('Add at least one property before saving a plan view.');
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const defaultName = `Plan view ${new Date().toLocaleString()}`;
+    const input = window.prompt('Name this plan view', defaultName);
+    if (input === null) {
+      return;
+    }
+    const trimmed = input.trim();
+    const name = trimmed !== '' ? trimmed : defaultName;
+    const view = {
+      id: `plan-view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      savedAt: new Date().toISOString(),
+      plan: sanitizedPlan,
+    };
+    setSavedPlanViews((prev) => sortPlanViews([...(Array.isArray(prev) ? prev : []), view]));
+    setPlanNotice(`Saved plan view "${name}".`);
+    setShowPlanViewLoader(false);
+  }, [futurePlan, setPlanNotice]);
+
+  const handlePlanLoadView = useCallback(
+    (id) => {
+      const view = savedPlanViews.find((item) => item.id === id);
+      if (!view) {
+        return;
+      }
+      const sanitizedPlan = view.plan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+      setFuturePlan(sanitizedPlan);
+      setPlanNotice(`Loaded plan view "${view.name}".`);
+      setShowPlanViewLoader(false);
+    },
+    [savedPlanViews, setFuturePlan, setPlanNotice]
+  );
+
+  const handlePlanDeleteView = useCallback(
+    (id) => {
+      const target = savedPlanViews.find((item) => item.id === id);
+      setSavedPlanViews((prev) => (prev ? prev.filter((entry) => entry.id !== id) : prev));
+      if (target) {
+        setPlanNotice(`Deleted plan view "${target.name}".`);
+      }
+    },
+    [savedPlanViews, setPlanNotice]
   );
 
   const handlePlanDragStart = useCallback((id, event) => {
@@ -12441,13 +13602,18 @@ export default function App() {
       if (!next || typeof next !== 'object') {
         return;
       }
-      updatePlanItem(id, (current) => ({
-        ...current,
-        inputs: {
+      updatePlanItem(id, (current) => {
+        const mergedInputs = {
           ...(current?.inputs ?? {}),
           ...next,
-        },
-      }));
+        };
+        const nextNeverExit = Boolean(mergedInputs.neverExit);
+        return {
+          ...current,
+          neverExit: nextNeverExit,
+          inputs: mergedInputs,
+        };
+      });
     },
     [updatePlanItem]
   );
@@ -12560,87 +13726,89 @@ export default function App() {
       }
 
       const baselineValue = goalConfig.metric(baselineAnalysis);
-      const planItemsById = new Map((planAnalysis.items ?? []).map((entry) => [entry.id, entry]));
+      const planItemsSource =
+        planAnalysis?.status === 'ready' && Array.isArray(planAnalysis.items)
+          ? planAnalysis.items
+          : Array.isArray(baselineAnalysis?.items)
+            ? baselineAnalysis.items
+            : [];
+      const planItemsById = new Map(planItemsSource.map((entry) => [entry.id, entry]));
       const purchaseDeltas = [-2, -1, 0, 1, 2];
       const exitDeltas = [-2, -1, 0, 1, 2];
-      const candidates = [];
+      const sanitizedPlan = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+      const baselinePlan = sanitizedPlan.map((item) => ({ ...item, inputs: { ...(item.inputs ?? {}) } }));
+      const baselinePayload = {
+        value: baselineValue,
+        formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
+        analysis: baselineAnalysis,
+      };
 
-      futurePlan.forEach((rawItem) => {
-        const baseItem = sanitizePlanItem(rawItem);
-        if (!baseItem) {
+      const propertyVariants = [];
+      baselinePlan.forEach((item, index) => {
+        const planEntry = planItemsById.get(item.id);
+        if (!planEntry || planEntry.include === false || planEntry.valid === false) {
           return;
         }
-        const planEntry = planItemsById.get(baseItem.id);
-        const basePurchase = Number.isFinite(planEntry?.purchaseYear)
+        const basePurchase = Number.isFinite(planEntry.purchaseYear)
           ? planEntry.purchaseYear
-          : baseItem.purchaseYear ?? 0;
-        const baseExit = Number.isFinite(planEntry?.exitYear)
+          : Number.isFinite(item.purchaseYear)
+            ? item.purchaseYear
+            : 0;
+        const baseExit = Number.isFinite(planEntry.exitYear)
           ? planEntry.exitYear
-          : Number.isFinite(baseItem.exitYearOverride)
-            ? baseItem.exitYearOverride
-            : Number.isFinite(baseItem.inputs?.exitYear)
-              ? baseItem.inputs.exitYear
-              : 0;
-
-        const purchaseOptions = planOptimizationHold.purchaseYear
-          ? [basePurchase]
-          : Array.from(
-              new Set(
-                purchaseDeltas
-                  .map((delta) => clamp(Math.round(basePurchase + delta), 0, PLAN_MAX_PURCHASE_YEAR))
-                  .concat(basePurchase)
-              )
-            ).sort((a, b) => a - b);
-
-        const exitOptions = planOptimizationHold.exitYear
-          ? [baseExit]
-          : Array.from(
-              new Set(exitDeltas.map((delta) => Math.max(0, Math.round(baseExit + delta))).concat(baseExit))
-            ).sort((a, b) => a - b);
-
+          : getPlanItemExitYear(item);
+        const neverExit = item.neverExit === true;
+        const purchaseOptions =
+          planOptimizationHold.purchaseYear || item.isPrimary
+            ? [basePurchase]
+            : Array.from(
+                new Set(
+                  purchaseDeltas
+                    .map((delta) => clamp(Math.round(basePurchase + delta), 0, PLAN_MAX_PURCHASE_YEAR))
+                    .concat(basePurchase)
+                )
+              ).sort((a, b) => a - b);
+        const exitOptions =
+          planOptimizationHold.exitYear || neverExit
+            ? [baseExit]
+            : Array.from(
+                new Set(exitDeltas.map((delta) => Math.max(0, Math.round(baseExit + delta))).concat(baseExit))
+              ).sort((a, b) => a - b);
+        const options = [];
         purchaseOptions.forEach((purchaseYear) => {
           exitOptions.forEach((exitYear) => {
-            if (purchaseYear === basePurchase && exitYear === baseExit) {
-              return;
-            }
-            const updatedPlan = futurePlan.map((planItem) => {
-              if (planItem.id !== baseItem.id) {
-                return planItem;
-              }
-              return sanitizePlanItem({
-                ...planItem,
-                purchaseYear,
-                exitYearOverride: exitYear,
-                inputs: {
-                  ...(planItem.inputs ?? {}),
-                  exitYear,
-                },
-              });
-            });
-            candidates.push({
-              id: baseItem.id,
-              label: planEntry?.displayName || baseItem.name || 'Plan property',
-              plan: updatedPlan,
-              purchaseYear,
-              exitYear,
-            });
+            options.push({ purchaseYear, exitYear });
           });
+        });
+        propertyVariants.push({
+          id: item.id,
+          index,
+          label: planEntry.displayName || item.name || 'Plan property',
+          basePurchase,
+          baseExit,
+          neverExit,
+          options,
         });
       });
 
-      if (candidates.length === 0) {
+      const totalVariantCount = propertyVariants.reduce(
+        (sum, entry) =>
+          sum +
+          entry.options.filter(
+            (option) => option.purchaseYear !== entry.basePurchase || option.exitYear !== entry.baseExit
+          ).length,
+        0
+      );
+
+      if (propertyVariants.length === 0 || totalVariantCount === 0) {
+        const message = 'No alternative purchase or exit combinations available under the current constraints.';
         setPlanOptimizationStatus('ready');
         setPlanOptimizationProgress(1);
-        const message = 'No alternative purchase or exit combinations available under the current constraints.';
         setPlanOptimizationMessage(message);
         setPlanOptimizationResult({
           status: 'baseline',
           goal: goalConfig,
-          baseline: {
-            value: baselineValue,
-            formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
-            analysis: baselineAnalysis,
-          },
+          baseline: baselinePayload,
           best: null,
           alternatives: [],
           message,
@@ -12648,61 +13816,188 @@ export default function App() {
         return;
       }
 
-      const evaluated = [];
-      for (let index = 0; index < candidates.length; index += 1) {
-        const candidate = candidates[index];
-        const analysis = computeFuturePlanAnalysis(candidate.plan, indexFundGrowth);
-        const value = goalConfig.metric(analysis);
-        evaluated.push({
-          ...candidate,
-          analysis,
-          value,
-        });
-        const progress = (index + 1) / candidates.length;
-        setPlanOptimizationProgress(progress);
-        setPlanOptimizationMessage(
-          `Evaluated ${index + 1} of ${candidates.length} plan variation${candidates.length === 1 ? '' : 's'}…`
-        );
-        if ((index + 1) % 5 === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
+      const clonePlanItems = (plan) =>
+        plan.map((planItem) => ({ ...planItem, inputs: { ...(planItem.inputs ?? {}) } }));
+      const buildPlanKey = (plan) =>
+        plan
+          .map((planItem) => {
+            const exitYear = getPlanItemExitYear(planItem);
+            const exitTag = planItem.neverExit === true ? `never-${exitYear}` : `exit-${exitYear}`;
+            const purchaseYear = Number.isFinite(planItem.purchaseYear) ? planItem.purchaseYear : 0;
+            return `${planItem.id}:${planItem.include === false ? 0 : 1}:${purchaseYear}:${exitTag}`;
+          })
+          .join('|');
+
+      const evaluationCache = new Map();
+      const evaluationRecords = new Map();
+      const baselineKey = buildPlanKey(baselinePlan);
+      const baselineRecord = { plan: baselinePlan, analysis: baselineAnalysis, value: baselineValue, meta: { baseline: true } };
+      evaluationCache.set(baselineKey, baselineRecord);
+      evaluationRecords.set(baselineKey, baselineRecord);
+
+      let evaluatedCount = 0;
+      const evaluatePlanVariant = async (plan) => {
+        const normalizedPlan = clonePlanItems(plan)
+          .map((planItem) => sanitizePlanItem(planItem))
+          .filter(Boolean);
+        const key = buildPlanKey(normalizedPlan);
+        let record = evaluationCache.get(key);
+        if (!record) {
+          const analysis = computeFuturePlanAnalysis(normalizedPlan, indexFundGrowth);
+          const value = goalConfig.metric(analysis);
+          record = { plan: normalizedPlan, analysis, value };
+          evaluationCache.set(key, record);
+          evaluationRecords.set(key, record);
+          evaluatedCount += 1;
+          if (totalVariantCount > 0) {
+            const progress = Math.min(1, evaluatedCount / totalVariantCount);
+            setPlanOptimizationProgress(progress);
+            setPlanOptimizationMessage(
+              `Evaluated ${evaluatedCount} of ${totalVariantCount} plan variation${totalVariantCount === 1 ? '' : 's'}…`
+            );
+          }
+          if (evaluatedCount % 5 === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        } else if (!evaluationRecords.has(key)) {
+          evaluationRecords.set(key, record);
+        }
+        return record;
+      };
+
+      let workingPlan = baselinePlan;
+      let workingRecord = baselineRecord;
+      const maxPasses = 3;
+      for (let pass = 0; pass < maxPasses; pass += 1) {
+        let passImproved = false;
+        for (const property of propertyVariants) {
+          const propertyIndex = workingPlan.findIndex((planItem) => planItem.id === property.id);
+          if (propertyIndex === -1) {
+            continue;
+          }
+          const currentItem = workingPlan[propertyIndex];
+          const currentPurchase = Number.isFinite(currentItem.purchaseYear)
+            ? currentItem.purchaseYear
+            : property.basePurchase;
+          const currentExit = getPlanItemExitYear(currentItem);
+          let bestRecordForProperty = workingRecord;
+          let bestPlanForProperty = workingPlan;
+          for (const option of property.options) {
+            if (option.purchaseYear === currentPurchase && option.exitYear === currentExit) {
+              continue;
+            }
+            const nextPlan = clonePlanItems(workingPlan);
+            const nextItem = {
+              ...nextPlan[propertyIndex],
+              inputs: { ...(nextPlan[propertyIndex].inputs ?? {}) },
+            };
+            if (!nextItem.isPrimary) {
+              nextItem.purchaseYear = option.purchaseYear;
+            }
+            if (!nextItem.neverExit) {
+              nextItem.exitYearOverride = option.exitYear;
+              nextItem.inputs.exitYear = option.exitYear;
+            } else {
+              nextItem.exitYearOverride = Math.max(
+                Number.isFinite(nextItem.exitYearOverride) ? Math.round(nextItem.exitYearOverride) : option.exitYear,
+                option.exitYear
+              );
+              nextItem.inputs.exitYear = Math.max(
+                Number.isFinite(nextItem.inputs?.exitYear) ? Math.round(nextItem.inputs.exitYear) : option.exitYear,
+                option.exitYear
+              );
+            }
+            nextPlan[propertyIndex] = nextItem;
+            const candidateRecord = await evaluatePlanVariant(nextPlan);
+            if (candidateRecord.value > bestRecordForProperty.value + 1e-6) {
+              bestRecordForProperty = candidateRecord;
+              bestPlanForProperty = clonePlanItems(candidateRecord.plan);
+            }
+          }
+          if (bestRecordForProperty !== workingRecord) {
+            workingPlan = bestPlanForProperty;
+            workingRecord = bestRecordForProperty;
+            passImproved = true;
+          }
+        }
+        if (!passImproved) {
+          break;
         }
       }
 
-      const validResults = evaluated.filter((candidate) => Number.isFinite(candidate.value));
-      validResults.sort((a, b) => b.value - a.value);
+      await evaluatePlanVariant(workingPlan);
 
-      const best = validResults[0] ?? null;
-      const alternatives = validResults.slice(1, 4);
+      const sortedRecords = [...evaluationRecords.values()].sort((a, b) => b.value - a.value);
+      const recordSummaries = sortedRecords.map((record) => ({
+        ...record,
+        schedule: describePlanScheduleChanges(baselinePlan, record.plan, planItemsById),
+      }));
+      const variantSummaries = recordSummaries.filter((entry) => entry.schedule.length > 0);
+      const bestEntry = variantSummaries[0] ?? null;
+      const alternativeEntries = variantSummaries.slice(1, 4);
+
+      if (!bestEntry) {
+        const message = 'No improvements over baseline.';
+        setPlanOptimizationStatus('ready');
+        setPlanOptimizationProgress(1);
+        setPlanOptimizationMessage(message);
+        setPlanOptimizationResult({
+          status: 'baseline',
+          goal: goalConfig,
+          baseline: baselinePayload,
+          best: null,
+          alternatives: [],
+          message,
+        });
+        return;
+      }
+
+      const buildScheduleKey = (schedule) =>
+        Array.isArray(schedule) && schedule.length > 0
+          ? schedule
+              .map(
+                (change) =>
+                  `${change.id}-${change.purchaseYear}-${change.exitYear}-${change.neverExit ? 'never' : 'exit'}`
+              )
+              .join('|')
+          : 'baseline';
+
+      const formatRecommendation = (entry, fallbackKey) => {
+        const schedule = Array.isArray(entry.schedule) ? entry.schedule : [];
+        const firstChange = schedule[0] ?? null;
+        const delta = Number.isFinite(baselineValue) ? entry.value - baselineValue : NaN;
+        return {
+          id: `plan-${fallbackKey ?? buildScheduleKey(schedule)}`,
+          label:
+            schedule.length === 1 && firstChange
+              ? firstChange.label
+              : `${schedule.length} propert${schedule.length === 1 ? 'y' : 'ies'}`,
+          plan: entry.plan,
+          analysis: entry.analysis,
+          value: entry.value,
+          schedule,
+          purchaseYear: firstChange ? firstChange.purchaseYear : 0,
+          exitYear: firstChange ? firstChange.exitYear : 0,
+          formattedValue: goalConfig.format(entry.value),
+          delta,
+          formattedDelta: Number.isFinite(delta) ? formatPlanGoalDelta(goalConfig, delta) : '',
+        };
+      };
+
+      const bestRecommendation = formatRecommendation(bestEntry, 'best');
+      const alternativeRecommendations = alternativeEntries.map((entry, index) =>
+        formatRecommendation(entry, `alt-${index}-${buildScheduleKey(entry.schedule)}`)
+      );
 
       setPlanOptimizationStatus('ready');
       setPlanOptimizationProgress(1);
-      setPlanOptimizationMessage(best ? 'Optimisation complete.' : 'No improvements over baseline.');
+      setPlanOptimizationMessage('Optimisation complete.');
       setPlanOptimizationResult({
-        status: best ? 'ready' : 'baseline',
+        status: 'ready',
         goal: goalConfig,
-        baseline: {
-          value: baselineValue,
-          formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
-          analysis: baselineAnalysis,
-        },
-        best: best
-          ? {
-              ...best,
-              formattedValue: goalConfig.format(best.value),
-              delta: Number.isFinite(baselineValue) ? best.value - baselineValue : NaN,
-              formattedDelta: Number.isFinite(baselineValue)
-                ? formatPlanGoalDelta(goalConfig, best.value - baselineValue)
-                : '',
-            }
-          : null,
-        alternatives: alternatives.map((candidate) => ({
-          ...candidate,
-          formattedValue: goalConfig.format(candidate.value),
-          delta: Number.isFinite(baselineValue) ? candidate.value - baselineValue : NaN,
-          formattedDelta: Number.isFinite(baselineValue)
-            ? formatPlanGoalDelta(goalConfig, candidate.value - baselineValue)
-            : '',
-        })),
+        baseline: baselinePayload,
+        best: bestRecommendation,
+        alternatives: alternativeRecommendations,
       });
     } catch (error) {
       console.warn('Unable to run plan optimisation:', error);
@@ -13522,6 +14817,19 @@ export default function App() {
                   </div>
                   {pctInput('rentGrowth', 'Rent growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
+                  <label className="col-span-2 inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(inputs.neverExit)}
+                      onChange={(event) =>
+                        setInputs((prev) => ({
+                          ...prev,
+                          neverExit: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>Never exit this property</span>
+                  </label>
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
@@ -13799,10 +15107,10 @@ export default function App() {
                     knowledgeKey="propertyNet"
                   />
                   <Line
-                    label={propertyNetAfterTaxLabel}
-                    value={currency(equity.propertyNetWealthAfterTax)}
-                    tooltip={propertyNetAfterTaxTooltip}
-                    knowledgeKey="propertyNetAfterTax"
+                    label="Capital gains tax"
+                    value={currency(equity.capitalGainsTax)}
+                    tooltip={netSaleAfterTaxTooltip}
+                    knowledgeKey="capitalGainsTax"
                   />
                   <Line
                     label={rentalTaxCumulativeLabel}
@@ -13851,7 +15159,7 @@ export default function App() {
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -13869,40 +15177,73 @@ export default function App() {
                     knowledgeKey="wealthTrajectory"
                   />
                 </div>
-                {showChartModal ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowChartModal(false)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Close wealth trajectory analysis"
-                  >
-                    <span>Close</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setShowChartModal(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Expand wealth trajectory analysis"
-                  >
-                    <span>Expand</span>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      className="h-3 w-3"
-                      aria-hidden="true"
+                <div className="flex items-center gap-2">
+                  {!collapsedSections.wealthTrajectory
+                    ? renderSummariseButton(
+                        'wealthTrajectory',
+                        'Wealth trajectory vs Index Fund',
+                        filteredChartData,
+                        {
+                          keys: [
+                            'year',
+                            'indexFund',
+                            'cashflowAfterTax',
+                            'cashInvested',
+                            'propertyValue',
+                            'propertyGross',
+                            'propertyNet',
+                          ],
+                          numericKeys: [
+                            'indexFund',
+                            'cashflowAfterTax',
+                            'cashInvested',
+                            'propertyValue',
+                            'propertyGross',
+                            'propertyNet',
+                          ],
+                          description:
+                            'Property wealth, invested cash, and comparative index fund growth across the investment horizon.',
+                        }
+                      )
+                    : null}
+                  {showChartModal ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowChartModal(false)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close wealth trajectory analysis"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                    </svg>
-                  </button>
-                )}
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowChartModal(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand wealth trajectory analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
+              {!collapsedSections.wealthTrajectory
+                ? renderChartSummary('wealthTrajectory')
+                : null}
               {!collapsedSections.wealthTrajectory ? (
                 <>
                   <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
@@ -13910,7 +15251,7 @@ export default function App() {
                   </div>
                   <div className="h-72 w-full">
                     <ResponsiveContainer>
-                      <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                      <ComposedChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis
                           dataKey="year"
@@ -13918,25 +15259,35 @@ export default function App() {
                           tick={{ fontSize: 10, fill: '#475569' }}
                         />
                         <YAxis
+                          yAxisId="currency"
                           tickFormatter={(v) => currencyNoPence(v)}
                           tick={{ fontSize: 10, fill: '#475569' }}
                           width={90}
                         />
                         <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                         <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={activeSeries}
-                              onToggle={toggleSeries}
-                              excludedKeys={reinvestActive ? [] : ['investedRent']}
-                            />
-                          )}
+                          content={(props) => {
+                            const legendPayload = WEALTH_SERIES_ORDER.map((key) => ({
+                              dataKey: key,
+                              value: SERIES_LABELS[key] ?? key,
+                              color: SERIES_COLORS[key] ?? '#64748b',
+                              type: WEALTH_LINE_KEYS.has(key) ? 'line' : 'square',
+                            }));
+                            return (
+                              <ChartLegend
+                                {...props}
+                                payload={legendPayload}
+                                activeSeries={activeSeries}
+                                onToggle={toggleSeries}
+                              />
+                            );
+                          }}
                         />
                         <Area
+                          yAxisId="currency"
                           type="monotone"
                           dataKey="indexFund"
-                          name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                          name={SERIES_LABELS.indexFund ?? 'Index fund'}
                           stroke={SERIES_COLORS.indexFund}
                           fill="rgba(249,115,22,0.2)"
                           strokeWidth={2}
@@ -13944,9 +15295,10 @@ export default function App() {
                           hide={!activeSeries.indexFund}
                         />
                         <Area
+                          yAxisId="currency"
                           type="monotone"
                           dataKey="cashflowAfterTax"
-                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow'}
                           stroke={SERIES_COLORS.cashflowAfterTax}
                           fill="rgba(16,185,129,0.18)"
                           strokeWidth={2}
@@ -13954,6 +15306,7 @@ export default function App() {
                           hide={!activeSeries.cashflowAfterTax}
                         />
                         <Area
+                          yAxisId="currency"
                           type="monotone"
                           dataKey="propertyValue"
                           name={SERIES_LABELS.propertyValue ?? 'Property value'}
@@ -13963,38 +15316,43 @@ export default function App() {
                           isAnimationActive={false}
                           hide={!activeSeries.propertyValue}
                         />
-                        <Area
+                        <RechartsLine
                           type="monotone"
-                          dataKey="propertyNetAfterTax"
-                          name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
-                          stroke={SERIES_COLORS.propertyNetAfterTax}
-                          fill="rgba(147,51,234,0.2)"
+                          dataKey="cashInvested"
+                          name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
+                          stroke={SERIES_COLORS.cashInvested}
                           strokeWidth={2}
+                          dot={false}
+                          connectNulls
+                          yAxisId="currency"
                           isAnimationActive={false}
-                          hide={!activeSeries.propertyNetAfterTax}
+                          hide={!activeSeries.cashInvested}
                         />
                         <RechartsLine
                           type="monotone"
-                          dataKey="netWealthAfterTax"
-                          name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
-                          stroke={SERIES_COLORS.netWealthAfterTax}
+                          dataKey="propertyGross"
+                          name={SERIES_LABELS.propertyGross ?? 'Property gross'}
+                          stroke={SERIES_COLORS.propertyGross}
                           strokeWidth={2}
                           dot={false}
+                          connectNulls
+                          yAxisId="currency"
                           isAnimationActive={false}
-                          hide={!activeSeries.netWealthAfterTax}
+                          hide={!activeSeries.propertyGross}
                         />
-                        <Area
+                        <RechartsLine
                           type="monotone"
-                          dataKey="investedRent"
-                          name="Invested rent"
-                          stroke="#0d9488"
-                          fill="rgba(13,148,136,0.15)"
+                          dataKey="propertyNet"
+                          name={SERIES_LABELS.propertyNet ?? 'Property net'}
+                          stroke={SERIES_COLORS.propertyNet}
                           strokeWidth={2}
-                          strokeDasharray="5 3"
+                          dot={false}
+                          connectNulls
+                          yAxisId="currency"
                           isAnimationActive={false}
-                          hide={!activeSeries.investedRent || !reinvestActive}
+                          hide={!activeSeries.propertyNet}
                         />
-                      </AreaChart>
+                      </ComposedChart>
                     </ResponsiveContainer>
                   </div>
                 </>
@@ -14007,7 +15365,7 @@ export default function App() {
                   collapsedSections.rateTrends ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14026,6 +15384,36 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    {!collapsedSections.rateTrends
+                      ? renderSummariseButton(
+                          'rateTrends',
+                          'Return ratios over time',
+                          rateChartDataWithMovingAverage,
+                          {
+                            keys: [
+                              'year',
+                              'capRate',
+                              'yieldRate',
+                              'cashOnCash',
+                              'irrIfSold',
+                              'irrAverage',
+                              'irrHurdle',
+                              'npvToDate',
+                            ],
+                            numericKeys: [
+                              'capRate',
+                              'yieldRate',
+                              'cashOnCash',
+                              'irrIfSold',
+                              'irrAverage',
+                              'irrHurdle',
+                              'npvToDate',
+                            ],
+                            description:
+                              'Year-by-year return ratios including cap rate, yield, cash-on-cash, average IRR, IRR hurdle, and NPV-to-date.',
+                          }
+                        )
+                      : null}
                     {showRatesModal ? (
                       <button
                         type="button"
@@ -14061,6 +15449,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {!collapsedSections.rateTrends ? renderChartSummary('rateTrends') : null}
                 {!collapsedSections.rateTrends ? (
                   <>
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
@@ -14175,7 +15564,7 @@ export default function App() {
                   collapsedSections.npvTimeline ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14194,6 +15583,36 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    {!collapsedSections.npvTimeline
+                      ? renderSummariseButton(
+                          'npvTimeline',
+                          'Net present value timeline',
+                          npvTimelineFilteredData,
+                          {
+                            keys: [
+                              'year',
+                              'operatingCash',
+                              'saleProceeds',
+                              'totalCash',
+                              'discountFactor',
+                              'discountedContribution',
+                              'cumulativeDiscounted',
+                              'cumulativeUndiscounted',
+                            ],
+                            numericKeys: [
+                              'operatingCash',
+                              'saleProceeds',
+                              'totalCash',
+                              'discountFactor',
+                              'discountedContribution',
+                              'cumulativeDiscounted',
+                              'cumulativeUndiscounted',
+                            ],
+                            description:
+                              'Shows how discounted and undiscounted cash flows accumulate toward overall net present value.',
+                          }
+                        )
+                      : null}
                     {showNpvModal ? (
                       <button
                         type="button"
@@ -14229,6 +15648,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {!collapsedSections.npvTimeline ? renderChartSummary('npvTimeline') : null}
                 {!collapsedSections.npvTimeline ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14257,7 +15677,7 @@ export default function App() {
                   collapsedSections.equityGrowth ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14275,7 +15695,56 @@ export default function App() {
                       knowledgeKey="equityGrowth"
                     />
                   </div>
+                  <div className="flex items-center gap-2">
+                    {!collapsedSections.equityGrowth
+                      ? renderSummariseButton(
+                          'equityGrowth',
+                          'Equity growth over time',
+                          equityGrowthChartData,
+                          {
+                            keys: ['year', 'ownerEquity', 'loanBalance', 'totalValue'],
+                            numericKeys: ['ownerEquity', 'loanBalance', 'totalValue'],
+                            description:
+                              'Tracks outstanding debt versus owned equity and total property value through the hold period.',
+                          }
+                        )
+                      : null}
+                    {showEquityModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowEquityModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close equity growth analysis"
+                      >
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowEquityModal(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand equity growth analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {!collapsedSections.equityGrowth ? renderChartSummary('equityGrowth') : null}
                 {!collapsedSections.equityGrowth ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14327,7 +15796,7 @@ export default function App() {
                   collapsedSections.cashflowBars ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14345,7 +15814,67 @@ export default function App() {
                       knowledgeKey="cashflowBars"
                     />
                   </div>
+                  <div className="flex items-center gap-2">
+                    {!collapsedSections.cashflowBars
+                      ? renderSummariseButton(
+                          'cashflowBars',
+                          'Annual cash flow',
+                          annualCashflowChartData,
+                          {
+                            keys: [
+                              'year',
+                              'rentIncome',
+                              'operatingExpenses',
+                              'mortgagePayments',
+                              'netCashflow',
+                            ],
+                            numericKeys: [
+                              'rentIncome',
+                              'operatingExpenses',
+                              'mortgagePayments',
+                              'netCashflow',
+                            ],
+                            description:
+                              'Annual rent, expenses, debt service, and after-tax cash flow for the property.',
+                          }
+                        )
+                      : null}
+                    {showCashflowModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowCashflowModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close annual cash flow analysis"
+                      >
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowCashflowModal(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand annual cash flow analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {!collapsedSections.cashflowBars ? renderChartSummary('cashflowBars') : null}
                 {!collapsedSections.cashflowBars ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14764,40 +16293,56 @@ export default function App() {
                       knowledgeKey="interestSplit"
                     />
                   </div>
-                  {interestSplitExpanded ? (
-                    <button
-                      type="button"
-                      onClick={closeInterestSplitOverlay}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Close interest split analysis"
-                    >
-                      <span>Close</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setInterestSplitExpanded(true)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Expand interest split analysis"
-                    >
-                      <span>Expand</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        className="h-3 w-3"
-                        aria-hidden="true"
+                  <div className="flex items-center gap-2">
+                    {!collapsedSections.interestSplit
+                      ? renderSummariseButton(
+                          'interestSplit',
+                          'Interest vs principal split',
+                          interestSplitDisplayData,
+                          {
+                            keys: ['year', 'interestPaid', 'principalPaid'],
+                            numericKeys: ['interestPaid', 'principalPaid'],
+                            description:
+                              'Breaks down annual debt service into interest and principal repayments across the hold.',
+                          }
+                        )
+                      : null}
+                    {interestSplitExpanded ? (
+                      <button
+                        type="button"
+                        onClick={closeInterestSplitOverlay}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close interest split analysis"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                      </svg>
-                    </button>
-                  )}
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setInterestSplitExpanded(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand interest split analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {!collapsedSections.interestSplit ? renderChartSummary('interestSplit') : null}
                 {!collapsedSections.interestSplit ? renderInterestSplitChart() : null}
               </div>
               <div
@@ -14823,40 +16368,56 @@ export default function App() {
                       knowledgeKey="leverage"
                     />
                   </div>
-                  {leverageExpanded ? (
-                    <button
-                      type="button"
-                      onClick={closeLeverageOverlay}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Close leverage analysis"
-                    >
-                      <span>Close</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setLeverageExpanded(true)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Expand leverage analysis"
-                    >
-                      <span>Expand</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        className="h-3 w-3"
-                        aria-hidden="true"
+                  <div className="flex items-center gap-2">
+                    {!collapsedSections.leverage
+                      ? renderSummariseButton(
+                          'leverage',
+                          'Leverage multiplier',
+                          leverageDisplayData,
+                          {
+                            keys: ['ltv', 'roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+                            numericKeys: ['roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+                            description:
+                              'Sensitivity of ROI, IRR, and after-tax wealth outcomes across different loan-to-value ratios.',
+                          }
+                        )
+                      : null}
+                    {leverageExpanded ? (
+                      <button
+                        type="button"
+                        onClick={closeLeverageOverlay}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close leverage analysis"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                      </svg>
-                    </button>
-                  )}
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setLeverageExpanded(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand leverage analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {!collapsedSections.leverage ? renderChartSummary('leverage') : null}
                 {!collapsedSections.leverage ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14871,7 +16432,7 @@ export default function App() {
                   collapsedSections.roiHeatmap ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14889,27 +16450,89 @@ export default function App() {
                       knowledgeKey="roiHeatmap"
                     />
                   </div>
-                  {!collapsedSections.roiHeatmap ? (
-                    <div className="flex items-center gap-2 text-[11px] text-slate-600">
-                      <span className="font-semibold text-slate-500">Metric</span>
-                      {[{ key: 'irr', label: 'IRR' }, { key: 'roi', label: 'Total ROI' }].map((option) => (
-                        <button
-                          key={option.key}
-                          type="button"
-                          onClick={() => setRoiHeatmapMetric(option.key)}
-                          className={`rounded-full px-3 py-1 font-semibold transition ${
-                            roiHeatmapMetric === option.key
-                              ? 'bg-slate-900 text-white'
-                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                          }`}
-                          aria-pressed={roiHeatmapMetric === option.key}
+                  <div
+                    className={`flex flex-wrap items-center gap-2 ${
+                      collapsedSections.roiHeatmap ? '' : 'text-[11px] text-slate-600'
+                    }`}
+                  >
+                    {!collapsedSections.roiHeatmap
+                      ? renderSummariseButton(
+                          'roiHeatmap',
+                          'ROI vs rental yield heatmap',
+                          (Array.isArray(roiHeatmapData?.rows) ? roiHeatmapData.rows : []).flatMap((row) =>
+                            Array.isArray(row?.cells)
+                              ? row.cells.map((cell) => ({
+                                  capitalGrowth: row.growthRate,
+                                  rentYield: cell.yieldRate,
+                                  irr: cell.irr,
+                                  roi: cell.roi,
+                                }))
+                              : []
+                          ),
+                          {
+                            keys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
+                            numericKeys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
+                            description:
+                              'Modeled IRR and total ROI outcomes across combinations of rent yield and capital growth scenarios.',
+                          }
+                        )
+                      : null}
+                    {showRoiModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowRoiModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close ROI heatmap analysis"
+                      >
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowRoiModal(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand ROI heatmap analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
                         >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                    {!collapsedSections.roiHeatmap ? (
+                      <>
+                        <span className="font-semibold text-slate-500">Metric</span>
+                        {ROI_HEATMAP_METRIC_OPTIONS.map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => setRoiHeatmapMetric(option.key)}
+                            className={`rounded-full px-3 py-1 font-semibold transition ${
+                              roiHeatmapMetric === option.key
+                                ? 'bg-slate-900 text-white'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                            aria-pressed={roiHeatmapMetric === option.key}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </>
+                    ) : null}
+                  </div>
                 </div>
+                {!collapsedSections.roiHeatmap ? renderChartSummary('roiHeatmap') : null}
                 {!collapsedSections.roiHeatmap ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -15222,6 +16845,41 @@ export default function App() {
 
         <section className="mt-6">
           <div className="p-3">
+            <h3 className="mb-2 text-sm font-semibold text-slate-800">Review &amp; Optimise</h3>
+            <p className="text-xs text-slate-600">
+              Compare performance across scenarios or let the optimiser suggest improved purchase and exit timings.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowTableModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Comparison
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowOptimizationModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-500"
+              >
+                Optimise this investment
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenPlanModal}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Optimise Multiple Investments
+              </button>
+            </div>
+            {planNotice ? (
+              <p className="mt-2 text-xs font-semibold text-emerald-600">{planNotice}</p>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="mt-6">
+          <div className="p-3">
             <h3 className="mb-2 text-sm font-semibold text-slate-800">Scenario history</h3>
             <p className="text-xs text-slate-600">
               Save your current inputs and reload any previous scenario to compare different deals quickly.
@@ -15264,31 +16922,7 @@ export default function App() {
               >
                 {showLoadPanel ? 'Hide saved scenarios' : 'Load saved scenario'}
               </button>
-              <button
-                type="button"
-                onClick={() => setShowTableModal(true)}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Comparison
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowOptimizationModal(true)}
-                className="no-print inline-flex items-center gap-1 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-500"
-              >
-                Optimise this investment
-              </button>
-              <button
-                type="button"
-                onClick={handleOpenPlanModal}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Optimise Multiple Investments
-              </button>
             </div>
-            {planNotice ? (
-              <p className="mt-2 text-xs font-semibold text-emerald-600">{planNotice}</p>
-            ) : null}
             {showLoadPanel ? (
               <div className="mt-3 space-y-3">
                 {savedScenarios.length === 0 ? (
@@ -15537,41 +17171,6 @@ export default function App() {
                     Reset range
                   </button>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
-                  {[
-                    { key: 'indexFund1_5x', label: 'Index fund 1.5×' },
-                    { key: 'indexFund2x', label: 'Index fund 2×' },
-                    { key: 'indexFund4x', label: 'Index fund 4×' },
-                    { key: 'investedRent', label: 'Invested rent' },
-                  ].map((option) => {
-                    const checked = activeSeries[option.key] !== false;
-                    const disabled = option.key === 'investedRent' && !reinvestActive;
-                    return (
-                      <label
-                        key={option.key}
-                        className={`flex items-center gap-2 ${disabled ? 'text-slate-400' : ''}`}
-                        title={
-                          disabled
-                            ? 'Enable reinvest after-tax cash flow to view invested rent performance.'
-                            : undefined
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={disabled}
-                          onChange={(event) =>
-                            setActiveSeries((prev) => ({
-                              ...prev,
-                              [option.key]: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
                 <div className="mt-4 flex-1">
                   <div className="flex h-full flex-col">
                     <div
@@ -15579,7 +17178,7 @@ export default function App() {
                       className="relative flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]"
                     >
                       <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart
+                        <ComposedChart
                           data={filteredChartData}
                           margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
                           onClick={handleChartPointClick}
@@ -15595,19 +17194,22 @@ export default function App() {
                             width={110}
                           />
                           <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={activeSeries}
-                                onToggle={toggleSeries}
-                                excludedKeys={[
-                                  'indexFund1_5x',
-                                  'indexFund2x',
-                                  'indexFund4x',
-                                  'investedRent',
-                                ]}
-                              />
-                            )}
+                            content={(props) => {
+                              const legendPayload = WEALTH_SERIES_ORDER.map((key) => ({
+                                dataKey: key,
+                                value: SERIES_LABELS[key] ?? key,
+                                color: SERIES_COLORS[key] ?? '#64748b',
+                                type: WEALTH_LINE_KEYS.has(key) ? 'line' : 'square',
+                              }));
+                              return (
+                                <ChartLegend
+                                  {...props}
+                                  payload={legendPayload}
+                                  activeSeries={activeSeries}
+                                  onToggle={toggleSeries}
+                                />
+                              );
+                            }}
                           />
                           {chartFocus ? (
                             <ReferenceLine
@@ -15635,109 +17237,75 @@ export default function App() {
                               ))
                             : null}
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.indexFund}
                           />
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.cashflowAfterTax}
                           />
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="propertyValue"
                             name={SERIES_LABELS.propertyValue ?? 'Property value'}
                             stroke={SERIES_COLORS.propertyValue}
                             fill="rgba(14,165,233,0.18)"
                             strokeWidth={2}
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.propertyValue}
                           />
-                          <Area
+                          <RechartsLine
                             type="monotone"
-                            dataKey="propertyNetAfterTax"
-                            name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
-                            stroke={SERIES_COLORS.propertyNetAfterTax}
-                            fill="rgba(147,51,234,0.2)"
+                            dataKey="cashInvested"
+                            name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
+                            stroke={SERIES_COLORS.cashInvested}
                             strokeWidth={2}
+                            dot={false}
+                            connectNulls
                             yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.propertyNetAfterTax}
+                            hide={!activeSeries.cashInvested}
                           />
                           <RechartsLine
                             type="monotone"
-                            dataKey="netWealthAfterTax"
-                            name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
-                            stroke={SERIES_COLORS.netWealthAfterTax}
+                            dataKey="propertyGross"
+                            name={SERIES_LABELS.propertyGross ?? 'Property gross'}
+                            stroke={SERIES_COLORS.propertyGross}
                             strokeWidth={2}
                             dot={false}
+                            connectNulls
                             yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.netWealthAfterTax}
+                            hide={!activeSeries.propertyGross}
                           />
-                          <Area
+                          <RechartsLine
                             type="monotone"
-                            dataKey="investedRent"
-                            name="Invested rent"
-                            stroke="#0d9488"
-                            fill="rgba(13,148,136,0.15)"
+                            dataKey="propertyNet"
+                            name={SERIES_LABELS.propertyNet ?? 'Property net'}
+                            stroke={SERIES_COLORS.propertyNet}
                             strokeWidth={2}
-                            strokeDasharray="5 3"
+                            dot={false}
+                            connectNulls
                             yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.investedRent}
+                            hide={!activeSeries.propertyNet}
                           />
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund1_5x"
-                            name="Index fund 1.5×"
-                            stroke="#fb7185"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="6 3"
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.indexFund1_5x}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund2x"
-                            name="Index fund 2×"
-                            stroke="#ec4899"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="4 2"
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.indexFund2x}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="indexFund4x"
-                            name="Index fund 4×"
-                            stroke="#c026d3"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="2 2"
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.indexFund4x}
-                          />
-                        </AreaChart>
+                        </ComposedChart>
                       </ResponsiveContainer>
                       {chartFocus && chartFocus.data ? (
                         <WealthChartOverlay
@@ -15849,6 +17417,354 @@ export default function App() {
                 </div>
               </div>
             </aside>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showEquityModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Equity growth explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowEquityModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <div className="flex flex-1 flex-col overflow-hidden p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <SectionTitle
+                  label="Equity growth over time"
+                  tooltip={SECTION_DESCRIPTIONS.equityGrowth}
+                  className="text-base font-semibold text-slate-700"
+                  knowledgeKey="equityGrowth"
+                />
+                <div className="text-[11px] text-slate-500">Years 0 – {maxChartYear}</div>
+              </div>
+              {(() => {
+                const summary = renderChartSummary('equityGrowth');
+                return summary ? <div className="mt-3">{summary}</div> : null;
+              })()}
+              <div className="mt-4 flex-1">
+                {equityGrowthChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={equityGrowthChartData} margin={{ top: 10, right: 32, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="year"
+                        tickFormatter={(value) => `Y${value}`}
+                        tick={{ fontSize: 11, fill: '#475569' }}
+                      />
+                      <YAxis
+                        tickFormatter={(value) => currencyNoPence(value)}
+                        tick={{ fontSize: 11, fill: '#475569' }}
+                        width={110}
+                      />
+                      <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                      <Legend />
+                      <Area
+                        type="monotone"
+                        dataKey="loanBalance"
+                        name="Lender share"
+                        stackId="equity"
+                        stroke="#94a3b8"
+                        fill="rgba(148,163,184,0.4)"
+                        isAnimationActive={false}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="ownerEquity"
+                        name="Your equity"
+                        stackId="equity"
+                        stroke="#10b981"
+                        fill="rgba(16,185,129,0.35)"
+                        isAnimationActive={false}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-sm text-slate-500">
+                    Equity projections will appear once an exit year and loan details are provided.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showCashflowModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Annual cash flow explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowCashflowModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+            <aside className="w-full border-b border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-b-0 md:border-r">
+              <div className="h-full overflow-y-auto p-5 space-y-6">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Series visibility</h3>
+                  <p className="mt-1 text-[11px] text-slate-500">Choose which inflows and outflows to display.</p>
+                  <div className="mt-3 space-y-2">
+                    {CASHFLOW_SERIES_OPTIONS.map((option) => (
+                      <label
+                        key={`cashflow-series-${option.key}`}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-transparent px-2 py-1 hover:border-slate-200"
+                      >
+                        <span className="text-slate-700">{option.label}</span>
+                        <input
+                          type="checkbox"
+                          checked={cashflowSeriesActive[option.key] !== false}
+                          onChange={(event) =>
+                            setCashflowSeriesActive((prev) => ({
+                              ...prev,
+                              [option.key]: event.target.checked,
+                            }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="text-sm font-semibold text-slate-700">Notes</div>
+                  <p className="text-[11px] text-slate-500">
+                    Rent inflows include vacancy adjustments; expenses combine operating costs and debt service.
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    After-tax cash flow reflects the investor share after income tax assumptions.
+                  </p>
+                </div>
+              </div>
+            </aside>
+            <div className="flex-1 overflow-hidden p-5">
+              <div className="flex h-full flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionTitle
+                    label="Annual cash flow"
+                    tooltip={SECTION_DESCRIPTIONS.cashflowBars}
+                    className="text-base font-semibold text-slate-700"
+                    knowledgeKey="cashflowBars"
+                  />
+                  <div className="text-[11px] text-slate-500">Years 0 – {maxChartYear}</div>
+                </div>
+                {(() => {
+                  const summary = renderChartSummary('cashflowBars');
+                  return summary ? <div className="mt-3">{summary}</div> : null;
+                })()}
+                <div className="mt-4 flex-1">
+                  {annualCashflowChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart data={annualCashflowChartData} margin={{ top: 10, right: 32, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="year"
+                          tickFormatter={(value) => `Y${value}`}
+                          tick={{ fontSize: 11, fill: '#475569' }}
+                        />
+                        <YAxis
+                          tickFormatter={(value) => currencyNoPence(value)}
+                          tick={{ fontSize: 11, fill: '#475569' }}
+                          width={110}
+                        />
+                        <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                        <Legend
+                          content={(props) => (
+                            <ChartLegend
+                              {...props}
+                              activeSeries={cashflowSeriesActive}
+                              onToggle={toggleCashflowSeries}
+                            />
+                          )}
+                        />
+                        <ReferenceLine y={0} stroke="#cbd5f5" strokeDasharray="4 4" />
+                        <Bar
+                          dataKey="rentIncome"
+                          name="Rent income"
+                          fill={CASHFLOW_BAR_COLORS.rentIncome}
+                          isAnimationActive={false}
+                          hide={!cashflowSeriesActive.rentIncome}
+                        />
+                        <Bar
+                          dataKey="operatingExpenses"
+                          name="Operating expenses"
+                          fill={CASHFLOW_BAR_COLORS.operatingExpenses}
+                          isAnimationActive={false}
+                          hide={!cashflowSeriesActive.operatingExpenses}
+                        />
+                        <Bar
+                          dataKey="mortgagePayments"
+                          name="Mortgage payments"
+                          fill={CASHFLOW_BAR_COLORS.mortgagePayments}
+                          isAnimationActive={false}
+                          hide={!cashflowSeriesActive.mortgagePayments}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="netCashflow"
+                          name="After-tax cash flow"
+                          stroke={CASHFLOW_BAR_COLORS.netCashflow}
+                          fill="rgba(16,185,129,0.25)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                          hide={!cashflowSeriesActive.netCashflow}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-sm text-slate-500">
+                      Not enough annual cash flow data to display.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showRoiModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">ROI vs rental yield explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowRoiModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+            <aside className="w-full border-b border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-b-0 md:border-r">
+              <div className="h-full overflow-y-auto p-5 space-y-6">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Metric</h3>
+                  <p className="mt-1 text-[11px] text-slate-500">Switch between IRR and total ROI outcomes.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {ROI_HEATMAP_METRIC_OPTIONS.map((option) => (
+                      <button
+                        key={`modal-roi-metric-${option.key}`}
+                        type="button"
+                        onClick={() => setRoiHeatmapMetric(option.key)}
+                        className={`rounded-full px-3 py-1 font-semibold transition ${
+                          roiHeatmapMetric === option.key
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                        aria-pressed={roiHeatmapMetric === option.key}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="text-sm font-semibold text-slate-700">Baseline scenario</div>
+                  <p className="text-[11px] text-slate-500">
+                    Current rent yield: {formatPercent(baselineHeatmapYield)}.
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Capital growth assumption: {formatPercent(appreciationRate)}.
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Selling costs applied: {formatPercent(sellingCostsRate)} of sale proceeds.
+                  </p>
+                </div>
+              </div>
+            </aside>
+            <div className="flex-1 overflow-hidden p-5">
+              <div className="flex h-full flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionTitle
+                    label="ROI vs rental yield heatmap"
+                    tooltip={SECTION_DESCRIPTIONS.roiHeatmap}
+                    className="text-base font-semibold text-slate-700"
+                    knowledgeKey="roiHeatmap"
+                  />
+                  <div className="text-[11px] text-slate-500">
+                    Yield and growth shifts shown in ±1% and ±2% steps around the baseline.
+                  </div>
+                </div>
+                {(() => {
+                  const summary = renderChartSummary('roiHeatmap');
+                  return summary ? <div className="mt-3">{summary}</div> : null;
+                })()}
+                <div className="mt-4 flex-1 overflow-auto">
+                  {roiHeatmapData.rows.length > 0 ? (
+                    <table className="min-w-full table-fixed border-separate border-spacing-2 text-[12px] text-slate-600">
+                      <thead>
+                        <tr>
+                          <th className="w-40 px-2 py-1 text-left font-semibold text-slate-500">Capital growth</th>
+                          {roiHeatmapYieldOptions.map((yieldRate, columnIndex) => (
+                            <th
+                              key={`modal-roi-yield-${columnIndex}`}
+                              className="px-2 py-1 text-center font-semibold text-slate-500"
+                            >
+                              {formatPercent(yieldRate)} rent yield
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {roiHeatmapData.rows.map((row) => {
+                          const range = roiHeatmapMetric === 'irr' ? roiHeatmapData.irrRange : roiHeatmapData.roiRange;
+                          const [minValue, maxValue] = range;
+                          return (
+                            <tr key={`modal-roi-row-${row.rowIndex}`}>
+                              <th className="px-2 py-1 text-left font-semibold text-slate-500">
+                                {formatPercent(row.growthRate)} capital growth
+                              </th>
+                              {row.cells.map((cell) => {
+                                const value = roiHeatmapMetric === 'irr' ? cell.irr : cell.roi;
+                                const background = getHeatmapColor(value, minValue, maxValue);
+                                return (
+                                  <td
+                                    key={`modal-roi-cell-${row.rowIndex}-${cell.columnIndex}`}
+                                    className="px-2 py-1"
+                                  >
+                                    <div
+                                      className="rounded-lg px-3 py-3 text-center text-xs font-semibold text-slate-800"
+                                      style={{ backgroundColor: background }}
+                                      title={`If rent yield is ${formatPercent(cell.yieldRate)} and capital growth is ${formatPercent(
+                                        row.growthRate
+                                      )}, expect ${formatPercent(value)} ${
+                                        roiHeatmapMetric === 'irr' ? 'IRR' : 'total ROI'
+                                      } (IRR ${formatPercent(cell.irr)}, total ROI ${formatPercent(cell.roi)}).`}
+                                    >
+                                      {formatPercent(value)}
+                                    </div>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-sm text-slate-500">
+                      Adjust the purchase price and rent assumptions to generate heatmap results.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -16677,6 +18593,79 @@ export default function App() {
               </p>
             ) : (
               <div className="space-y-5 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePlanClear}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePlanSaveView}
+                      className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-slate-700"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowPlanViewLoader((prev) => !prev)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    >
+                      {showPlanViewLoader ? 'Hide saved plans' : 'Load'}
+                    </button>
+                  </div>
+                  {savedPlanViews.length > 0 ? (
+                    <div className="text-[11px] text-slate-500">
+                      {savedPlanViews.length} saved plan view
+                      {savedPlanViews.length === 1 ? '' : 's'}
+                    </div>
+                  ) : null}
+                </div>
+                {showPlanViewLoader ? (
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 text-[11px] text-slate-600">
+                    {savedPlanViews.length === 0 ? (
+                      <p>No plan views saved yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {savedPlanViews.map((view) => (
+                          <div
+                            key={view.id}
+                            className="flex flex-wrap items-center justify-between gap-2"
+                          >
+                            <div>
+                              <div className="font-semibold text-slate-700">{view.name}</div>
+                              <div className="text-[10px] text-slate-500">
+                                Saved {friendlyDateTime(view.savedAt)}
+                              </div>
+                              <div className="text-[10px] text-slate-500">
+                                {view.plan.length} propert{view.plan.length === 1 ? 'y' : 'ies'}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handlePlanLoadView(view.id)}
+                                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                              >
+                                Load
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handlePlanDeleteView(view.id)}
+                                className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-slate-200 text-left text-[11px] text-slate-600">
                     <thead className="bg-slate-50 text-slate-500">
@@ -16702,9 +18691,11 @@ export default function App() {
                         );
                         const isExpanded = planExpandedRows[item.id] === true;
                         const isPrimaryRow = item.isPrimary === true || index === 0;
-                        const exitYearDisplay = Number.isFinite(Number(item.exitYearOverride))
+                        const exitYearInputValue = Number.isFinite(Number(item.exitYearOverride))
                           ? Math.max(0, Math.round(Number(item.exitYearOverride)))
                           : Math.max(0, Math.round(Number(item.exitYear)));
+                        const modeledExitYear = Math.max(0, Math.round(Number(item.exitYear)));
+                        const exitYearDisplay = item.neverExit ? modeledExitYear : exitYearInputValue;
                         return (
                           <Fragment key={item.id}>
                             <tr
@@ -16825,13 +18816,22 @@ export default function App() {
                                 <input
                                   type="number"
                                   min={0}
-                                  max={PLAN_MAX_PURCHASE_YEAR}
-                                  value={exitYearDisplay}
+                                  value={exitYearInputValue}
                                   onChange={(event) => handlePlanExitYearChange(item.id, event.target.value)}
                                   className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
                                 />
+                                <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-500">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(item.neverExit)}
+                                    onChange={(event) => handlePlanNeverExitToggle(item.id, event.target.checked)}
+                                  />
+                                  <span>Never exit</span>
+                                </div>
                                 <div className="mt-1 text-[10px] text-slate-500">
-                                  Hold for {exitYearDisplay} year{exitYearDisplay === 1 ? '' : 's'}
+                                  {item.neverExit
+                                    ? `Modelled for ${modeledExitYear} year${modeledExitYear === 1 ? '' : 's'} while holding`
+                                    : `Hold for ${exitYearDisplay} year${exitYearDisplay === 1 ? '' : 's'}`}
                                 </div>
                               </td>
                               <td className="px-3 py-3">
@@ -17021,19 +19021,28 @@ export default function App() {
                             labelFormatter={(value) => `Year ${value}`}
                           />
                           <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={planChartSeriesActive}
-                                onToggle={togglePlanChartSeries}
-                              />
-                            )}
+                            content={(props) => {
+                              const legendPayload = WEALTH_SERIES_ORDER.map((key) => ({
+                                dataKey: key,
+                                value: SERIES_LABELS[key] ?? key,
+                                color: SERIES_COLORS[key] ?? '#64748b',
+                                type: WEALTH_LINE_KEYS.has(key) ? 'line' : 'square',
+                              }));
+                              return (
+                                <ChartLegend
+                                  {...props}
+                                  payload={legendPayload}
+                                  activeSeries={planChartSeriesActive}
+                                  onToggle={togglePlanChartSeries}
+                                />
+                              );
+                            }}
                           />
                           <Area
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -17044,7 +19053,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17065,13 +19074,38 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="netWealthAfterTax"
-                            name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
-                            stroke={SERIES_COLORS.netWealthAfterTax}
+                            dataKey="cashInvested"
+                            name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
+                            stroke={SERIES_COLORS.cashInvested}
                             strokeWidth={2}
                             dot={false}
+                            connectNulls
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.netWealthAfterTax === false}
+                            hide={planChartSeriesActive.cashInvested === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyGross"
+                            name={SERIES_LABELS.propertyGross ?? 'Property gross'}
+                            stroke={SERIES_COLORS.propertyGross}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.propertyGross === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyNet"
+                            name={SERIES_LABELS.propertyNet ?? 'Property net'}
+                            stroke={SERIES_COLORS.propertyNet}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.propertyNet === false}
                           />
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -17485,13 +19519,22 @@ export default function App() {
                           labelFormatter={(value) => `Year ${value}`}
                         />
                         <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={planChartSeriesActive}
-                              onToggle={togglePlanChartSeries}
-                            />
-                          )}
+                          content={(props) => {
+                            const legendPayload = WEALTH_SERIES_ORDER.map((key) => ({
+                              dataKey: key,
+                              value: SERIES_LABELS[key] ?? key,
+                              color: SERIES_COLORS[key] ?? '#64748b',
+                              type: WEALTH_LINE_KEYS.has(key) ? 'line' : 'square',
+                            }));
+                            return (
+                              <ChartLegend
+                                {...props}
+                                payload={legendPayload}
+                                activeSeries={planChartSeriesActive}
+                                onToggle={togglePlanChartSeries}
+                              />
+                            );
+                          }}
                         />
                         {planChartFocus ? (
                           <ReferenceLine
@@ -17506,8 +19549,10 @@ export default function App() {
                           ? [
                               'indexFund',
                               'cashflowAfterTax',
+                              'cashInvested',
                               'propertyValue',
-                              'netWealthAfterTax',
+                              'propertyGross',
+                              'propertyNet',
                             ]
                               .filter(
                                 (key) =>
@@ -17531,7 +19576,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -17542,7 +19587,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17563,13 +19608,38 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="netWealthAfterTax"
-                            name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
-                            stroke={SERIES_COLORS.netWealthAfterTax}
+                            dataKey="cashInvested"
+                            name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
+                            stroke={SERIES_COLORS.cashInvested}
                             strokeWidth={2}
                             dot={false}
+                            connectNulls
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.netWealthAfterTax === false}
+                            hide={planChartSeriesActive.cashInvested === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyGross"
+                            name={SERIES_LABELS.propertyGross ?? 'Property gross'}
+                            stroke={SERIES_COLORS.propertyGross}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.propertyGross === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyNet"
+                            name={SERIES_LABELS.propertyNet ?? 'Property net'}
+                            stroke={SERIES_COLORS.propertyNet}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.propertyNet === false}
                           />
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -18406,15 +20476,27 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Sale price (est.)', value: meta.saleValue || 0 });
       breakdowns.push({ label: 'Selling costs', value: -(meta.saleCosts || 0) });
       breakdowns.push({ label: 'Remaining loan balance', value: -(meta.remainingLoan || 0) });
-      breakdowns.push({ label: 'Net sale proceeds', value: meta.netSaleIfSold || 0 });
+      breakdowns.push({ label: 'Net sale proceeds (pre-tax)', value: meta.netSaleIfSold || 0 });
       breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxNet || 0 });
-      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+      if (meta.reinvestFundValue) {
+        breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue });
+      }
       break;
     }
     case 'propertyNetAfterTax': {
-      breakdowns.push({ label: 'Net sale proceeds after debt & costs', value: meta.netSaleIfSold || 0 });
+      const netSalePreTax = Number(meta.netSaleIfSold ?? point.netSaleIfSold ?? 0) || 0;
+      const capitalGains = Number(meta.capitalGainsTaxIfSold ?? 0) || 0;
+      const netSaleAfterTax = Number.isFinite(meta.netSaleIfSoldAfterTax)
+        ? Number(meta.netSaleIfSoldAfterTax) || 0
+        : netSalePreTax - capitalGains;
+      breakdowns.push({ label: 'Net sale proceeds after debt & costs (after tax)', value: netSaleAfterTax });
+      if (capitalGains > 0) {
+        breakdowns.push({ label: 'Capital gains tax', value: -capitalGains });
+      }
       breakdowns.push({ label: `${propertyNetAfterTaxLabel} cash retained`, value: meta.cumulativeCashAfterTaxNet || 0 });
-      breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue || 0 });
+      if (meta.reinvestFundValue) {
+        breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue });
+      }
       breakdowns.push({ label: rentalTaxCumulativeLabel, value: meta.cumulativePropertyTax || 0 });
       break;
     }
@@ -18423,30 +20505,38 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       const cashRetained = Number(
         meta.cumulativeCashAfterTaxKeptRealized ?? meta.cumulativeCashAfterTaxKept ?? 0
       );
-      const indexValue = Number(meta.indexFundValue ?? point.indexFund ?? 0);
-      breakdowns.push({ label: 'Property net after tax', value: propertyAfterTax });
+      const reinvestValue = Number(meta.reinvestFundValue ?? point.reinvestFund ?? 0);
+      const reinvestContributions = Number(meta.investedRentContributions ?? 0);
+      breakdowns.push({ label: propertyNetAfterTaxLabel, value: propertyAfterTax });
       if (cashRetained) {
         breakdowns.push({ label: 'After-tax cash retained (included above)', value: cashRetained });
       }
-      breakdowns.push({ label: 'Index fund value', value: indexValue });
+      breakdowns.push({ label: 'Reinvested fund balance', value: reinvestValue });
+      if (reinvestContributions) {
+        breakdowns.push({ label: 'Total reinvested contributions', value: reinvestContributions });
+      }
       breakdowns.push({
         label: 'Total net wealth (after tax)',
-        value: Number(point.netWealthAfterTax ?? propertyAfterTax + indexValue) || 0,
+        value: Number(point.netWealthAfterTax ?? propertyAfterTax + reinvestValue) || 0,
       });
       break;
     }
     case 'netWealthBeforeTax': {
       const propertyBeforeTax = Number(point.propertyNet ?? meta.propertyNet ?? 0);
       const cashPreTax = Number(meta.cumulativeCashPreTaxKept ?? 0);
-      const indexValue = Number(meta.indexFundValue ?? point.indexFund ?? 0);
-      breakdowns.push({ label: 'Property net (before tax)', value: propertyBeforeTax });
+      const reinvestValue = Number(meta.reinvestFundValue ?? point.reinvestFund ?? 0);
+      const reinvestContributions = Number(meta.investedRentContributions ?? 0);
+      breakdowns.push({ label: 'Net wealth (before tax)', value: propertyBeforeTax });
       if (cashPreTax) {
         breakdowns.push({ label: 'Cumulative pre-tax cash retained (included above)', value: cashPreTax });
       }
-      breakdowns.push({ label: 'Index fund value', value: indexValue });
+      breakdowns.push({ label: 'Reinvested fund balance', value: reinvestValue });
+      if (reinvestContributions) {
+        breakdowns.push({ label: 'Total reinvested contributions', value: reinvestContributions });
+      }
       breakdowns.push({
         label: 'Total net wealth (before tax)',
-        value: Number(point.netWealthBeforeTax ?? propertyBeforeTax + indexValue) || 0,
+        value: Number(point.netWealthBeforeTax ?? propertyBeforeTax + reinvestValue) || 0,
       });
       break;
     }
@@ -18464,6 +20554,32 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Growth this year', value: meta.yearly?.investedRentGrowth || 0 });
       breakdowns.push({ label: 'Total reinvested contributions', value: meta.investedRentContributions || 0 });
       breakdowns.push({ label: 'Market growth to date', value: meta.investedRentGrowth || 0 });
+      break;
+    }
+    case 'cashInvested': {
+      const contributions = Number(meta.investedRentContributions ?? point.cashInvested ?? 0) || 0;
+      const balance = Number(meta.reinvestFundValue ?? point.reinvestFund ?? 0) || 0;
+      const reinvestRate = Number.isFinite(meta.reinvestShare) ? meta.reinvestShare : null;
+      const reinvestActive = meta.shouldReinvest ?? (balance > 0 || contributions > 0);
+      if (!reinvestActive) {
+        breakdowns.push({
+          label: 'Reinvestment disabled',
+          value: 'Enable reinvest after-tax cash flow to track contributions.',
+          type: 'text',
+        });
+        break;
+      }
+      const growth = Math.max(0, balance - contributions);
+      if (reinvestRate !== null) {
+        breakdowns.push({
+          label: 'Reinvestment rate',
+          value: `${(reinvestRate * 100).toFixed(1)}%`,
+          type: 'text',
+        });
+      }
+      breakdowns.push({ label: 'After-tax contributions to date', value: contributions });
+      breakdowns.push({ label: 'Market growth to date', value: growth });
+      breakdowns.push({ label: 'Current reinvested balance', value: balance });
       break;
     }
     case 'indexFund1_5x': {
@@ -18505,7 +20621,7 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Cash-on-cash', value: point.cashOnCash || 0, type: 'percent' });
       break;
     }
-    case 'irrSeries': {
+    case 'irrIfSold': {
       const holdYears = Number(point?.year) || 0;
       const initialInvested = -(meta.initialOutlay || 0);
       breakdowns.push({ label: 'Initial cash invested', value: initialInvested });
@@ -18514,7 +20630,7 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       if (holdYears > 0) {
         breakdowns.push({ label: 'Years held', value: `${holdYears} ${holdYears === 1 ? 'year' : 'years'}`, type: 'text' });
       }
-      breakdowns.push({ label: 'IRR if sold this year', value: point.irrSeries || 0, type: 'percent' });
+      breakdowns.push({ label: 'IRR if sold this year', value: point.irrIfSold || 0, type: 'percent' });
       break;
     }
     default:
@@ -18759,7 +20875,11 @@ function KnowledgeBaseOverlay({
                           : 'mr-auto max-w-[85%] rounded-lg bg-white px-3 py-2 text-slate-700 shadow-sm'
                       }
                     >
-                      {message.content}
+                      {message.role === 'assistant' ? (
+                        <AiFormattedText text={message.content} />
+                      ) : (
+                        <p className="whitespace-pre-wrap leading-snug">{message.content}</p>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -18853,7 +20973,11 @@ function ChatBubble({
                       : 'mr-auto max-w-[85%] rounded-lg bg-white px-2 py-1 text-slate-700 shadow-sm'
                   }
                 >
-                  {message.content}
+                  {message.role === 'assistant' ? (
+                    <AiFormattedText text={message.content} className="text-[11px]" />
+                  ) : (
+                    <p className="whitespace-pre-wrap leading-snug">{message.content}</p>
+                  )}
                 </div>
               ))}
             </div>
@@ -18926,8 +21050,18 @@ function PlanWealthChartOverlay({
   const summaryMetrics = [
     {
       key: 'indexFund',
-      label: SERIES_LABELS.indexFund ?? 'Index fund value',
+      label: SERIES_LABELS.indexFund ?? 'Index fund',
       value: point.indexFund ?? point.indexFundValue,
+    },
+    {
+      key: 'cashflowAfterTax',
+      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow',
+      value: point.cashflowAfterTax ?? point.cumulativeCash,
+    },
+    {
+      key: 'cashInvested',
+      label: SERIES_LABELS.cashInvested ?? 'Cash invested',
+      value: point.cashInvested ?? point.meta?.cashInvested,
     },
     {
       key: 'propertyValue',
@@ -18935,14 +21069,14 @@ function PlanWealthChartOverlay({
       value: point.propertyValue,
     },
     {
-      key: 'cashflowAfterTax',
-      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax',
-      value: point.cashflowAfterTax ?? point.cumulativeCash,
+      key: 'propertyGross',
+      label: SERIES_LABELS.propertyGross ?? 'Property gross',
+      value: point.propertyGross,
     },
     {
-      key: 'netWealthAfterTax',
-      label: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
-      value: point.netWealthAfterTax ?? point.combinedNetWealth,
+      key: 'propertyNet',
+      label: SERIES_LABELS.propertyNet ?? 'Property net',
+      value: point.propertyNet,
     },
   ].filter((metric) => Number.isFinite(metric.value));
 
@@ -19059,7 +21193,8 @@ function PlanWealthChartOverlay({
                 type: 'text',
               },
               { label: 'Property value', value: property.propertyValue, type: 'currency' },
-              { label: 'Property net', value: property.propertyNet, type: 'currency' },
+              { label: 'Property gross', value: property.propertyGross, type: 'currency' },
+              { label: SERIES_LABELS.propertyNet ?? 'Property net', value: property.propertyNet, type: 'currency' },
               {
                 label: SERIES_LABELS.propertyNetAfterTax ?? 'Property net after tax',
                 value: property.propertyNetAfterTax,
@@ -19073,6 +21208,11 @@ function PlanWealthChartOverlay({
               {
                 label: 'Sale proceeds this year',
                 value: property.saleProceeds,
+                type: 'currency',
+              },
+              {
+                label: 'Debt repaid at sale',
+                value: property.debtPayoff,
                 type: 'currency',
               },
               {
@@ -19191,6 +21331,66 @@ function PlanOptimizationControls({
     ? readyResult.alternatives
     : [];
 
+  const formatScheduleDetail = (change) => {
+    const purchaseDetail =
+      change.purchaseYear === change.basePurchaseYear
+        ? `Purchase year ${change.purchaseYear}`
+        : `Purchase year ${change.basePurchaseYear} → ${change.purchaseYear}`;
+    let exitDetail;
+    if (change.neverExit) {
+      exitDetail = 'Hold indefinitely';
+    } else if (change.baseNeverExit) {
+      exitDetail = `Exit in year ${change.exitYear}`;
+    } else if (change.exitYear === change.baseExitYear) {
+      exitDetail = `Exit in year ${change.exitYear}`;
+    } else {
+      exitDetail = `Exit year ${change.baseExitYear} → ${change.exitYear}`;
+    }
+    return `${purchaseDetail}; ${exitDetail}`;
+  };
+
+  const buildScheduleHeadline = (schedule) => {
+    if (!Array.isArray(schedule) || schedule.length === 0) {
+      return 'Matches current schedule.';
+    }
+    if (schedule.length === 1) {
+      const change = schedule[0];
+      const purchaseSegment =
+        change.purchaseYear === change.basePurchaseYear
+          ? `Purchase in year ${change.purchaseYear}`
+          : `Purchase year ${change.basePurchaseYear} → ${change.purchaseYear}`;
+      let exitSegment;
+      if (change.neverExit) {
+        exitSegment = 'Hold indefinitely';
+      } else if (change.baseNeverExit) {
+        exitSegment = `Exit in year ${change.exitYear}`;
+      } else if (change.exitYear === change.baseExitYear) {
+        exitSegment = `Hold for ${change.exitYear} year${change.exitYear === 1 ? '' : 's'}`;
+      } else {
+        exitSegment = `Exit year ${change.baseExitYear} → ${change.exitYear}`;
+      }
+      return `${purchaseSegment} · ${exitSegment}`;
+    }
+    return `${schedule.length} properties adjusted.`;
+  };
+
+  const renderScheduleDetails = (schedule) => {
+    if (!Array.isArray(schedule) || schedule.length <= 1) {
+      return null;
+    }
+    return (
+      <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+        {schedule.map((change) => (
+          <div
+            key={`${change.id}-${change.purchaseYear}-${change.exitYear}-${change.neverExit ? 'never' : 'exit'}`}
+          >
+            <span className="font-semibold text-slate-700">{change.label}</span>: {formatScheduleDetail(change)}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderStatusMessage = () => {
     if (running) {
       return (
@@ -19221,9 +21421,9 @@ function PlanOptimizationControls({
                   {bestRecommendation.label}
                 </div>
                 <div className="text-[11px] text-slate-500">
-                  Purchase in year {bestRecommendation.purchaseYear} · hold for {bestRecommendation.exitYear} year
-                  {bestRecommendation.exitYear === 1 ? '' : 's'}
+                  {buildScheduleHeadline(bestRecommendation.schedule)}
                 </div>
+                {renderScheduleDetails(bestRecommendation.schedule)}
               </div>
               <div className="text-right text-[11px] text-slate-500">
                 <div className="text-sm font-semibold text-slate-700">
@@ -19254,16 +21454,16 @@ function PlanOptimizationControls({
               </div>
               {alternatives.map((alternative) => (
                 <div
-                  key={`${alternative.id}-${alternative.purchaseYear}-${alternative.exitYear}`}
+                  key={alternative.id}
                   className="rounded-lg border border-slate-200 bg-white p-3"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-semibold text-slate-800">{alternative.label}</div>
                       <div className="text-[11px] text-slate-500">
-                        Purchase in year {alternative.purchaseYear} · hold for {alternative.exitYear} year
-                        {alternative.exitYear === 1 ? '' : 's'}
+                        {buildScheduleHeadline(alternative.schedule)}
                       </div>
+                      {renderScheduleDetails(alternative.schedule)}
                     </div>
                     <div className="text-right text-[11px] text-slate-500">
                       <div className="text-sm font-semibold text-slate-700">{alternative.formattedValue}</div>
@@ -19782,11 +21982,18 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
             <input
               type="number"
               min={0}
-              max={PLAN_MAX_PURCHASE_YEAR}
               value={exitYearValue}
               onChange={(event) => onExitYearChange?.(event.target.value)}
               className="rounded-lg border border-slate-300 px-3 py-1.5"
             />
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+            <input
+              type="checkbox"
+              checked={Boolean(inputs.neverExit)}
+              onChange={(event) => handleCheckboxChange('neverExit', event.target.checked)}
+            />
+            <span>Never exit this property</span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="font-medium text-slate-600">Selling costs %</span>
