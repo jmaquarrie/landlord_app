@@ -191,6 +191,11 @@ const KnowledgeBaseContext = createContext(null);
 const PERSONAL_ALLOWANCE = 12570;
 const BASIC_RATE_BAND = 37700;
 const ADDITIONAL_RATE_THRESHOLD = 125140;
+const RESIDENTIAL_CGT_ANNUAL_ALLOWANCE = 3000;
+const RESIDENTIAL_CGT_BASIC_RATE_LIMIT = PERSONAL_ALLOWANCE + BASIC_RATE_BAND;
+const RESIDENTIAL_CGT_BASIC_RATE = 0.18;
+const RESIDENTIAL_CGT_HIGHER_RATE = 0.28;
+const CORPORATION_TAX_RATE = 0.19;
 const SCENARIO_USERNAME = 'pi';
 const SCENARIO_PASSWORD = 'jmaq2460';
 
@@ -2517,6 +2522,68 @@ const roundTo = (value, decimals = 2) => {
   return Math.round((value + Number.EPSILON) * factor) / factor;
 };
 
+function calcResidentialCapitalGainsTax({ gain, income }) {
+  if (!Number.isFinite(gain) || gain <= 0) {
+    return 0;
+  }
+  const allowance = RESIDENTIAL_CGT_ANNUAL_ALLOWANCE;
+  const taxableGain = Math.max(0, gain - allowance);
+  if (taxableGain <= 0) {
+    return 0;
+  }
+  const incomeForBand = Math.max(0, Number(income) || 0);
+  const remainingBasicBand = Math.max(0, RESIDENTIAL_CGT_BASIC_RATE_LIMIT - incomeForBand);
+  const gainAtBasic = Math.min(taxableGain, remainingBasicBand);
+  const gainAtHigher = Math.max(0, taxableGain - gainAtBasic);
+  const tax = gainAtBasic * RESIDENTIAL_CGT_BASIC_RATE + gainAtHigher * RESIDENTIAL_CGT_HIGHER_RATE;
+  return roundTo(tax, 2);
+}
+
+function calcCapitalGainsTax({ gain, buyerType, ownerIncomes = [], ownerShares = [] }) {
+  if (!Number.isFinite(gain) || gain <= 0) {
+    return 0;
+  }
+  if (buyerType === 'company') {
+    return roundTo(gain * CORPORATION_TAX_RATE, 2);
+  }
+
+  const incomes = Array.isArray(ownerIncomes) ? ownerIncomes : [];
+  const shares = Array.isArray(ownerShares) ? ownerShares : [];
+  let totalShares = 0;
+  const sanitizedShares = shares.map((share) => {
+    if (!Number.isFinite(share) || share <= 0) {
+      return 0;
+    }
+    totalShares += share;
+    return share;
+  });
+
+  if (totalShares <= 0) {
+    if (incomes.length === 0) {
+      return calcResidentialCapitalGainsTax({ gain, income: 0 });
+    }
+    const equalShareGain = gain / incomes.length;
+    const totalTax = incomes.reduce(
+      (sum, income) => sum + calcResidentialCapitalGainsTax({ gain: equalShareGain, income }),
+      0
+    );
+    return roundTo(totalTax, 2);
+  }
+
+  let totalTax = 0;
+  sanitizedShares.forEach((share, index) => {
+    if (share <= 0) {
+      return;
+    }
+    const normalizedShare = share / totalShares;
+    const shareGain = gain * normalizedShare;
+    const income = incomes[index] ?? 0;
+    totalTax += calcResidentialCapitalGainsTax({ gain: shareGain, income });
+  });
+
+  return roundTo(totalTax, 2);
+}
+
 const formatPercent = (value, decimals = 2) => {
   if (!Number.isFinite(value)) {
     return '—';
@@ -3985,7 +4052,7 @@ const KNOWLEDGE_GROUPS = {
   exitComparison: {
     label: 'Exit comparison',
     description: 'Compares exit-year wealth between the property and the index fund alternative.',
-    metrics: ['indexFundValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'rentalTaxTotal'],
+    metrics: ['indexFundValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'capitalGainsTax', 'rentalTaxTotal'],
   },
   exit: {
     label: 'Equity at exit',
@@ -4294,9 +4361,20 @@ const KNOWLEDGE_METRICS = {
   propertyNetAfterTax: {
     label: 'Property net after tax',
     groups: ['exitComparison', 'wealthTrajectory', 'leverage'],
-    description: 'Property net after accounting for rental taxes on cash flow and retaining the reinvested fund balance.',
-    calculation: 'Net sale proceeds + cumulative after-tax cash retained + reinvested fund balance.',
-    importance: 'Illustrates property wealth after tax drag while keeping reinvested cash growth.',
+    description:
+      'Property net after accounting for rental taxes on cash flow, capital gains tax on exit, and the reinvested fund balance.',
+    calculation:
+      'After-tax net sale proceeds + cumulative after-tax cash retained (net of reinvest contributions) + reinvested fund balance.',
+    importance: 'Illustrates property wealth after all tax drag while keeping reinvested cash growth.',
+    unit: 'currency',
+  },
+  capitalGainsTax: {
+    label: 'Capital gains tax',
+    groups: ['exitComparison'],
+    description: 'Tax due on the gain realised when the property is sold.',
+    calculation:
+      'Applies residential CGT bands for individuals or corporation tax for companies to sale proceeds after costs and purchase basis.',
+    importance: 'Reduces exit proceeds and explains the gap between gross and after-tax net wealth.',
     unit: 'currency',
   },
   rentalTaxTotal: {
@@ -5785,6 +5863,8 @@ function calculateEquity(rawInputs) {
   let exitCumCashAfterTax = 0;
   let exitCumCashAfterTaxNet = 0;
   let exitNetSaleProceeds = 0;
+  let exitNetSaleProceedsAfterTax = 0;
+  let exitCapitalGainsTax = 0;
   let indexVal = indexInitialInvestment;
   let reinvestFundValue = 0;
   let investedRentValue = 0;
@@ -5901,12 +5981,12 @@ function calculateEquity(rawInputs) {
     const principalPaid = annualPrincipal[y - 1] ?? (inputs.loanType === 'interest_only' ? 0 : debtService - interestPaid);
     const taxableBase = deductOperatingExpensesForTax ? noi : gross;
     const taxableProfit = taxableBase - interestPaid;
+    const shareOwnerA = taxableProfit * normalizedShare1;
+    const shareOwnerB = taxableProfit * normalizedShare2;
     let propertyTax = 0;
     if (isCompanyBuyer) {
-      propertyTax = roundTo(Math.max(0, taxableProfit) * 0.19, 2);
+      propertyTax = roundTo(Math.max(0, taxableProfit) * CORPORATION_TAX_RATE, 2);
     } else {
-      const shareOwnerA = taxableProfit * normalizedShare1;
-      const shareOwnerB = taxableProfit * normalizedShare2;
       const taxOwnerA = calcIncomeTax(baseIncome1 + shareOwnerA) - calcIncomeTax(baseIncome1);
       const taxOwnerB = calcIncomeTax(baseIncome2 + shareOwnerB) - calcIncomeTax(baseIncome2);
       propertyTax = roundTo(taxOwnerA + taxOwnerB, 2);
@@ -5941,6 +6021,24 @@ function calculateEquity(rawInputs) {
     const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
     const saleCostsEstimate = vt * inputs.sellingCostsPct;
     const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
+    const saleProceedsBeforeLoan = vt - saleCostsEstimate;
+    const ownerIncomeA = isCompanyBuyer ? 0 : Math.max(0, baseIncome1 + shareOwnerA);
+    const ownerIncomeB = isCompanyBuyer ? 0 : Math.max(0, baseIncome2 + shareOwnerB);
+    const grossCapitalGain = saleProceedsBeforeLoan - projectCost;
+    let capitalGainsTaxEstimate = 0;
+    if (grossCapitalGain > 0) {
+      capitalGainsTaxEstimate = calcCapitalGainsTax({
+        gain: grossCapitalGain,
+        buyerType: inputs.buyerType,
+        ownerIncomes: isCompanyBuyer ? [] : [ownerIncomeA, ownerIncomeB],
+        ownerShares: isCompanyBuyer ? [] : [normalizedShare1, normalizedShare2],
+      });
+      const maxTaxBase = Math.max(0, saleProceedsBeforeLoan);
+      if (capitalGainsTaxEstimate > maxTaxBase) {
+        capitalGainsTaxEstimate = maxTaxBase;
+      }
+    }
+    const netSaleIfSoldAfterTax = netSaleIfSold - capitalGainsTaxEstimate;
     const capRateYear = vt > 0 ? noi / vt : 0;
     const yieldRateYear = projectCost > 0 ? noi / projectCost : 0;
     const cashOnCashYear = cashIn > 0 ? cash / cashIn : 0;
@@ -5957,7 +6055,7 @@ function calculateEquity(rawInputs) {
       : cumulativeCashAfterTax;
     const propertyGrossValue = vt + cumulativeCashPreTaxNet;
     const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
+    const propertyNetAfterTaxValue = netSaleIfSoldAfterTax + cumulativeCashAfterTaxNet + reinvestFundValue;
 
     let yearCashflowForCf = cash;
     let yearCashflowForNpv = afterTaxCash;
@@ -5970,13 +6068,16 @@ function calculateEquity(rawInputs) {
           ? loan
           : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: Math.min(y * 12, inputs.mortgageYears * 12) });
       const netSaleProceeds = fv - sell - rem;
+      const netSaleProceedsAfterTax = netSaleProceeds - capitalGainsTaxEstimate;
       yearCashflowForCf = cash + netSaleProceeds;
-      yearCashflowForNpv = afterTaxCash + netSaleProceeds;
+      yearCashflowForNpv = afterTaxCash + netSaleProceedsAfterTax;
       exitCumCash = cumulativeCashPreTaxNet + reinvestFundValue;
       exitCumCashAfterTax = cumulativeCashAfterTaxNet + reinvestFundValue;
       exitCumCashAfterTaxNet = cumulativeCashAfterTaxNet;
       exitNetSaleProceeds = netSaleProceeds;
-      realizedSaleProceeds = netSaleProceeds;
+      exitNetSaleProceedsAfterTax = netSaleProceedsAfterTax;
+      exitCapitalGainsTax = capitalGainsTaxEstimate;
+      realizedSaleProceeds = netSaleProceedsAfterTax;
     }
     cf.push(yearCashflowForCf);
     npvCashflows.push(yearCashflowForNpv);
@@ -6030,6 +6131,7 @@ function calculateEquity(rawInputs) {
         saleCosts: saleCostsEstimate,
         remainingLoan: remainingLoanYear,
         netSaleIfSold,
+        netSaleIfSoldAfterTax,
         cumulativeCashPreTax,
         cumulativeCashPreTaxNet,
         cumulativeCashAfterTax,
@@ -6062,6 +6164,7 @@ function calculateEquity(rawInputs) {
         cashOnCash: cashOnCashYear,
         irrIfSold: irrToDate,
         neverExit: Boolean(inputs.neverExit),
+        capitalGainsTaxIfSold: capitalGainsTaxEstimate,
         yearly: {
           gross,
           operatingExpenses: varOpex + fixed,
@@ -6077,6 +6180,7 @@ function calculateEquity(rawInputs) {
           investedRentGrowth: reinvestGrowthThisYear,
           interest: interestPaid,
           principal: principalPaid,
+          capitalGainsTax: !inputs.neverExit && y === inputs.exitYear ? capitalGainsTaxEstimate : 0,
         },
       },
     });
@@ -6095,6 +6199,8 @@ function calculateEquity(rawInputs) {
     exitCumCashAfterTax = cumulativeCashAfterTaxNetFinal + reinvestFundValue;
     exitCumCashAfterTaxNet = cumulativeCashAfterTaxNetFinal;
     exitNetSaleProceeds = 0;
+    exitNetSaleProceedsAfterTax = 0;
+    exitCapitalGainsTax = 0;
   }
 
   if (chart.length > 0) {
@@ -6151,6 +6257,12 @@ function calculateEquity(rawInputs) {
     const extensionMetaNetSaleIfSold = inputs.neverExit
       ? lastMeta.netSaleIfSold ?? extensionPropertyNet
       : 0;
+    const extensionMetaNetSaleAfterTax = inputs.neverExit
+      ? lastMeta.netSaleIfSoldAfterTax ?? extensionPropertyNetAfterTax
+      : 0;
+    const extensionMetaCapitalGains = inputs.neverExit
+      ? lastMeta.capitalGainsTaxIfSold ?? 0
+      : 0;
     chart.push({
       year: extensionYear,
       indexFund: extensionIndexFund,
@@ -6182,6 +6294,7 @@ function calculateEquity(rawInputs) {
         saleValue: extensionMetaSaleValue,
         remainingLoan: extensionMetaRemainingLoan,
         netSaleIfSold: extensionMetaNetSaleIfSold,
+        netSaleIfSoldAfterTax: extensionMetaNetSaleAfterTax,
         cumulativeCashAfterTaxRealized: extensionCashflowGross,
         cumulativeCashAfterTaxNetRealized: extensionCashflowNet,
         cumulativeCashAfterTaxKeptRealized: extensionCashflowKept,
@@ -6190,6 +6303,7 @@ function calculateEquity(rawInputs) {
         investedRentContributions:
           lastMeta.investedRentContributions ?? (shouldReinvest ? cumulativeReinvested : 0),
         realizedSaleProceeds: 0,
+        capitalGainsTaxIfSold: extensionMetaCapitalGains,
         netWealthAfterTax: extensionNetWealthAfterTax,
         netWealthBeforeTax: extensionNetWealthBeforeTax,
         neverExit: Boolean(inputs.neverExit),
@@ -6254,7 +6368,7 @@ function calculateEquity(rawInputs) {
   const wealthDelta = propertyNetWealthAtExit - indexVal;
   const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
   const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
-  const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTax;
+  const propertyNetWealthAfterTax = exitNetSaleProceedsAfterTax + exitCumCashAfterTax;
   const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
   const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
   
@@ -6300,11 +6414,13 @@ function calculateEquity(rawInputs) {
     exitCumCashAfterTax,
     exitCumCashAfterTaxNet,
     exitNetSaleProceeds,
+    exitNetSaleProceedsAfterTax,
     propertyNetWealthAtExit,
     propertyGrossWealthAtExit,
     wealthDelta,
     wealthDeltaPct,
     totalPropertyTax,
+    capitalGainsTax: exitCapitalGainsTax,
     totalReinvested: cumulativeReinvested,
     reinvestFundValue,
     investedRentValue: reinvestFundValue,
@@ -10965,6 +11081,10 @@ export default function App() {
 
   const exitCumCashPreTaxNet = exitCumCash - reinvestFundValue;
   const exitCumCashAfterTaxNet = exitCumCashAfterTaxNetValue;
+  const capitalGainsTaxValue = Number(equity.capitalGainsTax) || 0;
+  const exitNetSaleAfterTax = Number.isFinite(equity.exitNetSaleProceedsAfterTax)
+    ? equity.exitNetSaleProceedsAfterTax
+    : (Number(equity.exitNetSaleProceeds) || 0) - capitalGainsTaxValue;
 
   const propertyGrossTooltip = (
     <div className="space-y-1">
@@ -10993,29 +11113,34 @@ export default function App() {
   const propertyNetTooltip = (
     <div className="space-y-1">
       {netSaleTooltip}
-      <div>Cumulative cash flow (after tax, net of reinvest): {currency(exitCumCashAfterTaxNet)}.</div>
+      <div>Cumulative cash flow (pre-tax, net of reinvest): {currency(exitCumCashPreTaxNet)}.</div>
       {reinvestActive ? (
         <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
       ) : null}
       <div>
-        Property net = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)}
+        Property net = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashPreTaxNet)}
         {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAtExit)}
       </div>
     </div>
   );
 
-  const propertyNetAfterTaxTooltip = (
+  const netSaleAfterTaxTooltip = (
     <div className="space-y-1">
       {netSaleTooltip}
-      <div>
-        Cumulative cash flow after {isCompanyBuyer ? 'corporation' : 'income'} tax (net of reinvest):{' '}
-        {currency(exitCumCashAfterTaxNet)}.
-      </div>
+      <div>Capital gains tax on sale: {currency(capitalGainsTaxValue)}.</div>
+      <div>Net sale proceeds after tax = {currency(exitNetSaleAfterTax)}</div>
+    </div>
+  );
+
+  const propertyNetAfterTaxTooltip = (
+    <div className="space-y-1">
+      {netSaleAfterTaxTooltip}
+      <div>Cumulative cash flow after {isCompanyBuyer ? 'corporation' : 'income'} tax (net of reinvest): {currency(exitCumCashAfterTaxNet)}.</div>
       {reinvestActive ? (
         <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
       ) : null}
       <div>
-        {propertyNetAfterTaxLabel} = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)}
+        {propertyNetAfterTaxLabel} = {currency(exitNetSaleAfterTax)} + {currency(exitCumCashAfterTaxNet)}
         {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAfterTax)}
       </div>
     </div>
@@ -14978,6 +15103,12 @@ export default function App() {
                     value={currency(equity.propertyNetWealthAfterTax)}
                     tooltip={propertyNetAfterTaxTooltip}
                     knowledgeKey="propertyNetAfterTax"
+                  />
+                  <Line
+                    label="Capital gains tax"
+                    value={currency(equity.capitalGainsTax)}
+                    tooltip={netSaleAfterTaxTooltip}
+                    knowledgeKey="capitalGainsTax"
                   />
                   <Line
                     label={rentalTaxCumulativeLabel}
@@ -20343,15 +20474,23 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Sale price (est.)', value: meta.saleValue || 0 });
       breakdowns.push({ label: 'Selling costs', value: -(meta.saleCosts || 0) });
       breakdowns.push({ label: 'Remaining loan balance', value: -(meta.remainingLoan || 0) });
-      breakdowns.push({ label: 'Net sale proceeds', value: meta.netSaleIfSold || 0 });
-      breakdowns.push({ label: 'Cumulative cash retained (after tax)', value: meta.cumulativeCashAfterTaxNet || 0 });
+      breakdowns.push({ label: 'Net sale proceeds (pre-tax)', value: meta.netSaleIfSold || 0 });
+      breakdowns.push({ label: 'Cumulative cash retained (pre-tax)', value: meta.cumulativeCashPreTaxNet || 0 });
       if (meta.reinvestFundValue) {
         breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue });
       }
       break;
     }
     case 'propertyNetAfterTax': {
-      breakdowns.push({ label: 'Net sale proceeds after debt & costs', value: meta.netSaleIfSold || 0 });
+      const netSalePreTax = Number(meta.netSaleIfSold ?? point.netSaleIfSold ?? 0) || 0;
+      const capitalGains = Number(meta.capitalGainsTaxIfSold ?? 0) || 0;
+      const netSaleAfterTax = Number.isFinite(meta.netSaleIfSoldAfterTax)
+        ? Number(meta.netSaleIfSoldAfterTax) || 0
+        : netSalePreTax - capitalGains;
+      breakdowns.push({ label: 'Net sale proceeds after debt & costs (after tax)', value: netSaleAfterTax });
+      if (capitalGains > 0) {
+        breakdowns.push({ label: 'Capital gains tax', value: -capitalGains });
+      }
       breakdowns.push({ label: `${propertyNetAfterTaxLabel} cash retained`, value: meta.cumulativeCashAfterTaxNet || 0 });
       if (meta.reinvestFundValue) {
         breakdowns.push({ label: 'Reinvested fund balance', value: meta.reinvestFundValue });
