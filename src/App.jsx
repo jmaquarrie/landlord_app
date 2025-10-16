@@ -1790,7 +1790,14 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           point?.reinvestFund ?? point?.meta?.reinvestFundValue ?? point?.investedRent
         ) || 0;
         const reinvestContributions = Number(
-          point?.cashInvested ?? point?.meta?.investedRentContributions ?? 0
+          point?.cashInvested ??
+            point?.reinvestContributions ??
+            point?.meta?.investedRentContributions ??
+            point?.meta?.cumulativeReinvestedCashAfterTax ??
+            point?.meta?.cumulativeReinvestedCash ??
+            point?.meta?.totals?.cashInvested ??
+            point?.meta?.totals?.reinvestedCashContributions ??
+            0
         ) || 0;
         const reinvestEnabled = Boolean(
           point?.meta?.shouldReinvest ??
@@ -5949,7 +5956,7 @@ function calculateEquity(rawInputs) {
       ? cumulativeCashAfterTax - cumulativeReinvested
       : cumulativeCashAfterTax;
     const propertyGrossValue = vt + cumulativeCashPreTaxNet;
-    const propertyNetValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
+    const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
     const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
 
     let yearCashflowForCf = cash;
@@ -6242,12 +6249,12 @@ function calculateEquity(rawInputs) {
   });
   const score = scoreResult.total;
 
-  const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCashAfterTaxNet;
+  const propertyNetWealthAtExit = exitNetSaleProceeds + exitCumCash;
   const propertyGrossWealthAtExit = futureValue + exitCumCash;
   const wealthDelta = propertyNetWealthAtExit - indexVal;
   const wealthDeltaPct = indexVal === 0 ? 0 : wealthDelta / indexVal;
   const totalPropertyTax = propertyTaxes.reduce((acc, value) => acc + value, 0);
-  const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTaxNet;
+  const propertyNetWealthAfterTax = exitNetSaleProceeds + exitCumCashAfterTax;
   const wealthDeltaAfterTax = propertyNetWealthAfterTax - indexVal;
   const wealthDeltaAfterTaxPct = indexVal === 0 ? 0 : wealthDeltaAfterTax / indexVal;
   
