@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
+import { utils as XLSXUtils, writeFile as writeXlsxFile } from 'xlsx';
 import propertyPriceDataUrl from '../Average-prices-Property-Type-2025-07.csv?url';
 
 const currency = (n) => (isFinite(n) ? n.toLocaleString(undefined, { style: 'currency', currency: 'GBP' }) : '–');
@@ -11323,7 +11324,7 @@ export default function App() {
     setKnowledgeChatError('');
   };
 
-  const handleExportCashflowCsv = () => {
+  const handleExportCashflowSpreadsheet = () => {
     if (!cashflowTableRows.length) {
       if (typeof window !== 'undefined') {
         window.alert('Cash flow data is not available yet.');
@@ -11331,7 +11332,7 @@ export default function App() {
       return;
     }
 
-    if (typeof document === 'undefined' || typeof window === 'undefined') {
+    if (typeof window === 'undefined') {
       return;
     }
 
@@ -11353,19 +11354,17 @@ export default function App() {
       return values;
     });
 
-    const csvBody = [header, ...dataRows]
-      .map((row) => row.map((value) => csvEscape(value)).join(','))
-      .join('\n');
-    const csvContent = `\ufeff${csvBody}`;
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'property-cashflow.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
+    try {
+      const worksheet = XLSXUtils.aoa_to_sheet([header, ...dataRows]);
+      const workbook = XLSXUtils.book_new();
+      XLSXUtils.book_append_sheet(workbook, worksheet, 'Cash flow');
+      writeXlsxFile(workbook, 'property-cashflow.xlsx');
+    } catch (error) {
+      console.error('Unable to export cash flow spreadsheet:', error);
+      if (typeof window !== 'undefined') {
+        window.alert('Unable to export the spreadsheet. Please try again.');
+      }
+    }
   };
 
   const handlePendingExtraSettingChange = (key, value, decimals = 4) => {
@@ -15035,7 +15034,7 @@ export default function App() {
                         hiddenColumns={hiddenCashflowColumns}
                         onRemoveColumn={handleRemoveCashflowColumn}
                         onAddColumn={handleAddCashflowColumn}
-                        onExport={handleExportCashflowCsv}
+                        onExport={handleExportCashflowSpreadsheet}
                         emptyMessage="No rows match the current filters. Adjust the year range or cash flow view to see results."
                       />
                     )}
@@ -17886,7 +17885,7 @@ export default function App() {
                     hiddenColumns={hiddenCashflowColumns}
                     onRemoveColumn={handleRemoveCashflowColumn}
                     onAddColumn={handleAddCashflowColumn}
-                    onExport={handleExportCashflowCsv}
+                    onExport={handleExportCashflowSpreadsheet}
                     emptyMessage="No rows match the current filters. Adjust the year range or cash flow view to see results."
                   />
                 </div>
@@ -18143,7 +18142,7 @@ function CashflowTable({
           className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!canExport}
         >
-          ⬇️ Export CSV
+          ⬇️ Download spreadsheet
         </button>
         <div className="relative">
           <button
