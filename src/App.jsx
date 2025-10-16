@@ -236,7 +236,7 @@ const SERIES_LABELS = {
   propertyValue: 'Property value',
   propertyGross: 'Property gross',
   propertyNet: 'Property net',
-  propertyNetAfterTax: 'Net wealth (after tax)',
+  propertyNetAfterTax: 'Property net after tax',
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
   investedRent: 'Reinvested cash (after tax)',
@@ -1371,8 +1371,8 @@ const PERCENT_SERIES_KEYS = new Set(RATE_PERCENT_SERIES);
 const CASHFLOW_COLUMN_DEFINITIONS = [
   { key: 'propertyValue', label: 'Property value', format: currency },
   { key: 'propertyGross', label: 'Property gross', format: currency },
-  { key: 'propertyNet', label: 'Net wealth', format: currency },
-  { key: 'propertyNetAfterTax', label: 'Net wealth (after tax)', format: currency },
+  { key: 'propertyNet', label: 'Property net', format: currency },
+  { key: 'propertyNetAfterTax', label: 'Property net after tax', format: currency },
   { key: 'indexFundValue', label: 'Index fund value', format: currency },
   { key: 'grossRent', label: 'Gross rent', format: currency },
   { key: 'operatingExpenses', label: 'Operating expenses', format: currency },
@@ -2039,6 +2039,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         propertyGross: chartPoint?.propertyGross || 0,
         propertyNet: chartPoint?.propertyNet || 0,
         propertyNetAfterTax: chartPoint?.propertyNetAfterTax || 0,
+        cashInvested: 0,
         operatingCashflow: 0,
         saleProceeds: 0,
         cashFlow: 0,
@@ -2082,9 +2083,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         }
         reinvestState.balance = propertyReinvestedValue;
         reinvestState.contributions = propertyReinvestedContributions;
+        contribution.cashInvested = propertyReinvestedContributions;
       } else if (reinvestState.balance > 0) {
         reinvestedFundBalance += reinvestState.balance;
         reinvestedFundContributionTotal += reinvestState.contributions;
+        contribution.cashInvested = reinvestState.contributions;
       }
 
       const propertyState = itemStates.get(item.id);
@@ -2203,6 +2206,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cashflowNet: propertyCashflowNet,
       cashflowGross: propertyCashflowGross,
       cashflowAfterTax: cumulativeCash,
+      cashInvested: reinvestedFundContributionTotal,
       investedRent: reinvestedFundBalance,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
@@ -2224,12 +2228,14 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         reinvestShare,
         investedRentContributions: reinvestedFundContributionTotal,
         investedRentGrowth: reinvestedFundGrowthTotal,
+        cashInvested: reinvestedFundContributionTotal,
         yearly: {
           reinvestContribution: reinvestContributionYear,
           investedRentGrowth: reinvestGrowthYear,
         },
         totals: {
           propertyValue,
+          propertyGross,
           propertyNet,
           propertyNetAfterTax,
           cashflow: propertyCashflowNet,
@@ -2239,6 +2245,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           netWealthAfterTax: combinedNetWealthAfterTax,
           netWealthBeforeTax: combinedNetWealthBeforeTax,
           cumulativeCash,
+          cashInvested: reinvestedFundContributionTotal,
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
           cumulativeExternal,
@@ -4270,19 +4277,19 @@ const KNOWLEDGE_METRICS = {
     unit: 'currency',
   },
   propertyNet: {
-    label: 'Net wealth',
+    label: 'Property net',
     groups: ['exitComparison', 'wealthTrajectory'],
-    description: 'Net sale proceeds plus cumulative after-tax cash retained, excluding the reinvested fund balance.',
-    calculation: 'Net sale proceeds + cumulative after-tax cash kept.',
-    importance: 'Represents investor wealth tied directly to the property without separate reinvested cash.',
+    description: 'Net sale proceeds plus cumulative after-tax cash retained, including the reinvested fund balance.',
+    calculation: 'Net sale proceeds + cumulative after-tax cash kept + reinvested fund balance.',
+    importance: 'Represents investor wealth tied directly to the property including reinvested cash.',
     unit: 'currency',
   },
   propertyNetAfterTax: {
-    label: 'Net wealth (after tax)',
+    label: 'Property net after tax',
     groups: ['exitComparison', 'wealthTrajectory', 'leverage'],
-    description: 'Net wealth after accounting for rental taxes on cash flow, excluding reinvested balances.',
-    calculation: 'Net sale proceeds + cumulative after-tax cash retained.',
-    importance: 'Illustrates the property-only wealth after tax drag.',
+    description: 'Property net after accounting for rental taxes on cash flow and retaining the reinvested fund balance.',
+    calculation: 'Net sale proceeds + cumulative after-tax cash retained + reinvested fund balance.',
+    importance: 'Illustrates property wealth after tax drag while keeping reinvested cash growth.',
     unit: 'currency',
   },
   rentalTaxTotal: {
@@ -7080,10 +7087,10 @@ export default function App() {
   const [planChartSeriesActive, setPlanChartSeriesActive] = useState(() => ({
     indexFund: true,
     cashflowAfterTax: true,
-    propertyValue: true,
-    investedRent: true,
-    netWealthAfterTax: true,
     cashInvested: true,
+    propertyValue: true,
+    propertyGross: true,
+    propertyNet: true,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
@@ -9034,16 +9041,6 @@ export default function App() {
 
 
   const planTooltipFormatter = useCallback((value) => currency(value), []);
-  const planHasReinvestedCash = useMemo(
-    () =>
-      planAnalysis.chart.some(
-        (point) =>
-          Number(
-            point?.investedRent ?? point?.reinvestedCash ?? point?.meta?.totals?.reinvestedCash ?? 0
-          ) > 0
-      ),
-    [planAnalysis.chart]
-  );
   const planChartFocusPoint = useMemo(() => {
     if (!Number.isFinite(planChartFocusYear)) {
       return null;
@@ -10338,9 +10335,7 @@ export default function App() {
   const rentalTaxCumulativeLabel = isCompanyBuyer
     ? 'Corporation tax on rent (cumulative)'
     : 'Rental income tax (cumulative)';
-  const propertyNetAfterTaxLabel = isCompanyBuyer
-    ? 'Net wealth after corporation tax'
-    : 'Net wealth after tax';
+  const propertyNetAfterTaxLabel = 'Property net after tax';
 
   const leverageMetricOptions = useMemo(
     () => [
@@ -10996,8 +10991,8 @@ export default function App() {
         <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
       ) : null}
       <div>
-        Net wealth = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)} ={' '}
-        {currency(equity.propertyNetWealthAtExit)}
+        Property net = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)}
+        {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAtExit)}
       </div>
     </div>
   );
@@ -11013,8 +11008,8 @@ export default function App() {
         <div>Reinvested fund balance ({reinvestRateLabel} of after-tax cash): {currency(reinvestFundValue)}.</div>
       ) : null}
       <div>
-        {propertyNetAfterTaxLabel} = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)} ={' '}
-        {currency(equity.propertyNetWealthAfterTax)}
+        {propertyNetAfterTaxLabel} = {currency(equity.exitNetSaleProceeds)} + {currency(exitCumCashAfterTaxNet)}
+        {reinvestActive ? ` + ${currency(reinvestFundValue)}` : ''} = {currency(equity.propertyNetWealthAfterTax)}
       </div>
     </div>
   );
@@ -11888,7 +11883,7 @@ export default function App() {
       `Cap rate: ${formatPercent(equity.cap)}; Cash-on-cash: ${formatPercent(equity.coc)}; DSCR: ${equity.dscr.toFixed(2)}`,
       `NPV (${inputs.exitYear}-year cash flows): ${currency(equity.npv)}`,
       `Index fund value at exit: ${currency(equity.indexValEnd)}`,
-      `Net wealth: ${currency(equity.propertyNetWealthAtExit)}; Net wealth (after tax): ${currency(equity.propertyNetWealthAfterTax)}`,
+      `Property net: ${currency(equity.propertyNetWealthAtExit)}; Property net after tax: ${currency(equity.propertyNetWealthAfterTax)}`,
       `Wealth delta vs index: ${currency(equity.wealthDelta)} (${formatPercent(equity.wealthDeltaPct)}); after tax: ${currency(equity.wealthDeltaAfterTax)} (${formatPercent(equity.wealthDeltaAfterTaxPct)})`,
     ];
     return lines.join('\n');
@@ -14966,7 +14961,7 @@ export default function App() {
                     knowledgeKey="propertyGross"
                   />
                   <Line
-                    label="Net wealth"
+                    label="Property net"
                     value={currency(equity.propertyNetWealthAtExit)}
                     tooltip={propertyNetTooltip}
                     knowledgeKey="propertyNet"
@@ -18887,29 +18882,12 @@ export default function App() {
                           />
                           <Legend
                             content={(props) => {
-                          const extraEntries = [
-                            {
-                              dataKey: 'netWealthAfterTax',
-                              value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
-                              color: SERIES_COLORS.netWealthAfterTax,
-                              type: 'line',
-                            },
-                            {
-                              dataKey: 'cashInvested',
-                              value: SERIES_LABELS.cashInvested ?? 'Cash invested',
-                              color: SERIES_COLORS.cashInvested,
-                              type: 'line',
-                            },
-                          ];
-                              if (planHasReinvestedCash) {
-                                extraEntries.push({
-                                  dataKey: 'investedRent',
-                                  value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
-                                  color: SERIES_COLORS.investedRent,
-                                  type: 'line',
-                                });
-                              }
-                              const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                              const legendPayload = WEALTH_SERIES_ORDER.map((key) => ({
+                                dataKey: key,
+                                value: SERIES_LABELS[key] ?? key,
+                                color: SERIES_COLORS[key] ?? '#64748b',
+                                type: WEALTH_LINE_KEYS.has(key) ? 'line' : 'square',
+                              }));
                               return (
                                 <ChartLegend
                                   {...props}
@@ -18935,7 +18913,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -18956,20 +18934,6 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="investedRent"
-                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
-                            stroke={SERIES_COLORS.investedRent}
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls
-                            isAnimationActive={false}
-                            hide={
-                              planChartSeriesActive.investedRent === false || !planHasReinvestedCash
-                            }
-                          />
-                          <RechartsLine
-                            yAxisId="currency"
-                            type="monotone"
                             dataKey="cashInvested"
                             name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
                             stroke={SERIES_COLORS.cashInvested}
@@ -18982,14 +18946,26 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="netWealthAfterTax"
-                            name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
-                            stroke={SERIES_COLORS.netWealthAfterTax}
+                            dataKey="propertyGross"
+                            name={SERIES_LABELS.propertyGross ?? 'Property gross'}
+                            stroke={SERIES_COLORS.propertyGross}
                             strokeWidth={2}
                             dot={false}
                             connectNulls
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.netWealthAfterTax === false}
+                            hide={planChartSeriesActive.propertyGross === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyNet"
+                            name={SERIES_LABELS.propertyNet ?? 'Property net'}
+                            stroke={SERIES_COLORS.propertyNet}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.propertyNet === false}
                           />
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -19404,23 +19380,12 @@ export default function App() {
                         />
                         <Legend
                           content={(props) => {
-                            const extraEntries = [
-                              {
-                                dataKey: 'netWealthAfterTax',
-                                value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
-                                color: SERIES_COLORS.netWealthAfterTax,
-                                type: 'line',
-                              },
-                            ];
-                            if (planHasReinvestedCash) {
-                              extraEntries.push({
-                                dataKey: 'investedRent',
-                                value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
-                                color: SERIES_COLORS.investedRent,
-                                type: 'line',
-                              });
-                            }
-                            const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                            const legendPayload = WEALTH_SERIES_ORDER.map((key) => ({
+                              dataKey: key,
+                              value: SERIES_LABELS[key] ?? key,
+                              color: SERIES_COLORS[key] ?? '#64748b',
+                              type: WEALTH_LINE_KEYS.has(key) ? 'line' : 'square',
+                            }));
                             return (
                               <ChartLegend
                                 {...props}
@@ -19444,8 +19409,10 @@ export default function App() {
                           ? [
                               'indexFund',
                               'cashflowAfterTax',
+                              'cashInvested',
                               'propertyValue',
-                              'netWealthAfterTax',
+                              'propertyGross',
+                              'propertyNet',
                             ]
                               .filter(
                                 (key) =>
@@ -19480,7 +19447,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -19501,28 +19468,38 @@ export default function App() {
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="investedRent"
-                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
-                            stroke={SERIES_COLORS.investedRent}
+                            dataKey="cashInvested"
+                            name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
+                            stroke={SERIES_COLORS.cashInvested}
                             strokeWidth={2}
                             dot={false}
                             connectNulls
                             isAnimationActive={false}
-                            hide={
-                              planChartSeriesActive.investedRent === false || !planHasReinvestedCash
-                            }
+                            hide={planChartSeriesActive.cashInvested === false}
                           />
                           <RechartsLine
                             yAxisId="currency"
                             type="monotone"
-                            dataKey="netWealthAfterTax"
-                            name={SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)'}
-                            stroke={SERIES_COLORS.netWealthAfterTax}
+                            dataKey="propertyGross"
+                            name={SERIES_LABELS.propertyGross ?? 'Property gross'}
+                            stroke={SERIES_COLORS.propertyGross}
                             strokeWidth={2}
                             dot={false}
                             connectNulls
                             isAnimationActive={false}
-                            hide={planChartSeriesActive.netWealthAfterTax === false}
+                            hide={planChartSeriesActive.propertyGross === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="propertyNet"
+                            name={SERIES_LABELS.propertyNet ?? 'Property net'}
+                            stroke={SERIES_COLORS.propertyNet}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.propertyNet === false}
                           />
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -19882,7 +19859,7 @@ function ScenarioMapView({ points = [], onSelectScenario, activeScenarioId, prop
   const netLabel =
     typeof propertyNetAfterTaxLabel === 'string' && propertyNetAfterTaxLabel.trim() !== ''
       ? propertyNetAfterTaxLabel
-      : 'Net wealth (after tax)';
+      : 'Property net after tax';
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -20922,7 +20899,6 @@ function PlanWealthChartOverlay({
     return null;
   }
 
-  const reinvestedValue = Number(point.reinvestedCash ?? point.investedRent ?? 0);
   const summaryMetrics = [
     {
       key: 'indexFund',
@@ -20930,13 +20906,8 @@ function PlanWealthChartOverlay({
       value: point.indexFund ?? point.indexFundValue,
     },
     {
-      key: 'propertyValue',
-      label: SERIES_LABELS.propertyValue ?? 'Property value',
-      value: point.propertyValue,
-    },
-    {
       key: 'cashflowAfterTax',
-      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)',
+      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow',
       value: point.cashflowAfterTax ?? point.cumulativeCash,
     },
     {
@@ -20945,15 +20916,19 @@ function PlanWealthChartOverlay({
       value: point.cashInvested ?? point.meta?.cashInvested,
     },
     {
-      key: 'investedRent',
-      label: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
-      value:
-        Number.isFinite(reinvestedValue) && reinvestedValue > 0 ? reinvestedValue : NaN,
+      key: 'propertyValue',
+      label: SERIES_LABELS.propertyValue ?? 'Property value',
+      value: point.propertyValue,
     },
     {
-      key: 'netWealthAfterTax',
-      label: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
-      value: point.netWealthAfterTax ?? point.combinedNetWealth,
+      key: 'propertyGross',
+      label: SERIES_LABELS.propertyGross ?? 'Property gross',
+      value: point.propertyGross,
+    },
+    {
+      key: 'propertyNet',
+      label: SERIES_LABELS.propertyNet ?? 'Property net',
+      value: point.propertyNet,
     },
   ].filter((metric) => Number.isFinite(metric.value));
 
@@ -21070,9 +21045,10 @@ function PlanWealthChartOverlay({
                 type: 'text',
               },
               { label: 'Property value', value: property.propertyValue, type: 'currency' },
-              { label: 'Net wealth', value: property.propertyNet, type: 'currency' },
+              { label: 'Property gross', value: property.propertyGross, type: 'currency' },
+              { label: SERIES_LABELS.propertyNet ?? 'Property net', value: property.propertyNet, type: 'currency' },
               {
-                label: SERIES_LABELS.propertyNetAfterTax ?? 'Net wealth (after tax)',
+                label: SERIES_LABELS.propertyNetAfterTax ?? 'Property net after tax',
                 value: property.propertyNetAfterTax,
                 type: 'currency',
               },
