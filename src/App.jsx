@@ -204,6 +204,7 @@ const SERIES_COLORS = {
   combinedNetWealth: '#1e293b',
   combinedNetWealthBeforeTax: '#0369a1',
   investedRent: '#0d9488',
+  cashInvested: '#f59e0b',
   indexFund1_5x: '#fb7185',
   indexFund2x: '#ec4899',
   indexFund4x: '#c026d3',
@@ -213,6 +214,7 @@ const SERIES_COLORS = {
   yieldRate: '#0369a1',
   cashOnCash: '#0f766e',
   irrIfSold: '#7c3aed',
+  irrAverage: '#4c1d95',
   irrHurdle: '#f43f5e',
   npvToDate: '#0f172a',
   operatingCash: '#0ea5e9',
@@ -237,6 +239,7 @@ const SERIES_LABELS = {
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
   investedRent: 'Reinvested cash (after tax)',
+  cashInvested: 'Cash invested',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
@@ -246,6 +249,7 @@ const SERIES_LABELS = {
   yieldRate: 'Yield rate',
   cashOnCash: 'Cash on cash',
   irrIfSold: 'IRR (if sold)',
+  irrAverage: 'Average IRR',
   irrHurdle: 'IRR hurdle',
   npvToDate: 'Net present value',
   operatingCash: 'After-tax cash flow',
@@ -1238,13 +1242,14 @@ const EXPANDED_SERIES_ORDER = [
   'propertyNet',
   'propertyNetAfterTax',
   'investedRent',
+  'cashInvested',
   'indexFund1_5x',
   'indexFund2x',
   'indexFund4x',
 ];
 
 const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrIfSold'];
-const RATE_STATIC_PERCENT_KEYS = ['irrHurdle'];
+const RATE_STATIC_PERCENT_KEYS = ['irrAverage', 'irrHurdle'];
 const RATE_PERCENT_SERIES = [...RATE_PERCENT_KEYS, ...RATE_STATIC_PERCENT_KEYS];
 const RATE_VALUE_KEYS = ['npvToDate'];
 const RATE_SERIES_KEYS = [...RATE_PERCENT_SERIES, ...RATE_VALUE_KEYS];
@@ -3847,12 +3852,20 @@ const KNOWLEDGE_GROUPS = {
   wealthTrajectory: {
     label: 'Wealth trajectory',
     description: 'Tracks how equity builds relative to the index fund over time.',
-    metrics: ['propertyValue', 'propertyGross', 'propertyNet', 'propertyNetAfterTax', 'reinvestFund', 'indexFundValue'],
+    metrics: [
+      'propertyValue',
+      'propertyGross',
+      'propertyNet',
+      'propertyNetAfterTax',
+      'reinvestFund',
+      'cashInvested',
+      'indexFundValue',
+    ],
   },
   rateTrends: {
     label: 'Return ratios over time',
     description: 'Shows how return ratios evolve through the hold period.',
-    metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrHurdle', 'npvToDate'],
+    metrics: ['cap', 'rentalYield', 'yoc', 'coc', 'irr', 'irrAverage', 'irrHurdle', 'npvToDate'],
   },
   npv: {
     label: 'Net present value',
@@ -4070,6 +4083,14 @@ const KNOWLEDGE_METRICS = {
     importance: 'Captures time value of money and overall deal efficiency.',
     unit: 'percent',
   },
+  irrAverage: {
+    label: 'Average IRR to date',
+    groups: ['rateTrends'],
+    description: 'Realised IRR if you sold in the selected year based on cash flows received so far.',
+    calculation: 'Solve IRR from initial investment, cash flows to date, and hypothetical sale proceeds in the given year.',
+    importance: 'Highlights the compounded return achieved so far compared with the final projection.',
+    unit: 'percent',
+  },
   irrHurdle: {
     label: 'IRR hurdle',
     groups: ['keyRatios', 'rateTrends', 'leverage'],
@@ -4189,6 +4210,14 @@ const KNOWLEDGE_METRICS = {
     description: 'Value of after-tax cash reinvested each year per the reinvestment setting.',
     calculation: 'Compounded balance of reinvested cash flows.',
     importance: 'Captures additional wealth created by recycling surplus cash.',
+    unit: 'currency',
+  },
+  cashInvested: {
+    label: 'Cash invested',
+    groups: ['wealthTrajectory'],
+    description: 'Total upfront capital contributed after accounting for deposits, fees, and any bridging finance.',
+    calculation: 'Deposit + closing costs + renovations − bridging loan proceeds.',
+    importance: 'Sets the equity at risk and baseline capital that long-term wealth should exceed.',
     unit: 'currency',
   },
   loanBalance: {
@@ -5649,6 +5678,7 @@ function calculateEquity(rawInputs) {
     yieldRate: null,
     cashOnCash: null,
     irrIfSold: null,
+    irrAverage: null,
     netWealthAfterTax: initialNetEquity + indexVal,
     netWealthBeforeTax: initialNetEquity + indexVal,
     meta: {
@@ -5842,6 +5872,7 @@ function calculateEquity(rawInputs) {
       yieldRate: yieldRateYear,
       cashOnCash: cashOnCashYear,
       irrIfSold: irrToDate,
+      irrAverage: null,
       irrHurdle: irrHurdleValue,
       npvToDate,
       netWealthAfterTax: netWealthAfterTaxValue,
@@ -5988,6 +6019,7 @@ function calculateEquity(rawInputs) {
       yieldRate: null,
       cashOnCash: null,
       irrIfSold: lastPoint.irrIfSold ?? null,
+      irrAverage: lastPoint.irrAverage ?? null,
       irrHurdle: lastPoint.irrHurdle ?? irrHurdleValue,
       npvToDate: lastPoint.npvToDate ?? null,
       netWealthAfterTax: extensionNetWealthAfterTax,
@@ -6014,6 +6046,18 @@ function calculateEquity(rawInputs) {
 
   const npvValue = npv(inputs.discountRate, npvCashflows);
   const irrValue = irr(cf);
+  const finalIrr = Number.isFinite(irrValue) ? irrValue : null;
+  chart.forEach((point) => {
+    if (!point || typeof point !== 'object') {
+      return;
+    }
+    const yearNumber = Number(point.year) || 0;
+    const value = finalIrr !== null && yearNumber > 0 ? finalIrr : null;
+    point.irrAverage = value;
+    if (point.meta && typeof point.meta === 'object') {
+      point.meta.irrAverage = value;
+    }
+  });
   const propertyTaxYear1 = propertyTaxes[0] ?? 0;
   const cashflowYear1AfterTax = cashflowYear1 - propertyTaxYear1;
   const scoreResult = scoreDeal({
@@ -6898,6 +6942,7 @@ export default function App() {
     propertyValue: true,
     investedRent: true,
     netWealthAfterTax: true,
+    cashInvested: true,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
   const [planChartFocusLocked, setPlanChartFocusLocked] = useState(false);
@@ -7018,12 +7063,14 @@ export default function App() {
     propertyNetAfterTax: false,
     netWealthAfterTax: true,
     investedRent: true,
+    cashInvested: true,
   });
   const [rateSeriesActive, setRateSeriesActive] = useState({
     capRate: false,
     yieldRate: false,
     cashOnCash: false,
     irrIfSold: true,
+    irrAverage: true,
     irrHurdle: true,
     npvToDate: true,
   });
@@ -9450,6 +9497,14 @@ export default function App() {
           propertyNetAfterTaxValue + indexFundValue
         );
         const netWealthAfterTax = netWealthAfterTaxBase + Math.max(0, investedRent);
+        const cashInvested = toFiniteNumber(
+          point?.cashInvested ??
+            point?.meta?.cashInvested ??
+            point?.meta?.totals?.cashInvested ??
+            point?.meta?.netInitialOutlay ??
+            point?.meta?.initialOutlay ??
+            0
+        );
         return {
           ...point,
           cashflowAfterTax,
@@ -9457,6 +9512,7 @@ export default function App() {
           indexFund: indexFundValue,
           indexFundValue,
           investedRent,
+          cashInvested,
         };
       });
   }, [equity.chart, chartRange]);
@@ -14787,12 +14843,34 @@ export default function App() {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  {renderSummariseButton('wealthTrajectory', 'Wealth trajectory vs Index Fund', filteredChartData, {
-                    keys: ['year', 'propertyValue', 'cashflowAfterTax', 'netWealthAfterTax', 'investedRent', 'indexFund'],
-                    numericKeys: ['propertyValue', 'cashflowAfterTax', 'netWealthAfterTax', 'investedRent', 'indexFund'],
-                    description:
-                      'Property wealth, index fund value, after-tax cashflow, and reinvested balances over the investment horizon.',
-                  })}
+                  {!collapsedSections.wealthTrajectory
+                    ? renderSummariseButton(
+                        'wealthTrajectory',
+                        'Wealth trajectory vs Index Fund',
+                        filteredChartData,
+                        {
+                          keys: [
+                            'year',
+                            'propertyValue',
+                            'cashflowAfterTax',
+                            'netWealthAfterTax',
+                            'investedRent',
+                            'cashInvested',
+                            'indexFund',
+                          ],
+                          numericKeys: [
+                            'propertyValue',
+                            'cashflowAfterTax',
+                            'netWealthAfterTax',
+                            'investedRent',
+                            'cashInvested',
+                            'indexFund',
+                          ],
+                          description:
+                            'Property wealth, index fund value, after-tax cashflow, reinvested balances, and invested capital over the investment horizon.',
+                        }
+                      )
+                    : null}
                   {showChartModal ? (
                     <button
                       type="button"
@@ -14828,7 +14906,9 @@ export default function App() {
                   )}
                 </div>
               </div>
-              {renderChartSummary('wealthTrajectory')}
+              {!collapsedSections.wealthTrajectory
+                ? renderChartSummary('wealthTrajectory')
+                : null}
               {!collapsedSections.wealthTrajectory ? (
                 <>
                   <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
@@ -14856,6 +14936,12 @@ export default function App() {
                                 dataKey: 'netWealthAfterTax',
                                 value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
                                 color: SERIES_COLORS.netWealthAfterTax,
+                                type: 'line',
+                              },
+                              {
+                                dataKey: 'cashInvested',
+                                value: SERIES_LABELS.cashInvested ?? 'Cash invested',
+                                color: SERIES_COLORS.cashInvested,
                                 type: 'line',
                               },
                             ];
@@ -14920,6 +15006,16 @@ export default function App() {
                         />
                         <RechartsLine
                           type="monotone"
+                          dataKey="cashInvested"
+                          name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
+                          stroke={SERIES_COLORS.cashInvested}
+                          strokeWidth={2}
+                          dot={false}
+                          isAnimationActive={false}
+                          hide={!activeSeries.cashInvested}
+                        />
+                        <RechartsLine
+                          type="monotone"
                           dataKey="investedRent"
                           name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
                           stroke={SERIES_COLORS.investedRent}
@@ -14960,12 +15056,36 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    {renderSummariseButton('rateTrends', 'Return ratios over time', rateChartDataWithMovingAverage, {
-                      keys: ['year', 'capRate', 'yieldRate', 'cashOnCash', 'irrIfSold', 'irrHurdle', 'npvToDate'],
-                      numericKeys: ['capRate', 'yieldRate', 'cashOnCash', 'irrIfSold', 'irrHurdle', 'npvToDate'],
-                      description:
-                        'Year-by-year return ratios including cap rate, yield, cash-on-cash, IRR benchmarks, and NPV-to-date.',
-                    })}
+                    {!collapsedSections.rateTrends
+                      ? renderSummariseButton(
+                          'rateTrends',
+                          'Return ratios over time',
+                          rateChartDataWithMovingAverage,
+                          {
+                            keys: [
+                              'year',
+                              'capRate',
+                              'yieldRate',
+                              'cashOnCash',
+                              'irrIfSold',
+                              'irrAverage',
+                              'irrHurdle',
+                              'npvToDate',
+                            ],
+                            numericKeys: [
+                              'capRate',
+                              'yieldRate',
+                              'cashOnCash',
+                              'irrIfSold',
+                              'irrAverage',
+                              'irrHurdle',
+                              'npvToDate',
+                            ],
+                            description:
+                              'Year-by-year return ratios including cap rate, yield, cash-on-cash, average IRR, IRR hurdle, and NPV-to-date.',
+                          }
+                        )
+                      : null}
                     {showRatesModal ? (
                       <button
                         type="button"
@@ -15001,7 +15121,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                {renderChartSummary('rateTrends')}
+                {!collapsedSections.rateTrends ? renderChartSummary('rateTrends') : null}
                 {!collapsedSections.rateTrends ? (
                   <>
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
@@ -15135,29 +15255,36 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    {renderSummariseButton('npvTimeline', 'Net present value timeline', npvTimelineFilteredData, {
-                      keys: [
-                        'year',
-                        'operatingCash',
-                        'saleProceeds',
-                        'totalCash',
-                        'discountFactor',
-                        'discountedContribution',
-                        'cumulativeDiscounted',
-                        'cumulativeUndiscounted',
-                      ],
-                      numericKeys: [
-                        'operatingCash',
-                        'saleProceeds',
-                        'totalCash',
-                        'discountFactor',
-                        'discountedContribution',
-                        'cumulativeDiscounted',
-                        'cumulativeUndiscounted',
-                      ],
-                      description:
-                        'Shows how discounted and undiscounted cash flows accumulate toward overall net present value.',
-                    })}
+                    {!collapsedSections.npvTimeline
+                      ? renderSummariseButton(
+                          'npvTimeline',
+                          'Net present value timeline',
+                          npvTimelineFilteredData,
+                          {
+                            keys: [
+                              'year',
+                              'operatingCash',
+                              'saleProceeds',
+                              'totalCash',
+                              'discountFactor',
+                              'discountedContribution',
+                              'cumulativeDiscounted',
+                              'cumulativeUndiscounted',
+                            ],
+                            numericKeys: [
+                              'operatingCash',
+                              'saleProceeds',
+                              'totalCash',
+                              'discountFactor',
+                              'discountedContribution',
+                              'cumulativeDiscounted',
+                              'cumulativeUndiscounted',
+                            ],
+                            description:
+                              'Shows how discounted and undiscounted cash flows accumulate toward overall net present value.',
+                          }
+                        )
+                      : null}
                     {showNpvModal ? (
                       <button
                         type="button"
@@ -15193,7 +15320,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                {renderChartSummary('npvTimeline')}
+                {!collapsedSections.npvTimeline ? renderChartSummary('npvTimeline') : null}
                 {!collapsedSections.npvTimeline ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -15241,15 +15368,22 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    {renderSummariseButton('equityGrowth', 'Equity growth over time', equityGrowthChartData, {
-                      keys: ['year', 'ownerEquity', 'loanBalance', 'totalValue'],
-                      numericKeys: ['ownerEquity', 'loanBalance', 'totalValue'],
-                      description:
-                        'Tracks outstanding debt versus owned equity and total property value through the hold period.',
-                    })}
+                    {!collapsedSections.equityGrowth
+                      ? renderSummariseButton(
+                          'equityGrowth',
+                          'Equity growth over time',
+                          equityGrowthChartData,
+                          {
+                            keys: ['year', 'ownerEquity', 'loanBalance', 'totalValue'],
+                            numericKeys: ['ownerEquity', 'loanBalance', 'totalValue'],
+                            description:
+                              'Tracks outstanding debt versus owned equity and total property value through the hold period.',
+                          }
+                        )
+                      : null}
                   </div>
                 </div>
-                {renderChartSummary('equityGrowth')}
+                {!collapsedSections.equityGrowth ? renderChartSummary('equityGrowth') : null}
                 {!collapsedSections.equityGrowth ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -15320,15 +15454,33 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    {renderSummariseButton('cashflowBars', 'Annual cash flow', annualCashflowChartData, {
-                      keys: ['year', 'rentIncome', 'operatingExpenses', 'mortgagePayments', 'netCashflow'],
-                      numericKeys: ['rentIncome', 'operatingExpenses', 'mortgagePayments', 'netCashflow'],
-                      description:
-                        'Annual rent, expenses, debt service, and after-tax cash flow for the property.',
-                    })}
+                    {!collapsedSections.cashflowBars
+                      ? renderSummariseButton(
+                          'cashflowBars',
+                          'Annual cash flow',
+                          annualCashflowChartData,
+                          {
+                            keys: [
+                              'year',
+                              'rentIncome',
+                              'operatingExpenses',
+                              'mortgagePayments',
+                              'netCashflow',
+                            ],
+                            numericKeys: [
+                              'rentIncome',
+                              'operatingExpenses',
+                              'mortgagePayments',
+                              'netCashflow',
+                            ],
+                            description:
+                              'Annual rent, expenses, debt service, and after-tax cash flow for the property.',
+                          }
+                        )
+                      : null}
                   </div>
                 </div>
-                {renderChartSummary('cashflowBars')}
+                {!collapsedSections.cashflowBars ? renderChartSummary('cashflowBars') : null}
                 {!collapsedSections.cashflowBars ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -15748,12 +15900,19 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    {renderSummariseButton('interestSplit', 'Interest vs principal split', interestSplitDisplayData, {
-                      keys: ['year', 'interestPaid', 'principalPaid'],
-                      numericKeys: ['interestPaid', 'principalPaid'],
-                      description:
-                        'Breaks down annual debt service into interest and principal repayments across the hold.',
-                    })}
+                    {!collapsedSections.interestSplit
+                      ? renderSummariseButton(
+                          'interestSplit',
+                          'Interest vs principal split',
+                          interestSplitDisplayData,
+                          {
+                            keys: ['year', 'interestPaid', 'principalPaid'],
+                            numericKeys: ['interestPaid', 'principalPaid'],
+                            description:
+                              'Breaks down annual debt service into interest and principal repayments across the hold.',
+                          }
+                        )
+                      : null}
                     {interestSplitExpanded ? (
                       <button
                         type="button"
@@ -15789,7 +15948,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                {renderChartSummary('interestSplit')}
+                {!collapsedSections.interestSplit ? renderChartSummary('interestSplit') : null}
                 {!collapsedSections.interestSplit ? renderInterestSplitChart() : null}
               </div>
               <div
@@ -15816,12 +15975,19 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    {renderSummariseButton('leverage', 'Leverage multiplier', leverageDisplayData, {
-                      keys: ['ltv', 'roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
-                      numericKeys: ['roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
-                      description:
-                        'Sensitivity of ROI, IRR, and after-tax wealth outcomes across different loan-to-value ratios.',
-                    })}
+                    {!collapsedSections.leverage
+                      ? renderSummariseButton(
+                          'leverage',
+                          'Leverage multiplier',
+                          leverageDisplayData,
+                          {
+                            keys: ['ltv', 'roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+                            numericKeys: ['roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+                            description:
+                              'Sensitivity of ROI, IRR, and after-tax wealth outcomes across different loan-to-value ratios.',
+                          }
+                        )
+                      : null}
                     {leverageExpanded ? (
                       <button
                         type="button"
@@ -15857,7 +16023,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                {renderChartSummary('leverage')}
+                {!collapsedSections.leverage ? renderChartSummary('leverage') : null}
                 {!collapsedSections.leverage ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -15895,26 +16061,28 @@ export default function App() {
                       collapsedSections.roiHeatmap ? '' : 'text-[11px] text-slate-600'
                     }`}
                   >
-                    {renderSummariseButton(
-                      'roiHeatmap',
-                      'ROI vs rental yield heatmap',
-                      (Array.isArray(roiHeatmapData?.rows) ? roiHeatmapData.rows : []).flatMap((row) =>
-                        Array.isArray(row?.cells)
-                          ? row.cells.map((cell) => ({
-                              capitalGrowth: row.growthRate,
-                              rentYield: cell.yieldRate,
-                              irr: cell.irr,
-                              roi: cell.roi,
-                            }))
-                          : []
-                      ),
-                      {
-                        keys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
-                        numericKeys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
-                        description:
-                          'Modeled IRR and total ROI outcomes across combinations of rent yield and capital growth scenarios.',
-                      }
-                    )}
+                    {!collapsedSections.roiHeatmap
+                      ? renderSummariseButton(
+                          'roiHeatmap',
+                          'ROI vs rental yield heatmap',
+                          (Array.isArray(roiHeatmapData?.rows) ? roiHeatmapData.rows : []).flatMap((row) =>
+                            Array.isArray(row?.cells)
+                              ? row.cells.map((cell) => ({
+                                  capitalGrowth: row.growthRate,
+                                  rentYield: cell.yieldRate,
+                                  irr: cell.irr,
+                                  roi: cell.roi,
+                                }))
+                              : []
+                          ),
+                          {
+                            keys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
+                            numericKeys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
+                            description:
+                              'Modeled IRR and total ROI outcomes across combinations of rent yield and capital growth scenarios.',
+                          }
+                        )
+                      : null}
                     {!collapsedSections.roiHeatmap ? (
                       <>
                         <span className="font-semibold text-slate-500">Metric</span>
@@ -15937,7 +16105,7 @@ export default function App() {
                     ) : null}
                   </div>
                 </div>
-                {renderChartSummary('roiHeatmap')}
+                {!collapsedSections.roiHeatmap ? renderChartSummary('roiHeatmap') : null}
                 {!collapsedSections.roiHeatmap ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -16622,14 +16790,20 @@ export default function App() {
                           />
                           <Legend
                             content={(props) => {
-                              const extraEntries = [
-                                {
-                                  dataKey: 'netWealthAfterTax',
-                                  value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
-                                  color: SERIES_COLORS.netWealthAfterTax,
-                                  type: 'line',
-                                },
-                              ];
+                          const extraEntries = [
+                            {
+                              dataKey: 'netWealthAfterTax',
+                              value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                              color: SERIES_COLORS.netWealthAfterTax,
+                              type: 'line',
+                            },
+                            {
+                              dataKey: 'cashInvested',
+                              value: SERIES_LABELS.cashInvested ?? 'Cash invested',
+                              color: SERIES_COLORS.cashInvested,
+                              type: 'line',
+                            },
+                          ];
                               if (reinvestActive) {
                                 extraEntries.push({
                                   dataKey: 'investedRent',
@@ -16718,6 +16892,17 @@ export default function App() {
                             yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.netWealthAfterTax}
+                          />
+                          <RechartsLine
+                            type="monotone"
+                            dataKey="cashInvested"
+                            name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
+                            stroke={SERIES_COLORS.cashInvested}
+                            strokeWidth={2}
+                            dot={false}
+                            yAxisId="currency"
+                            isAnimationActive={false}
+                            hide={!activeSeries.cashInvested}
                           />
                           <RechartsLine
                             type="monotone"
@@ -18135,14 +18320,20 @@ export default function App() {
                           />
                           <Legend
                             content={(props) => {
-                              const extraEntries = [
-                                {
-                                  dataKey: 'netWealthAfterTax',
-                                  value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
-                                  color: SERIES_COLORS.netWealthAfterTax,
-                                  type: 'line',
-                                },
-                              ];
+                          const extraEntries = [
+                            {
+                              dataKey: 'netWealthAfterTax',
+                              value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                              color: SERIES_COLORS.netWealthAfterTax,
+                              type: 'line',
+                            },
+                            {
+                              dataKey: 'cashInvested',
+                              value: SERIES_LABELS.cashInvested ?? 'Cash invested',
+                              color: SERIES_COLORS.cashInvested,
+                              type: 'line',
+                            },
+                          ];
                               if (planHasReinvestedCash) {
                                 extraEntries.push({
                                   dataKey: 'investedRent',
@@ -18207,6 +18398,17 @@ export default function App() {
                             hide={
                               planChartSeriesActive.investedRent === false || !planHasReinvestedCash
                             }
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="cashInvested"
+                            name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
+                            stroke={SERIES_COLORS.cashInvested}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={planChartSeriesActive.cashInvested === false}
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -19645,6 +19847,19 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Market growth to date', value: meta.investedRentGrowth || 0 });
       break;
     }
+    case 'cashInvested': {
+      const initialOutlay = Number(meta.initialOutlay ?? meta.cashInvested ?? point.cashInvested ?? 0);
+      const totalRequired = Number(meta.totalCashRequired ?? 0);
+      const bridgingLoan = Number(meta.bridgingLoanAmount ?? 0);
+      breakdowns.push({ label: 'Initial cash invested', value: initialOutlay });
+      if (Number.isFinite(totalRequired) && totalRequired !== 0) {
+        breakdowns.push({ label: 'Total cash required', value: totalRequired });
+      }
+      if (Number.isFinite(bridgingLoan) && bridgingLoan > 0) {
+        breakdowns.push({ label: 'Bridging finance applied', value: -bridgingLoan });
+      }
+      break;
+    }
     case 'indexFund1_5x': {
       const baseline = meta.indexFundValue || point.indexFund || 0;
       breakdowns.push({ label: 'Baseline index value', value: baseline });
@@ -20118,6 +20333,11 @@ function PlanWealthChartOverlay({
       key: 'cashflowAfterTax',
       label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)',
       value: point.cashflowAfterTax ?? point.cumulativeCash,
+    },
+    {
+      key: 'cashInvested',
+      label: SERIES_LABELS.cashInvested ?? 'Cash invested',
+      value: point.cashInvested ?? point.meta?.cashInvested,
     },
     {
       key: 'investedRent',
