@@ -1787,6 +1787,17 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         }
         const year = Math.max(0, Math.round(yearValue));
         const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue) || 0;
+        const reinvestFundValue = Number(
+          point?.reinvestFund ?? point?.meta?.reinvestFundValue ?? point?.investedRent
+        ) || 0;
+        const reinvestContributions = Number(
+          point?.cashInvested ?? point?.meta?.investedRentContributions ?? 0
+        ) || 0;
+        const reinvestEnabled = Boolean(
+          point?.meta?.shouldReinvest ??
+            point?.shouldReinvest ??
+            (reinvestFundValue > 0 || reinvestContributions > 0)
+        );
         const cashflowKept = Number(
           point?.meta?.cumulativeCashAfterTaxKeptRealized ??
             point?.cashflow ??
@@ -1807,11 +1818,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         );
         const netWealthAfterTaxValue = Number(
           point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ??
-            (Number(point?.propertyNetAfterTax) || 0) + indexFundValue
+            (Number(point?.propertyNetAfterTax) || 0) + reinvestFundValue
         );
         const netWealthBeforeTaxValue = Number(
           point?.netWealthBeforeTax ?? point?.meta?.netWealthBeforeTax ??
-            (Number(point?.propertyNet) || 0) + indexFundValue
+            (Number(point?.propertyNet) || 0) + reinvestFundValue
         );
         chartByYear.set(year, {
           year,
@@ -1825,7 +1836,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           cashflowKept,
           indexFund: indexFundValue,
           investedRent: Number(point?.investedRent) || 0,
-          reinvestFund: Number(point?.reinvestFund ?? point?.meta?.reinvestFundValue) || 0,
+          reinvestFund: reinvestFundValue,
+          cashInvested: reinvestEnabled ? reinvestContributions : null,
           netWealthAfterTax: netWealthAfterTaxValue,
           netWealthBeforeTax: netWealthBeforeTaxValue,
         });
@@ -5788,13 +5800,14 @@ function calculateEquity(rawInputs) {
     reinvestFund: 0,
     cashflow: 0,
     investedRent: shouldReinvest ? 0 : null,
+    cashInvested: shouldReinvest ? 0 : null,
     capRate: null,
     yieldRate: null,
     cashOnCash: null,
     irrIfSold: null,
     irrAverage: null,
-    netWealthAfterTax: initialNetEquity + indexVal,
-    netWealthBeforeTax: initialNetEquity + indexVal,
+    netWealthAfterTax: initialNetEquity,
+    netWealthBeforeTax: initialNetEquity,
     meta: {
       propertyValue: initialSaleValue,
       saleValue: initialSaleValue,
@@ -5830,8 +5843,8 @@ function calculateEquity(rawInputs) {
       bridgingLoanInterestRate: bridgingMonthlyRate,
       initialOutlay,
       realizedSaleProceeds: 0,
-      netWealthAfterTax: initialNetEquity + indexVal,
-      netWealthBeforeTax: initialNetEquity + indexVal,
+      netWealthAfterTax: initialNetEquity,
+      netWealthBeforeTax: initialNetEquity,
       yearly: {
         gross: 0,
         operatingExpenses: 0,
@@ -5964,8 +5977,8 @@ function calculateEquity(rawInputs) {
     const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
 
     const propertyValueForChart = !inputs.neverExit && y === inputs.exitYear ? 0 : vt;
-    const netWealthAfterTaxValue = propertyNetAfterTaxValue + indexVal;
-    const netWealthBeforeTaxValue = propertyNetValue + indexVal;
+    const netWealthAfterTaxValue = propertyNetAfterTaxValue + reinvestFundValue;
+    const netWealthBeforeTaxValue = propertyNetValue + reinvestFundValue;
 
     chart.push({
       year: y,
@@ -5978,6 +5991,7 @@ function calculateEquity(rawInputs) {
       propertyNet: propertyNetValue,
       propertyNetAfterTax: propertyNetAfterTaxValue,
       reinvestFund: reinvestFundValue,
+      cashInvested: shouldReinvest ? cumulativeReinvested : null,
       cashflow: cumulativeCashAfterTaxKeptRealized,
       cashflowNet: cumulativeCashAfterTaxNetRealized,
       cashflowGross: cumulativeCashAfterTaxRealized,
@@ -6072,6 +6086,9 @@ function calculateEquity(rawInputs) {
     const extensionReinvestFund = Number(
       lastPoint.reinvestFund ?? lastMeta.reinvestFundValue ?? 0
     );
+    const extensionCashInvested = Number(
+      lastPoint.cashInvested ?? lastMeta.investedRentContributions ?? (shouldReinvest ? cumulativeReinvested : 0)
+    );
     const extensionCashflowKept = Number(
       lastMeta.cumulativeCashAfterTaxKeptRealized ??
         lastPoint.cashflow ??
@@ -6093,10 +6110,10 @@ function calculateEquity(rawInputs) {
     const extensionPropertyNet = Number(lastPoint.propertyNet) || 0;
     const extensionPropertyNetAfterTax = Number(lastPoint.propertyNetAfterTax) || 0;
     const extensionNetWealthAfterTax = Number(
-      lastPoint.netWealthAfterTax ?? extensionPropertyNetAfterTax + extensionIndexFund
+      lastPoint.netWealthAfterTax ?? extensionPropertyNetAfterTax + extensionReinvestFund
     );
     const extensionNetWealthBeforeTax = Number(
-      lastPoint.netWealthBeforeTax ?? extensionPropertyNet + extensionIndexFund
+      lastPoint.netWealthBeforeTax ?? extensionPropertyNet + extensionReinvestFund
     );
     const extensionPropertyGross = Number(lastPoint.propertyGross) || extensionPropertyNet;
     const extensionPropertyValue = inputs.neverExit
@@ -6125,6 +6142,7 @@ function calculateEquity(rawInputs) {
       propertyNet: extensionPropertyNet,
       propertyNetAfterTax: extensionPropertyNetAfterTax,
       reinvestFund: extensionReinvestFund,
+      cashInvested: shouldReinvest ? extensionCashInvested : null,
       cashflow: extensionCashflowKept,
       cashflowNet: extensionCashflowNet,
       cashflowGross: extensionCashflowGross,
@@ -6149,6 +6167,8 @@ function calculateEquity(rawInputs) {
         cumulativeCashAfterTaxKeptRealized: extensionCashflowKept,
         indexFundValue: extensionIndexFund,
         reinvestFundValue: extensionReinvestFund,
+        investedRentContributions:
+          lastMeta.investedRentContributions ?? (shouldReinvest ? cumulativeReinvested : 0),
         realizedSaleProceeds: 0,
         netWealthAfterTax: extensionNetWealthAfterTax,
         netWealthBeforeTax: extensionNetWealthBeforeTax,
@@ -9620,7 +9640,7 @@ export default function App() {
         0
       );
 
-      const netWealthAfterTaxBase = toFiniteNumber(
+      const storedNetWealthAfterTax = toFiniteNumber(
         point?.netWealthAfterTax ??
           point?.meta?.netWealthAfterTax ??
           point?.meta?.combinedNetWealthAfterTax ??
@@ -9629,26 +9649,27 @@ export default function App() {
           point?.meta?.totals?.netWealthAfterTax ??
           point?.meta?.wealth?.combinedNetWealth ??
           point?.meta?.wealth?.netWealthAfterTax ??
-          propertyNetAfterTaxValue + indexFundValue,
-        propertyNetAfterTaxValue + indexFundValue
+          Number.NaN,
+        Number.NaN
       );
-      const netWealthAfterTaxRaw = netWealthAfterTaxBase + Math.max(0, investedRent);
-      const netWealthAfterTax = Number.isFinite(netWealthAfterTaxRaw)
-        ? netWealthAfterTaxRaw
-        : lastNetWealth;
+      const reinvestBalance = Math.max(0, investedRent);
+      const netWealthAfterTax = Number.isFinite(storedNetWealthAfterTax)
+        ? storedNetWealthAfterTax
+        : propertyNetAfterTaxValue + reinvestBalance;
 
       const cashInvestedCandidate = toFiniteNumber(
         point?.cashInvested ??
-          point?.meta?.cashInvested ??
-          point?.meta?.totals?.cashInvested ??
-          point?.meta?.netInitialOutlay ??
-          point?.meta?.initialOutlay ??
-          lastCashInvested,
-        lastCashInvested
+          point?.reinvestContributions ??
+          point?.meta?.investedRentContributions ??
+          point?.meta?.cumulativeReinvested ??
+          point?.meta?.totals?.reinvestedCashContributions ??
+          point?.meta?.totals?.reinvestedCash ??
+          Number.NaN,
+        Number.NaN
       );
       const cashInvested = Number.isFinite(cashInvestedCandidate)
-        ? Math.abs(cashInvestedCandidate)
-        : lastCashInvested;
+        ? Math.max(0, cashInvestedCandidate)
+        : Math.max(0, lastCashInvested);
 
       lastCashflow = cashflowAfterTax;
       lastInvestedRent = investedRent;
@@ -20436,30 +20457,38 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       const cashRetained = Number(
         meta.cumulativeCashAfterTaxKeptRealized ?? meta.cumulativeCashAfterTaxKept ?? 0
       );
-      const indexValue = Number(meta.indexFundValue ?? point.indexFund ?? 0);
+      const reinvestValue = Number(meta.reinvestFundValue ?? point.reinvestFund ?? 0);
+      const reinvestContributions = Number(meta.investedRentContributions ?? 0);
       breakdowns.push({ label: 'Property net after tax', value: propertyAfterTax });
       if (cashRetained) {
         breakdowns.push({ label: 'After-tax cash retained (included above)', value: cashRetained });
       }
-      breakdowns.push({ label: 'Index fund value', value: indexValue });
+      breakdowns.push({ label: 'Reinvested fund balance', value: reinvestValue });
+      if (reinvestContributions) {
+        breakdowns.push({ label: 'Total reinvested contributions', value: reinvestContributions });
+      }
       breakdowns.push({
         label: 'Total net wealth (after tax)',
-        value: Number(point.netWealthAfterTax ?? propertyAfterTax + indexValue) || 0,
+        value: Number(point.netWealthAfterTax ?? propertyAfterTax + reinvestValue) || 0,
       });
       break;
     }
     case 'netWealthBeforeTax': {
       const propertyBeforeTax = Number(point.propertyNet ?? meta.propertyNet ?? 0);
       const cashPreTax = Number(meta.cumulativeCashPreTaxKept ?? 0);
-      const indexValue = Number(meta.indexFundValue ?? point.indexFund ?? 0);
+      const reinvestValue = Number(meta.reinvestFundValue ?? point.reinvestFund ?? 0);
+      const reinvestContributions = Number(meta.investedRentContributions ?? 0);
       breakdowns.push({ label: 'Property net (before tax)', value: propertyBeforeTax });
       if (cashPreTax) {
         breakdowns.push({ label: 'Cumulative pre-tax cash retained (included above)', value: cashPreTax });
       }
-      breakdowns.push({ label: 'Index fund value', value: indexValue });
+      breakdowns.push({ label: 'Reinvested fund balance', value: reinvestValue });
+      if (reinvestContributions) {
+        breakdowns.push({ label: 'Total reinvested contributions', value: reinvestContributions });
+      }
       breakdowns.push({
         label: 'Total net wealth (before tax)',
-        value: Number(point.netWealthBeforeTax ?? propertyBeforeTax + indexValue) || 0,
+        value: Number(point.netWealthBeforeTax ?? propertyBeforeTax + reinvestValue) || 0,
       });
       break;
     }
@@ -20480,16 +20509,29 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       break;
     }
     case 'cashInvested': {
-      const initialOutlay = Number(meta.initialOutlay ?? meta.cashInvested ?? point.cashInvested ?? 0);
-      const totalRequired = Number(meta.totalCashRequired ?? 0);
-      const bridgingLoan = Number(meta.bridgingLoanAmount ?? 0);
-      breakdowns.push({ label: 'Initial cash invested', value: initialOutlay });
-      if (Number.isFinite(totalRequired) && totalRequired !== 0) {
-        breakdowns.push({ label: 'Total cash required', value: totalRequired });
+      const contributions = Number(meta.investedRentContributions ?? point.cashInvested ?? 0) || 0;
+      const balance = Number(meta.reinvestFundValue ?? point.reinvestFund ?? 0) || 0;
+      const reinvestRate = Number.isFinite(meta.reinvestShare) ? meta.reinvestShare : null;
+      const reinvestActive = meta.shouldReinvest ?? (balance > 0 || contributions > 0);
+      if (!reinvestActive) {
+        breakdowns.push({
+          label: 'Reinvestment disabled',
+          value: 'Enable reinvest after-tax cash flow to track contributions.',
+          type: 'text',
+        });
+        break;
       }
-      if (Number.isFinite(bridgingLoan) && bridgingLoan > 0) {
-        breakdowns.push({ label: 'Bridging finance applied', value: -bridgingLoan });
+      const growth = Math.max(0, balance - contributions);
+      if (reinvestRate !== null) {
+        breakdowns.push({
+          label: 'Reinvestment rate',
+          value: `${(reinvestRate * 100).toFixed(1)}%`,
+          type: 'text',
+        });
       }
+      breakdowns.push({ label: 'After-tax contributions to date', value: contributions });
+      breakdowns.push({ label: 'Market growth to date', value: growth });
+      breakdowns.push({ label: 'Current reinvested balance', value: balance });
       break;
     }
     case 'indexFund1_5x': {
