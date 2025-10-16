@@ -152,6 +152,7 @@ const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
 const FUTURE_PLAN_STORAGE_KEY = 'qc_future_plan_v1';
+const FUTURE_PLAN_VIEWS_STORAGE_KEY = 'qc_future_plan_views_v1';
 const PLAN_MAX_PURCHASE_YEAR = 20;
 const {
   VITE_SCENARIO_API_URL,
@@ -227,7 +228,7 @@ const SERIES_COLORS = {
 };
 
 const SERIES_LABELS = {
-  indexFund: 'Index fund value',
+  indexFund: 'Index fund',
   cashflow: 'Cashflow',
   propertyValue: 'Property value',
   propertyGross: 'Property gross',
@@ -235,7 +236,7 @@ const SERIES_LABELS = {
   propertyNetAfterTax: 'Property value after tax',
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
-  investedRent: 'Invested rent',
+  investedRent: 'Reinvested cash (after tax)',
   indexFund1_5x: 'Index fund 1.5×',
   indexFund2x: 'Index fund 2×',
   indexFund4x: 'Index fund 4×',
@@ -254,9 +255,190 @@ const SERIES_LABELS = {
   cumulativeDiscounted: 'NPV to date',
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
-  cashflowAfterTax: 'Cashflow after tax',
+  cashflowAfterTax: 'Cashflow (after tax)',
   netWealthAfterTax: 'Net wealth (after tax)',
   netWealthBeforeTax: 'Net wealth (before tax)',
+};
+
+const toFiniteNumber = (value, fallback = 0) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+};
+
+const mergeLegendPayload = (payload, entries) => {
+  const base = Array.isArray(payload) ? [...payload] : [];
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return base;
+  }
+  const existing = new Set(
+    base.map((entry) => (entry && entry.dataKey) || (entry && entry.value) || null).filter(Boolean)
+  );
+  entries.forEach((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const key = entry.dataKey || entry.value;
+    if (!key || existing.has(key)) {
+      return;
+    }
+    base.push(entry);
+    existing.add(key);
+  });
+  return base;
+};
+
+const MAX_SUMMARY_POINTS = 60;
+
+const formatSummaryNumber = (value) => {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const abs = Math.abs(value);
+  const decimals = abs >= 1_000_000 ? 0 : abs >= 1_000 ? 1 : 2;
+  return value.toFixed(decimals);
+};
+
+const deriveSummaryKeys = (data, providedKeys) => {
+  if (Array.isArray(providedKeys) && providedKeys.length > 0) {
+    return providedKeys;
+  }
+  const keySet = new Set();
+  data.forEach((point) => {
+    if (!point || typeof point !== 'object') {
+      return;
+    }
+    Object.keys(point).forEach((key) => {
+      keySet.add(key);
+    });
+  });
+  return Array.from(keySet);
+};
+
+const formatPointForSummary = (point, keys) => {
+  if (!point || typeof point !== 'object') {
+    return null;
+  }
+  const formatted = {};
+  keys.forEach((key) => {
+    if (!(key in point)) {
+      return;
+    }
+    const value = point[key];
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const abs = Math.abs(value);
+      const decimals = abs >= 1_000_000 ? 0 : abs >= 1_000 ? 1 : 2;
+      formatted[key] = Number(value.toFixed(decimals));
+    } else if (value !== null && value !== undefined) {
+      formatted[key] = value;
+    }
+  });
+  return Object.keys(formatted).length > 0 ? formatted : null;
+};
+
+const sampleDataForSummary = (data, keys, limit = MAX_SUMMARY_POINTS) => {
+  if (!Array.isArray(data) || data.length === 0) {
+    return [];
+  }
+  const safeLimit = Math.max(1, limit);
+  const summaryKeys = deriveSummaryKeys(data, keys);
+  const step = Math.max(1, Math.floor(data.length / safeLimit));
+  const sampled = [];
+  for (let index = 0; index < data.length && sampled.length < safeLimit; index += step) {
+    const point = formatPointForSummary(data[index], summaryKeys);
+    if (point) {
+      sampled.push(point);
+    }
+  }
+  const lastPoint = formatPointForSummary(data[data.length - 1], summaryKeys);
+  if (lastPoint && sampled.length > 0) {
+    const lastSampled = sampled[sampled.length - 1];
+    const differs = summaryKeys.some((key) => lastSampled?.[key] !== lastPoint?.[key]);
+    if (differs && sampled.length < safeLimit) {
+      sampled.push(lastPoint);
+    }
+  } else if (lastPoint && sampled.length === 0) {
+    sampled.push(lastPoint);
+  }
+  return sampled;
+};
+
+const computeSummaryStats = (data, numericKeys) => {
+  if (!Array.isArray(data) || data.length === 0) {
+    return {};
+  }
+  const stats = {};
+  const keys = Array.isArray(numericKeys) && numericKeys.length > 0 ? numericKeys : deriveSummaryKeys(data);
+  keys.forEach((key) => {
+    let first = null;
+    let last = null;
+    let min = Infinity;
+    let max = -Infinity;
+    data.forEach((point) => {
+      const value = Number(point?.[key]);
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      if (first === null) {
+        first = value;
+      }
+      last = value;
+      if (value < min) {
+        min = value;
+      }
+      if (value > max) {
+        max = value;
+      }
+    });
+    if (first !== null) {
+      stats[key] = { first, last, min, max };
+    }
+  });
+  return stats;
+};
+
+const formatSummaryStats = (stats) => {
+  const entries = Object.entries(stats);
+  if (entries.length === 0) {
+    return '';
+  }
+  return entries
+    .map(([key, value]) => {
+      const first = formatSummaryNumber(value.first);
+      const last = formatSummaryNumber(value.last);
+      const min = formatSummaryNumber(value.min);
+      const max = formatSummaryNumber(value.max);
+      return `${key}: start=${first}, end=${last}, min=${min}, max=${max}`;
+    })
+    .join('\n');
+};
+
+const buildChartSummaryContext = (
+  chartLabel,
+  description,
+  keys,
+  sample,
+  stats,
+  totalCount
+) => {
+  const lines = [
+    `Chart: ${chartLabel}`,
+    description ? `Description: ${description}` : null,
+    Number.isFinite(totalCount) ? `Total data points: ${totalCount}` : null,
+    Array.isArray(keys) && keys.length > 0 ? `Fields included: ${keys.join(', ')}` : null,
+  ].filter(Boolean);
+  const statsText = formatSummaryStats(stats);
+  if (statsText) {
+    lines.push('', 'Field statistics:', statsText);
+  }
+  if (Array.isArray(sample) && sample.length > 0) {
+    lines.push('', `Sampled data (${sample.length}${
+      Number.isFinite(totalCount) ? ` of ${totalCount}` : ''
+    } points):`, JSON.stringify(sample, null, 2));
+  }
+  return lines.join('\n');
 };
 
 const CASHFLOW_BAR_COLORS = {
@@ -1257,6 +1439,7 @@ const DEFAULT_INPUTS = {
   rentGrowth: 0.02,
   exitYear: 20,
   sellingCostsPct: 0.02,
+  neverExit: false,
   discountRate: 0.07,
   irrHurdle: 0.12,
   buyerType: 'individual',
@@ -1366,8 +1549,11 @@ const sanitizePlanItem = (item) => {
   const inputExitYear = Math.max(0, Math.round(Number(inputs.exitYear) || 0));
   const rawExit = Number(item.exitYearOverride ?? item.exitYear);
   const exitYearOverride = Number.isFinite(rawExit) && rawExit >= 0
-    ? clamp(Math.round(rawExit), 0, PLAN_MAX_PURCHASE_YEAR)
+    ? Math.max(0, Math.round(rawExit))
     : inputExitYear;
+  const neverExit = inputs.neverExit === true || item.neverExit === true;
+  inputs.exitYear = inputExitYear;
+  inputs.neverExit = neverExit;
   return {
     id,
     name,
@@ -1379,6 +1565,7 @@ const sanitizePlanItem = (item) => {
     incomeContribution,
     exitYearOverride,
     isPrimary,
+    neverExit,
   };
 };
 
@@ -1394,6 +1581,7 @@ const PLAN_ANALYSIS_EMPTY_TOTALS = {
   finalCashPosition: 0,
   finalExternalPosition: 0,
   finalIndexFundValue: 0,
+  finalReinvestedCash: 0,
   finalTotalNetWealth: 0,
   averageRentalYield: 0,
   averageCapRate: 0,
@@ -1425,11 +1613,48 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     };
   }
 
-  const items = futurePlanItems.map((rawItem, index) => {
-    const sanitized = sanitizePlanItem(rawItem);
+  const sanitizedEntries = futurePlanItems
+    .map((rawItem, index) => {
+      const sanitized = sanitizePlanItem(rawItem);
+      if (!sanitized) {
+        return null;
+      }
+      return { sanitized, index };
+    })
+    .filter(Boolean);
+
+  const requestedHorizon = sanitizedEntries.reduce((max, entry) => {
+    const { sanitized } = entry;
+    const desiredHoldYears = Math.max(
+      0,
+      Math.round(Number(sanitized.exitYearOverride ?? sanitized.inputs?.exitYear ?? 0))
+    );
+    const purchaseOffset = Math.max(
+      0,
+      Math.round(Number(sanitized.purchaseYear ?? 0))
+    );
+    const timelineEnd = purchaseOffset + desiredHoldYears;
+    return Math.max(max, timelineEnd);
+  }, 0);
+
+  const items = sanitizedEntries.map(({ sanitized, index }) => {
+    const desiredExitYear = Math.max(
+      0,
+      Math.round(Number(sanitized.exitYearOverride ?? sanitized.inputs?.exitYear ?? 0))
+    );
+    const purchaseOffset = Math.max(0, Math.round(Number(sanitized.purchaseYear ?? 0)));
+    const horizonAdjustedHold = Math.max(0, requestedHorizon - purchaseOffset);
+    const effectiveExitYear = sanitized.neverExit
+      ? Math.max(desiredExitYear, horizonAdjustedHold)
+      : desiredExitYear;
+    const metricsInputs = {
+      ...sanitized.inputs,
+      exitYear: effectiveExitYear,
+      neverExit: Boolean(sanitized.neverExit),
+    };
     let metrics = null;
     try {
-      metrics = calculateEquity(sanitized.inputs);
+      metrics = calculateEquity(metricsInputs);
     } catch (error) {
       console.warn('Unable to evaluate future plan item:', sanitized?.name ?? sanitized?.id ?? 'item', error);
     }
@@ -1489,11 +1714,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     }
 
     const chart = Array.from(chartByYear.values()).sort((a, b) => a.year - b.year);
-    const exitYearFromChart = chart.length > 0 ? chart[chart.length - 1].year : 0;
-    const metricsExitYear = Math.max(0, Math.round(Number(metrics?.exitYear) || 0));
-    const exitYearBase = Math.max(exitYearFromChart, metricsExitYear);
-    const desiredExitYear = Math.max(0, Math.round(Number(sanitized.exitYearOverride) || exitYearBase));
-    const exitYear = exitYearBase > 0 ? Math.min(desiredExitYear, exitYearBase) : desiredExitYear;
+    const exitYear = effectiveExitYear;
 
     const annualCashflows = Array.isArray(metrics?.annualCashflowsAfterTax)
       ? metrics.annualCashflowsAfterTax.map((value) => (Number.isFinite(Number(value)) ? Number(value) : 0))
@@ -1599,6 +1820,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
   );
 
   const itemStates = new Map();
+  const reinvestmentStates = new Map();
   orderedIncluded.forEach((item) => {
     itemStates.set(item.id, {
       available: 0,
@@ -1606,6 +1828,7 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       injection: Math.max(0, item.initialOutlay),
       indexContribution: item.useIncomeForDeposit ? 0 : Math.max(0, item.initialOutlay),
     });
+    reinvestmentStates.set(item.id, { balance: 0, contributions: 0 });
   });
 
   const chart = [];
@@ -1623,20 +1846,49 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     let propertyNetAfterTax = 0;
     let propertyCashflowNet = 0;
     let propertyCashflowGross = 0;
-    let propertyInvestedRent = 0;
+    let reinvestedFundBalance = 0;
+    let reinvestedFundContributionTotal = 0;
+    let reinvestContributionYear = 0;
+    let reinvestGrowthYear = 0;
+    let reinvestEligibleCashYear = 0;
     let cashFlow = 0;
     let externalCashFlow = 0;
     let indexFundContribution = 0;
     const yearStartingCash = cumulativeCash;
     let availableCashPool = yearStartingCash;
 
+    const reinvestGrowthMultiplier = 1 + clampPercentage(indexFundGrowthRate, -0.99, 10);
+
     orderedIncluded.forEach((item, index) => {
       const propertyYear = year - item.purchaseYear;
-      if (propertyYear < 0 || propertyYear > item.exitYear) {
+      const reinvestState = reinvestmentStates.get(item.id) || { balance: 0, contributions: 0 };
+      reinvestmentStates.set(item.id, reinvestState);
+
+      if (propertyYear < 0) {
+        if (reinvestState.balance > 0) {
+          reinvestedFundBalance += reinvestState.balance;
+          reinvestedFundContributionTotal += reinvestState.contributions;
+        }
+        return;
+      }
+
+      if (propertyYear > item.exitYear) {
+        if (reinvestState.balance > 0) {
+          const priorBalance = reinvestState.balance;
+          const grownBalance = priorBalance * reinvestGrowthMultiplier;
+          reinvestState.balance = grownBalance;
+          const growthDelta = grownBalance - priorBalance;
+          if (growthDelta > 0) {
+            reinvestGrowthYear += growthDelta;
+          }
+          reinvestedFundBalance += reinvestState.balance;
+          reinvestedFundContributionTotal += reinvestState.contributions;
+        }
         return;
       }
 
       const chartPoint = item.chartByYear.get(propertyYear);
+      const chartMeta = (chartPoint && typeof chartPoint.meta === 'object' && chartPoint.meta) || {};
       const contribution = {
         id: item.id,
         name: item.displayName || item.name || `Plan property ${index + 1}`,
@@ -1644,7 +1896,11 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         propertyYear,
         exitYear: item.exitYear,
         phase:
-          propertyYear === 0 ? 'purchase' : propertyYear === item.exitYear ? 'exit' : 'hold',
+          propertyYear === 0
+            ? 'purchase'
+            : !item.neverExit && propertyYear === item.exitYear
+            ? 'exit'
+            : 'hold',
         propertyValue: chartPoint?.propertyValue || 0,
         propertyGross: chartPoint?.propertyGross || 0,
         propertyNet: chartPoint?.propertyNet || 0,
@@ -1671,7 +1927,30 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const grossCashValue = Number(chartPoint.cashflowGross ?? chartPoint.cashflow) || 0;
         propertyCashflowNet += netCashValue;
         propertyCashflowGross += grossCashValue;
-        propertyInvestedRent += Number(chartPoint.investedRent) || 0;
+        const propertyReinvestedValue =
+          Number(chartPoint.reinvestFund ?? chartPoint.investedRent ?? chartPoint.meta?.reinvestFundValue) || 0;
+        const propertyReinvestedContributions =
+          Number(
+            chartPoint.meta?.investedRentContributions ?? chartPoint.meta?.cumulativeReinvested ?? 0
+          ) || 0;
+        const propertyReinvestContributionYear =
+          Number(chartPoint.meta?.yearly?.reinvestContribution ?? 0) || 0;
+        const propertyReinvestGrowthYear =
+          Number(chartPoint.meta?.yearly?.investedRentGrowth ?? 0) || 0;
+        const propertyAfterTaxCashYear =
+          Number(chartPoint.meta?.yearly?.cashAfterTax ?? 0);
+        reinvestedFundBalance += propertyReinvestedValue;
+        reinvestedFundContributionTotal += propertyReinvestedContributions;
+        reinvestContributionYear += propertyReinvestContributionYear;
+        reinvestGrowthYear += propertyReinvestGrowthYear;
+        if (propertyAfterTaxCashYear > 0) {
+          reinvestEligibleCashYear += propertyAfterTaxCashYear;
+        }
+        reinvestState.balance = propertyReinvestedValue;
+        reinvestState.contributions = propertyReinvestedContributions;
+      } else if (reinvestState.balance > 0) {
+        reinvestedFundBalance += reinvestState.balance;
+        reinvestedFundContributionTotal += reinvestState.contributions;
       }
 
       const propertyState = itemStates.get(item.id);
@@ -1720,9 +1999,20 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
         const annualCash = item.annualCashflows[cashIndex] ?? 0;
         contribution.operatingCashflow = annualCash;
         contribution.cashFlow += annualCash;
-        if (propertyYear === item.exitYear) {
-          contribution.saleProceeds = item.exitProceeds;
-          contribution.cashFlow += item.exitProceeds;
+        if (!item.neverExit && propertyYear === item.exitYear) {
+          const saleValue = Number(chartMeta.saleValue) || 0;
+          const saleCosts = Number(chartMeta.saleCosts) || 0;
+          const remainingLoan = Number(chartMeta.remainingLoan) || 0;
+          const realizedSale = Number(chartMeta.realizedSaleProceeds ?? chartMeta.netSaleIfSold);
+          const netSaleProceeds = Number.isFinite(realizedSale)
+            ? realizedSale
+            : Number(item.exitProceeds) || 0;
+
+          contribution.saleProceeds = netSaleProceeds;
+          contribution.saleValue = saleValue;
+          contribution.saleCosts = saleCosts;
+          contribution.debtPayoff = remainingLoan;
+          contribution.cashFlow += netSaleProceeds;
         }
       }
 
@@ -1752,9 +2042,21 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cumulativeIndexFundContribution += indexFundContribution;
     }
 
+    const reinvestedFundGrowthTotal = Math.max(
+      0,
+      reinvestedFundBalance - reinvestedFundContributionTotal
+    );
+    const reinvestShare =
+      reinvestEligibleCashYear > 0
+        ? clampPercentage(reinvestContributionYear / reinvestEligibleCashYear, 0, 1)
+        : null;
     const portfolioCashAdjustment = cumulativeCash - propertyCashflowNet;
-    const combinedNetWealthBeforeTax = propertyNet + portfolioCashAdjustment;
-    const combinedNetWealthAfterTax = propertyNetAfterTax + portfolioCashAdjustment;
+    const combinedNetWealthBeforeTaxBase = propertyNet + portfolioCashAdjustment;
+    const combinedNetWealthAfterTaxBase = propertyNetAfterTax + portfolioCashAdjustment;
+    const combinedNetWealthBeforeTax =
+      combinedNetWealthBeforeTaxBase + reinvestedFundBalance;
+    const combinedNetWealthAfterTax =
+      combinedNetWealthAfterTaxBase + reinvestedFundBalance;
     const totalNetWealthWithIndex = combinedNetWealthAfterTax + indexFundValue;
 
     chart.push({
@@ -1767,12 +2069,12 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       cashflowNet: propertyCashflowNet,
       cashflowGross: propertyCashflowGross,
       cashflowAfterTax: cumulativeCash,
-      investedRent: propertyInvestedRent,
+      investedRent: reinvestedFundBalance,
       combinedNetWealth: combinedNetWealthAfterTax,
       combinedNetWealthBeforeTax,
       totalNetWealthWithIndex,
-      netWealthAfterTax: totalNetWealthWithIndex,
-      netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+      netWealthAfterTax: combinedNetWealthAfterTax,
+      netWealthBeforeTax: combinedNetWealthBeforeTax,
       cashFlow,
       cumulativeCash,
       externalCashFlow,
@@ -1781,8 +2083,17 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       indexFundValue,
       indexFundContribution,
       cumulativeIndexFundContribution,
+      reinvestedCash: reinvestedFundBalance,
       meta: {
         propertyBreakdown,
+        shouldReinvest: reinvestedFundBalance > 0,
+        reinvestShare,
+        investedRentContributions: reinvestedFundContributionTotal,
+        investedRentGrowth: reinvestedFundGrowthTotal,
+        yearly: {
+          reinvestContribution: reinvestContributionYear,
+          investedRentGrowth: reinvestGrowthYear,
+        },
         totals: {
           propertyValue,
           propertyNet,
@@ -1791,12 +2102,13 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           cashflowAfterTax: cumulativeCash,
           combinedNetWealth: combinedNetWealthAfterTax,
           combinedNetWealthBeforeTax,
-          netWealthAfterTax: totalNetWealthWithIndex,
-          netWealthBeforeTax: combinedNetWealthBeforeTax + indexFundValue,
+          netWealthAfterTax: combinedNetWealthAfterTax,
+          netWealthBeforeTax: combinedNetWealthBeforeTax,
           cumulativeCash,
           indexFund: indexFundValue,
           totalNetWealthWithIndex,
           cumulativeExternal,
+          reinvestedCash: reinvestedFundBalance,
         },
       },
     });
@@ -1879,10 +2191,16 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       0,
     finalExternalPosition: lastPoint?.cumulativeExternal ?? 0,
     finalIndexFundValue: lastPoint?.indexFundValue ?? lastPoint?.indexFund ?? 0,
+    finalReinvestedCash:
+      lastPoint?.reinvestedCash ??
+      lastPoint?.investedRent ??
+      lastPoint?.meta?.totals?.reinvestedCash ??
+      0,
     finalTotalNetWealth:
       lastPoint?.netWealthAfterTax ??
-      lastPoint?.totalNetWealthWithIndex ??
-      ((lastPoint?.combinedNetWealth ?? 0) + (lastPoint?.indexFundValue ?? 0)),
+      lastPoint?.combinedNetWealth ??
+      lastPoint?.meta?.totals?.netWealthAfterTax ??
+      0,
     averageRentalYield,
     averageCapRate,
   };
@@ -1899,6 +2217,130 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     cashflows: planCashflows,
     irr: planIrr,
   };
+};
+
+const sanitizeStoredPlanView = (entry) => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const planItems = Array.isArray(entry.plan)
+    ? entry.plan.map((item) => sanitizePlanItem(item)).filter(Boolean)
+    : [];
+  if (planItems.length === 0) {
+    return null;
+  }
+  const id =
+    typeof entry.id === 'string' && entry.id.trim() !== ''
+      ? entry.id.trim()
+      : `plan-view-${Math.random().toString(36).slice(2, 10)}`;
+  const name =
+    typeof entry.name === 'string' && entry.name.trim() !== ''
+      ? entry.name.trim()
+      : 'Saved plan view';
+  const savedAt =
+    typeof entry.savedAt === 'string' && entry.savedAt.trim() !== ''
+      ? entry.savedAt
+      : new Date().toISOString();
+  return {
+    id,
+    name,
+    savedAt,
+    plan: planItems,
+  };
+};
+
+const sortPlanViews = (views) => {
+  if (!Array.isArray(views)) {
+    return [];
+  }
+  return [...views].sort((a, b) => {
+    const aTime = new Date(a?.savedAt ?? 0).getTime();
+    const bTime = new Date(b?.savedAt ?? 0).getTime();
+    return bTime - aTime;
+  });
+};
+
+const loadStoredPlanViews = () => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(FUTURE_PLAN_VIEWS_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return sortPlanViews(parsed.map((entry) => sanitizeStoredPlanView(entry)).filter(Boolean));
+  } catch (error) {
+    console.warn('Unable to read saved future plan views from storage:', error);
+    return [];
+  }
+};
+
+const getPlanItemExitYear = (item) => {
+  if (!item || typeof item !== 'object') {
+    return 0;
+  }
+  const override = Number.isFinite(item.exitYearOverride)
+    ? Math.max(0, Math.round(item.exitYearOverride))
+    : NaN;
+  const inputExit = Number.isFinite(item.inputs?.exitYear)
+    ? Math.max(0, Math.round(item.inputs.exitYear))
+    : 0;
+  return Number.isFinite(override) ? override : inputExit;
+};
+
+const describePlanScheduleChanges = (baselinePlan, comparisonPlan, planItemsById = new Map()) => {
+  if (!Array.isArray(baselinePlan) || !Array.isArray(comparisonPlan)) {
+    return [];
+  }
+  const baselineById = new Map(
+    baselinePlan.map((item) => [item?.id, item]).filter((entry) => entry[0])
+  );
+  return comparisonPlan
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const base = baselineById.get(item.id);
+      if (!base) {
+        return null;
+      }
+      const basePurchase = Number.isFinite(base.purchaseYear) ? base.purchaseYear : 0;
+      const nextPurchase = Number.isFinite(item.purchaseYear) ? item.purchaseYear : 0;
+      const baseExit = getPlanItemExitYear(base);
+      const nextExit = getPlanItemExitYear(item);
+      const baseNeverExit = base.neverExit === true;
+      const nextNeverExit = item.neverExit === true;
+      if (
+        basePurchase === nextPurchase &&
+        baseExit === nextExit &&
+        baseNeverExit === nextNeverExit
+      ) {
+        return null;
+      }
+      const planEntry = planItemsById.get(item.id);
+      const label =
+        typeof planEntry?.displayName === 'string' && planEntry.displayName.trim() !== ''
+          ? planEntry.displayName
+          : typeof item.name === 'string' && item.name.trim() !== ''
+            ? item.name.trim()
+            : 'Plan property';
+      return {
+        id: item.id,
+        label,
+        purchaseYear: nextPurchase,
+        basePurchaseYear: basePurchase,
+        exitYear: nextExit,
+        baseExitYear: baseExit,
+        neverExit: nextNeverExit,
+        baseNeverExit,
+      };
+    })
+    .filter(Boolean);
 };
 
 const loadStoredFuturePlan = () => {
@@ -5338,14 +5780,14 @@ function calculateEquity(rawInputs) {
     const cumulativeCashAfterTaxNet = shouldReinvest
       ? cumulativeCashAfterTax - cumulativeReinvested
       : cumulativeCashAfterTax;
-    const propertyGrossValue = vt + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
-    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet + reinvestFundValue;
+    const propertyGrossValue = vt + cumulativeCashPreTaxNet;
+    const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet;
+    const propertyNetAfterTaxValue = netSaleIfSold + cumulativeCashAfterTaxNet;
 
     let yearCashflowForCf = cash;
     let yearCashflowForNpv = afterTaxCash;
     let realizedSaleProceeds = 0;
-    if (y === inputs.exitYear) {
+    if (!inputs.neverExit && y === inputs.exitYear) {
       const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
       const rem =
@@ -5377,7 +5819,7 @@ function calculateEquity(rawInputs) {
     const reinvestFundGrowth = Math.max(0, reinvestFundValue - cumulativeReinvested);
     const investedRentGrowth = Math.max(0, investedRentValue - cumulativeReinvested);
 
-    const propertyValueForChart = y === inputs.exitYear ? 0 : vt;
+    const propertyValueForChart = !inputs.neverExit && y === inputs.exitYear ? 0 : vt;
     const netWealthAfterTaxValue = propertyNetAfterTaxValue + indexVal;
     const netWealthBeforeTaxValue = propertyNetValue + indexVal;
 
@@ -5441,6 +5883,7 @@ function calculateEquity(rawInputs) {
         yieldRate: yieldRateYear,
         cashOnCash: cashOnCashYear,
         irrSeries: irrToDate,
+        neverExit: Boolean(inputs.neverExit),
         yearly: {
           gross,
           operatingExpenses: varOpex + fixed,
@@ -5461,6 +5904,18 @@ function calculateEquity(rawInputs) {
     });
 
     rent *= 1 + inputs.rentGrowth;
+  }
+
+  if (inputs.neverExit) {
+    const cumulativeCashPreTaxNetFinal = shouldReinvest
+      ? cumulativeCashPreTax - cumulativeReinvested
+      : cumulativeCashPreTax;
+    const cumulativeCashAfterTaxNetFinal = shouldReinvest
+      ? cumulativeCashAfterTax - cumulativeReinvested
+      : cumulativeCashAfterTax;
+    exitCumCash = cumulativeCashPreTaxNetFinal + reinvestFundValue;
+    exitCumCashAfterTax = cumulativeCashAfterTaxNetFinal + reinvestFundValue;
+    exitNetSaleProceeds = 0;
   }
 
   if (chart.length > 0) {
@@ -5499,13 +5954,28 @@ function calculateEquity(rawInputs) {
       lastPoint.netWealthBeforeTax ?? extensionPropertyNet + extensionIndexFund
     );
     const extensionPropertyGross = Number(lastPoint.propertyGross) || extensionPropertyNet;
+    const extensionPropertyValue = inputs.neverExit
+      ? Number(lastPoint.propertyValue ?? lastMeta.propertyValue) || extensionPropertyGross
+      : 0;
+    const extensionMetaPropertyValue = inputs.neverExit
+      ? lastMeta.propertyValue ?? extensionPropertyValue
+      : 0;
+    const extensionMetaSaleValue = inputs.neverExit
+      ? lastMeta.saleValue ?? extensionMetaPropertyValue
+      : 0;
+    const extensionMetaRemainingLoan = inputs.neverExit
+      ? lastMeta.remainingLoan ?? 0
+      : 0;
+    const extensionMetaNetSaleIfSold = inputs.neverExit
+      ? lastMeta.netSaleIfSold ?? extensionPropertyNet
+      : 0;
     chart.push({
       year: extensionYear,
       indexFund: extensionIndexFund,
       indexFund1_5x: extensionIndexFund * 1.5,
       indexFund2x: extensionIndexFund * 2,
       indexFund4x: extensionIndexFund * 4,
-      propertyValue: 0,
+      propertyValue: extensionPropertyValue,
       propertyGross: extensionPropertyGross,
       propertyNet: extensionPropertyNet,
       propertyNetAfterTax: extensionPropertyNetAfterTax,
@@ -5524,10 +5994,10 @@ function calculateEquity(rawInputs) {
       netWealthBeforeTax: extensionNetWealthBeforeTax,
       meta: {
         ...lastMeta,
-        propertyValue: 0,
-        saleValue: 0,
-        remainingLoan: 0,
-        netSaleIfSold: 0,
+        propertyValue: extensionMetaPropertyValue,
+        saleValue: extensionMetaSaleValue,
+        remainingLoan: extensionMetaRemainingLoan,
+        netSaleIfSold: extensionMetaNetSaleIfSold,
         cumulativeCashAfterTaxRealized: extensionCashflowGross,
         cumulativeCashAfterTaxNetRealized: extensionCashflowNet,
         cumulativeCashAfterTaxKeptRealized: extensionCashflowKept,
@@ -5536,6 +6006,7 @@ function calculateEquity(rawInputs) {
         realizedSaleProceeds: 0,
         netWealthAfterTax: extensionNetWealthAfterTax,
         netWealthBeforeTax: extensionNetWealthBeforeTax,
+        neverExit: Boolean(inputs.neverExit),
         extension: true,
       },
     });
@@ -5643,6 +6114,7 @@ function calculateEquity(rawInputs) {
     wealthDeltaAfterTax,
     wealthDeltaAfterTaxPct,
     exitYear: inputs.exitYear,
+    neverExit: Boolean(inputs.neverExit),
     annualGrossRents,
     annualOperatingExpenses,
     annualNoiValues,
@@ -6411,6 +6883,8 @@ export default function App() {
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
   const [futurePlan, setFuturePlan] = useState(() => loadStoredFuturePlan());
+  const [savedPlanViews, setSavedPlanViews] = useState(() => loadStoredPlanViews());
+  const [showPlanViewLoader, setShowPlanViewLoader] = useState(false);
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
@@ -6422,6 +6896,7 @@ export default function App() {
     indexFund: true,
     cashflowAfterTax: true,
     propertyValue: true,
+    investedRent: true,
     netWealthAfterTax: true,
   }));
   const [planChartFocusYear, setPlanChartFocusYear] = useState(null);
@@ -6532,6 +7007,7 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [chatStatus, setChatStatus] = useState('idle');
   const [chatError, setChatError] = useState('');
+  const [chartSummaries, setChartSummaries] = useState({});
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
     indexFund1_5x: false,
@@ -6539,9 +7015,9 @@ export default function App() {
     indexFund4x: false,
     cashflowAfterTax: true,
     propertyValue: true,
-    propertyNetAfterTax: true,
+    propertyNetAfterTax: false,
     netWealthAfterTax: true,
-    investedRent: false,
+    investedRent: true,
   });
   const [rateSeriesActive, setRateSeriesActive] = useState({
     capRate: false,
@@ -8291,6 +8767,19 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
+      const payload = savedPlanViews.map((view) => ({
+        ...view,
+        plan: view.plan.map((item) => sanitizePlanItem(item)).filter(Boolean),
+      }));
+      window.localStorage.setItem(FUTURE_PLAN_VIEWS_STORAGE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      console.warn('Unable to persist future plan views:', error);
+    }
+  }, [savedPlanViews]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
       const sanitized = sanitizeCashflowColumns(cashflowColumnKeys);
       window.localStorage.setItem(CASHFLOW_COLUMNS_STORAGE_KEY, JSON.stringify(sanitized));
     } catch (error) {
@@ -8355,6 +8844,16 @@ export default function App() {
 
 
   const planTooltipFormatter = useCallback((value) => currency(value), []);
+  const planHasReinvestedCash = useMemo(
+    () =>
+      planAnalysis.chart.some(
+        (point) =>
+          Number(
+            point?.investedRent ?? point?.reinvestedCash ?? point?.meta?.totals?.reinvestedCash ?? 0
+          ) > 0
+      ),
+    [planAnalysis.chart]
+  );
   const planChartFocusPoint = useMemo(() => {
     if (!Number.isFinite(planChartFocusYear)) {
       return null;
@@ -8389,24 +8888,11 @@ export default function App() {
       if (planChartFocusLocked) {
         return;
       }
-      if (!event || event.isTooltipActive === false) {
+      if ((!event || event.isTooltipActive === false) && planChartFocusYear !== null) {
         setPlanChartFocusYear(null);
-        return;
       }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setPlanChartFocusYear(null);
-        return;
-      }
-      const year = Math.max(0, Math.round(activeYear));
-      const match = planAnalysis.chart.find((point) => Number(point?.year) === year);
-      if (!match) {
-        setPlanChartFocusYear(null);
-        return;
-      }
-      setPlanChartFocusYear(year);
     },
-    [planChartFocusLocked, planAnalysis.chart]
+    [planChartFocusLocked, planChartFocusYear]
   );
 
   const handlePlanChartMouseLeave = useCallback(() => {
@@ -8911,24 +9397,66 @@ export default function App() {
         return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
       })
       .map((point) => {
-        const cashflowAfterTax = Number(
-          point?.meta?.cumulativeCashAfterTaxKeptRealized ??
+        const cashflowAfterTax = toFiniteNumber(
+          point?.cashflowAfterTax ??
+            point?.meta?.cumulativeCashAfterTaxKeptRealized ??
             point?.cashflow ??
             point?.meta?.cumulativeCashAfterTaxNetRealized ??
             point?.meta?.cumulativeCashAfterTaxNet ??
             point?.meta?.cumulativeCashAfterTax ??
             0
         );
-        const indexFundValue = Number(point?.indexFund ?? point?.meta?.indexFundValue ?? 0);
-        const propertyNetAfterTaxValue = Number(point?.propertyNetAfterTax) || 0;
-        const netWealthAfterTax = Number(
-          point?.netWealthAfterTax ?? point?.meta?.netWealthAfterTax ?? propertyNetAfterTaxValue + indexFundValue
+        const indexFundValue = toFiniteNumber(
+          point?.indexFund ??
+            point?.meta?.indexFundValue ??
+            point?.meta?.totals?.indexFund ??
+            0
         );
+        const investedRent = toFiniteNumber(
+          point?.investedRent ??
+            point?.reinvestFund ??
+            point?.reinvestedCash ??
+            point?.reinvestedCashAfterTax ??
+            point?.meta?.reinvestedCash ??
+            point?.meta?.reinvestedCashAfterTax ??
+            point?.meta?.cumulativeReinvestedCash ??
+            point?.meta?.cumulativeReinvestedCashAfterTax ??
+            point?.meta?.wealth?.reinvestedCash ??
+            point?.meta?.wealth?.reinvestedCashAfterTax ??
+            point?.meta?.totals?.reinvestedCash ??
+            point?.meta?.totals?.reinvestedCashAfterTax ??
+            point?.meta?.totals?.reinvestFundValue ??
+            point?.meta?.investedRentValue ??
+            point?.meta?.reinvestFundValue ??
+            0
+        );
+        const propertyNetAfterTaxValue = toFiniteNumber(
+          point?.propertyNetAfterTax ??
+            point?.meta?.propertyNetAfterTax ??
+            point?.meta?.totals?.propertyNetAfterTax ??
+            point?.meta?.wealth?.propertyNetAfterTax ??
+            0
+        );
+        const netWealthAfterTaxBase = toFiniteNumber(
+          point?.netWealthAfterTax ??
+            point?.meta?.netWealthAfterTax ??
+            point?.meta?.combinedNetWealthAfterTax ??
+            point?.meta?.totals?.combinedNetWealth ??
+            point?.meta?.totals?.combinedNetWealthAfterTax ??
+            point?.meta?.totals?.netWealthAfterTax ??
+            point?.meta?.wealth?.combinedNetWealth ??
+            point?.meta?.wealth?.netWealthAfterTax ??
+            propertyNetAfterTaxValue + indexFundValue,
+          propertyNetAfterTaxValue + indexFundValue
+        );
+        const netWealthAfterTax = netWealthAfterTaxBase + Math.max(0, investedRent);
         return {
           ...point,
           cashflowAfterTax,
           netWealthAfterTax,
+          indexFund: indexFundValue,
           indexFundValue,
+          investedRent,
         };
       });
   }, [equity.chart, chartRange]);
@@ -9932,28 +10460,11 @@ export default function App() {
       if (chartFocusLocked) {
         return;
       }
-      if (!event || event.isTooltipActive === false) {
+      if ((!event || event.isTooltipActive === false) && chartFocus !== null) {
         setChartFocus(null);
-        return;
       }
-      const activeYear = Number(event.activeLabel);
-      if (!Number.isFinite(activeYear)) {
-        setChartFocus(null);
-        return;
-      }
-      const match = filteredChartData.find((point) => Number(point?.year) === activeYear);
-      if (!match) {
-        setChartFocus(null);
-        return;
-      }
-      setChartFocus((prev) => {
-        if (prev?.year === activeYear && prev.data === match) {
-          return prev;
-        }
-        return { year: activeYear, data: match };
-      });
     },
-    [chartFocusLocked, filteredChartData]
+    [chartFocusLocked, chartFocus]
   );
 
   const handleChartMouseLeave = useCallback(() => {
@@ -10139,17 +10650,61 @@ export default function App() {
   const exitCumCash = Number.isFinite(equity.exitCumCash) ? equity.exitCumCash : 0;
   const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
   const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
-  const reinvestActive = Boolean(inputs.reinvestIncome) && reinvestRate > 0 && reinvestFundValue > 0;
+  const reinvestSelected = Boolean(inputs.reinvestIncome) && reinvestRate > 0;
+  const reinvestSeriesBalance = useMemo(() => {
+    let maxBalance = 0;
+    if (Array.isArray(equity.chart)) {
+      equity.chart.forEach((point) => {
+        const candidates = [
+          point?.investedRent,
+          point?.reinvestFund,
+          point?.reinvestedCash,
+          point?.reinvestedCashAfterTax,
+          point?.meta?.reinvestedCash,
+          point?.meta?.reinvestedCashAfterTax,
+          point?.meta?.cumulativeReinvestedCash,
+          point?.meta?.cumulativeReinvestedCashAfterTax,
+          point?.meta?.wealth?.reinvestedCash,
+          point?.meta?.wealth?.reinvestedCashAfterTax,
+          point?.meta?.totals?.reinvestedCash,
+          point?.meta?.totals?.reinvestedCashAfterTax,
+          point?.meta?.totals?.reinvestFundValue,
+          point?.meta?.investedRentValue,
+          point?.meta?.reinvestFundValue,
+        ];
+        candidates.forEach((candidate) => {
+          const numeric = toFiniteNumber(candidate, 0);
+          if (numeric > maxBalance) {
+            maxBalance = numeric;
+          }
+        });
+      });
+    }
+    const summaryCandidates = [
+      equity.reinvestFundValue,
+      equity.investedRentValue,
+      equity.totalReinvested,
+      equity.totalReinvestedAfterTax,
+      equity.reinvestedCashAfterTax,
+    ];
+    summaryCandidates.forEach((candidate) => {
+      const numeric = toFiniteNumber(candidate, 0);
+      if (numeric > maxBalance) {
+        maxBalance = numeric;
+      }
+    });
+    return maxBalance;
+  }, [equity.chart, equity.investedRentValue, equity.reinvestFundValue, equity.totalReinvested]);
+  const reinvestSeriesHasBalance = reinvestSeriesBalance > 0;
+  const reinvestActive = reinvestSelected || reinvestSeriesHasBalance;
 
   useEffect(() => {
-    if (reinvestActive) {
-      return;
-    }
     setActiveSeries((prev) => {
-      if (prev.investedRent === false) {
+      const shouldEnable = reinvestActive;
+      if ((prev.investedRent ?? false) === shouldEnable) {
         return prev;
       }
-      return { ...prev, investedRent: false };
+      return { ...prev, investedRent: shouldEnable };
     });
   }, [reinvestActive]);
   const reinvestRateLabel = formatPercent(reinvestRate);
@@ -11196,6 +11751,149 @@ export default function App() {
       .join('\n\n');
 
     return text;
+  };
+
+  const summariseChart = useCallback(
+    async (chartKey, chartLabel, data, options = {}) => {
+      if (!chatEnabled) {
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: {
+            status: 'error',
+            error:
+              'AI summaries are unavailable. Add a Google Gemini API key or chat endpoint in the settings to enable this feature.',
+          },
+        }));
+        return;
+      }
+
+      const entries = Array.isArray(data) ? data : [];
+      if (entries.length === 0) {
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: {
+            status: 'error',
+            error: 'No data is available to summarise for this chart.',
+          },
+        }));
+        return;
+      }
+
+      const keys = deriveSummaryKeys(entries, options.keys);
+      const numericKeys = Array.isArray(options.numericKeys) && options.numericKeys.length > 0
+        ? options.numericKeys
+        : keys.filter((key) =>
+            entries.some((point) => {
+              const value = Number(point?.[key]);
+              return Number.isFinite(value);
+            })
+          );
+      const description = typeof options.description === 'string' ? options.description : '';
+      const totalCount = entries.length;
+      const sample = sampleDataForSummary(entries, keys, options.limit ?? MAX_SUMMARY_POINTS);
+      const stats = computeSummaryStats(entries, numericKeys);
+      const extraSummary = buildChartSummaryContext(
+        chartLabel,
+        description,
+        keys,
+        sample,
+        stats,
+        totalCount
+      );
+
+      setChartSummaries((prev) => ({
+        ...prev,
+        [chartKey]: { status: 'loading' },
+      }));
+
+      const question =
+        typeof options.prompt === 'string' && options.prompt.trim().length > 0
+          ? options.prompt.trim()
+          : `Provide a concise, insight-driven summary of the "${chartLabel}" data. Explain the key trends, how to interpret them, and how the results compare with typical UK market benchmarks for similar property investments.`;
+
+      try {
+        let answer = '';
+        if (GOOGLE_API_KEY) {
+          answer = await callGoogleChat(question, extraSummary);
+        } else if (CHAT_API_URL) {
+          const contextPayload = {
+            chartKey,
+            chartLabel,
+            description,
+            totalCount,
+            fields: keys,
+            numericFields: numericKeys,
+            sample,
+            stats,
+          };
+          answer = await callCustomChat(question, extraSummary, contextPayload);
+        } else {
+          throw new Error('AI summarisation is not currently configured.');
+        }
+
+        const content = answer && answer.trim().length > 0 ? answer.trim() : 'The AI service returned an empty response.';
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: { status: 'success', message: content },
+        }));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Unable to generate a summary at this time. Please try again.';
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: { status: 'error', error: message },
+        }));
+      }
+    },
+    [chatEnabled, setChartSummaries, callGoogleChat, callCustomChat]
+  );
+
+  const renderChartSummary = useCallback(
+    (key) => {
+      const summary = chartSummaries[key];
+      if (!summary) {
+        return null;
+      }
+      if (summary.status === 'loading') {
+        return (
+          <div className="mb-2 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-[11px] text-indigo-700">
+            Summarising chart data…
+          </div>
+        );
+      }
+      if (summary.status === 'error') {
+        return (
+          <div className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700" role="alert">
+            {summary.error}
+          </div>
+        );
+      }
+      if (summary.status === 'success') {
+        return (
+          <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-700">
+            <p className="whitespace-pre-line">{summary.message}</p>
+          </div>
+        );
+      }
+      return null;
+    },
+    [chartSummaries]
+  );
+
+  const renderSummariseButton = (key, chartLabel, data, options = {}) => {
+    const summary = chartSummaries[key];
+    const loading = summary?.status === 'loading';
+    return (
+      <button
+        type="button"
+        onClick={() => summariseChart(key, chartLabel, data, options)}
+        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 disabled:opacity-60"
+        disabled={loading}
+        title="Send this chart to Gemini for an AI-generated summary"
+      >
+        {loading ? 'Summarising…' : 'Summarise'}
+      </button>
+    );
   };
 
   const handleSendChat = async (event) => {
@@ -12299,17 +12997,28 @@ export default function App() {
   const handlePlanExitYearChange = useCallback(
     (id, value) => {
       const numeric = Math.round(Number(value));
-      const sanitizedValue = clamp(
-        Number.isFinite(numeric) ? numeric : 0,
-        0,
-        PLAN_MAX_PURCHASE_YEAR
-      );
+      const sanitizedValue = Math.max(0, Number.isFinite(numeric) ? numeric : 0);
       updatePlanItem(id, (current) => ({
         ...current,
         exitYearOverride: sanitizedValue,
         inputs: {
           ...(current?.inputs ?? {}),
           exitYear: sanitizedValue,
+        },
+      }));
+    },
+    [updatePlanItem]
+  );
+
+  const handlePlanNeverExitToggle = useCallback(
+    (id, enabled) => {
+      const nextValue = Boolean(enabled);
+      updatePlanItem(id, (current) => ({
+        ...current,
+        neverExit: nextValue,
+        inputs: {
+          ...(current?.inputs ?? {}),
+          neverExit: nextValue,
         },
       }));
     },
@@ -12372,6 +13081,67 @@ export default function App() {
       setPlanNotice(`Cloned "${sourceLabel}" as "${cloneLabel}".`);
     },
     [futurePlan, setFuturePlan, setPlanNotice]
+  );
+
+  const handlePlanClear = useCallback(() => {
+    if (futurePlan.length === 0) {
+      return;
+    }
+    setFuturePlan([]);
+    setPlanNotice('Cleared future plan.');
+    setShowPlanViewLoader(false);
+  }, [futurePlan.length, setFuturePlan, setPlanNotice]);
+
+  const handlePlanSaveView = useCallback(() => {
+    const sanitizedPlan = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+    if (sanitizedPlan.length === 0) {
+      setPlanNotice('Add at least one property before saving a plan view.');
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const defaultName = `Plan view ${new Date().toLocaleString()}`;
+    const input = window.prompt('Name this plan view', defaultName);
+    if (input === null) {
+      return;
+    }
+    const trimmed = input.trim();
+    const name = trimmed !== '' ? trimmed : defaultName;
+    const view = {
+      id: `plan-view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      savedAt: new Date().toISOString(),
+      plan: sanitizedPlan,
+    };
+    setSavedPlanViews((prev) => sortPlanViews([...(Array.isArray(prev) ? prev : []), view]));
+    setPlanNotice(`Saved plan view "${name}".`);
+    setShowPlanViewLoader(false);
+  }, [futurePlan, setPlanNotice]);
+
+  const handlePlanLoadView = useCallback(
+    (id) => {
+      const view = savedPlanViews.find((item) => item.id === id);
+      if (!view) {
+        return;
+      }
+      const sanitizedPlan = view.plan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+      setFuturePlan(sanitizedPlan);
+      setPlanNotice(`Loaded plan view "${view.name}".`);
+      setShowPlanViewLoader(false);
+    },
+    [savedPlanViews, setFuturePlan, setPlanNotice]
+  );
+
+  const handlePlanDeleteView = useCallback(
+    (id) => {
+      const target = savedPlanViews.find((item) => item.id === id);
+      setSavedPlanViews((prev) => (prev ? prev.filter((entry) => entry.id !== id) : prev));
+      if (target) {
+        setPlanNotice(`Deleted plan view "${target.name}".`);
+      }
+    },
+    [savedPlanViews, setPlanNotice]
   );
 
   const handlePlanDragStart = useCallback((id, event) => {
@@ -12441,13 +13211,18 @@ export default function App() {
       if (!next || typeof next !== 'object') {
         return;
       }
-      updatePlanItem(id, (current) => ({
-        ...current,
-        inputs: {
+      updatePlanItem(id, (current) => {
+        const mergedInputs = {
           ...(current?.inputs ?? {}),
           ...next,
-        },
-      }));
+        };
+        const nextNeverExit = Boolean(mergedInputs.neverExit);
+        return {
+          ...current,
+          neverExit: nextNeverExit,
+          inputs: mergedInputs,
+        };
+      });
     },
     [updatePlanItem]
   );
@@ -12560,87 +13335,89 @@ export default function App() {
       }
 
       const baselineValue = goalConfig.metric(baselineAnalysis);
-      const planItemsById = new Map((planAnalysis.items ?? []).map((entry) => [entry.id, entry]));
+      const planItemsSource =
+        planAnalysis?.status === 'ready' && Array.isArray(planAnalysis.items)
+          ? planAnalysis.items
+          : Array.isArray(baselineAnalysis?.items)
+            ? baselineAnalysis.items
+            : [];
+      const planItemsById = new Map(planItemsSource.map((entry) => [entry.id, entry]));
       const purchaseDeltas = [-2, -1, 0, 1, 2];
       const exitDeltas = [-2, -1, 0, 1, 2];
-      const candidates = [];
+      const sanitizedPlan = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+      const baselinePlan = sanitizedPlan.map((item) => ({ ...item, inputs: { ...(item.inputs ?? {}) } }));
+      const baselinePayload = {
+        value: baselineValue,
+        formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
+        analysis: baselineAnalysis,
+      };
 
-      futurePlan.forEach((rawItem) => {
-        const baseItem = sanitizePlanItem(rawItem);
-        if (!baseItem) {
+      const propertyVariants = [];
+      baselinePlan.forEach((item, index) => {
+        const planEntry = planItemsById.get(item.id);
+        if (!planEntry || planEntry.include === false || planEntry.valid === false) {
           return;
         }
-        const planEntry = planItemsById.get(baseItem.id);
-        const basePurchase = Number.isFinite(planEntry?.purchaseYear)
+        const basePurchase = Number.isFinite(planEntry.purchaseYear)
           ? planEntry.purchaseYear
-          : baseItem.purchaseYear ?? 0;
-        const baseExit = Number.isFinite(planEntry?.exitYear)
+          : Number.isFinite(item.purchaseYear)
+            ? item.purchaseYear
+            : 0;
+        const baseExit = Number.isFinite(planEntry.exitYear)
           ? planEntry.exitYear
-          : Number.isFinite(baseItem.exitYearOverride)
-            ? baseItem.exitYearOverride
-            : Number.isFinite(baseItem.inputs?.exitYear)
-              ? baseItem.inputs.exitYear
-              : 0;
-
-        const purchaseOptions = planOptimizationHold.purchaseYear
-          ? [basePurchase]
-          : Array.from(
-              new Set(
-                purchaseDeltas
-                  .map((delta) => clamp(Math.round(basePurchase + delta), 0, PLAN_MAX_PURCHASE_YEAR))
-                  .concat(basePurchase)
-              )
-            ).sort((a, b) => a - b);
-
-        const exitOptions = planOptimizationHold.exitYear
-          ? [baseExit]
-          : Array.from(
-              new Set(exitDeltas.map((delta) => Math.max(0, Math.round(baseExit + delta))).concat(baseExit))
-            ).sort((a, b) => a - b);
-
+          : getPlanItemExitYear(item);
+        const neverExit = item.neverExit === true;
+        const purchaseOptions =
+          planOptimizationHold.purchaseYear || item.isPrimary
+            ? [basePurchase]
+            : Array.from(
+                new Set(
+                  purchaseDeltas
+                    .map((delta) => clamp(Math.round(basePurchase + delta), 0, PLAN_MAX_PURCHASE_YEAR))
+                    .concat(basePurchase)
+                )
+              ).sort((a, b) => a - b);
+        const exitOptions =
+          planOptimizationHold.exitYear || neverExit
+            ? [baseExit]
+            : Array.from(
+                new Set(exitDeltas.map((delta) => Math.max(0, Math.round(baseExit + delta))).concat(baseExit))
+              ).sort((a, b) => a - b);
+        const options = [];
         purchaseOptions.forEach((purchaseYear) => {
           exitOptions.forEach((exitYear) => {
-            if (purchaseYear === basePurchase && exitYear === baseExit) {
-              return;
-            }
-            const updatedPlan = futurePlan.map((planItem) => {
-              if (planItem.id !== baseItem.id) {
-                return planItem;
-              }
-              return sanitizePlanItem({
-                ...planItem,
-                purchaseYear,
-                exitYearOverride: exitYear,
-                inputs: {
-                  ...(planItem.inputs ?? {}),
-                  exitYear,
-                },
-              });
-            });
-            candidates.push({
-              id: baseItem.id,
-              label: planEntry?.displayName || baseItem.name || 'Plan property',
-              plan: updatedPlan,
-              purchaseYear,
-              exitYear,
-            });
+            options.push({ purchaseYear, exitYear });
           });
+        });
+        propertyVariants.push({
+          id: item.id,
+          index,
+          label: planEntry.displayName || item.name || 'Plan property',
+          basePurchase,
+          baseExit,
+          neverExit,
+          options,
         });
       });
 
-      if (candidates.length === 0) {
+      const totalVariantCount = propertyVariants.reduce(
+        (sum, entry) =>
+          sum +
+          entry.options.filter(
+            (option) => option.purchaseYear !== entry.basePurchase || option.exitYear !== entry.baseExit
+          ).length,
+        0
+      );
+
+      if (propertyVariants.length === 0 || totalVariantCount === 0) {
+        const message = 'No alternative purchase or exit combinations available under the current constraints.';
         setPlanOptimizationStatus('ready');
         setPlanOptimizationProgress(1);
-        const message = 'No alternative purchase or exit combinations available under the current constraints.';
         setPlanOptimizationMessage(message);
         setPlanOptimizationResult({
           status: 'baseline',
           goal: goalConfig,
-          baseline: {
-            value: baselineValue,
-            formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
-            analysis: baselineAnalysis,
-          },
+          baseline: baselinePayload,
           best: null,
           alternatives: [],
           message,
@@ -12648,61 +13425,188 @@ export default function App() {
         return;
       }
 
-      const evaluated = [];
-      for (let index = 0; index < candidates.length; index += 1) {
-        const candidate = candidates[index];
-        const analysis = computeFuturePlanAnalysis(candidate.plan, indexFundGrowth);
-        const value = goalConfig.metric(analysis);
-        evaluated.push({
-          ...candidate,
-          analysis,
-          value,
-        });
-        const progress = (index + 1) / candidates.length;
-        setPlanOptimizationProgress(progress);
-        setPlanOptimizationMessage(
-          `Evaluated ${index + 1} of ${candidates.length} plan variation${candidates.length === 1 ? '' : 's'}…`
-        );
-        if ((index + 1) % 5 === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
+      const clonePlanItems = (plan) =>
+        plan.map((planItem) => ({ ...planItem, inputs: { ...(planItem.inputs ?? {}) } }));
+      const buildPlanKey = (plan) =>
+        plan
+          .map((planItem) => {
+            const exitYear = getPlanItemExitYear(planItem);
+            const exitTag = planItem.neverExit === true ? `never-${exitYear}` : `exit-${exitYear}`;
+            const purchaseYear = Number.isFinite(planItem.purchaseYear) ? planItem.purchaseYear : 0;
+            return `${planItem.id}:${planItem.include === false ? 0 : 1}:${purchaseYear}:${exitTag}`;
+          })
+          .join('|');
+
+      const evaluationCache = new Map();
+      const evaluationRecords = new Map();
+      const baselineKey = buildPlanKey(baselinePlan);
+      const baselineRecord = { plan: baselinePlan, analysis: baselineAnalysis, value: baselineValue, meta: { baseline: true } };
+      evaluationCache.set(baselineKey, baselineRecord);
+      evaluationRecords.set(baselineKey, baselineRecord);
+
+      let evaluatedCount = 0;
+      const evaluatePlanVariant = async (plan) => {
+        const normalizedPlan = clonePlanItems(plan)
+          .map((planItem) => sanitizePlanItem(planItem))
+          .filter(Boolean);
+        const key = buildPlanKey(normalizedPlan);
+        let record = evaluationCache.get(key);
+        if (!record) {
+          const analysis = computeFuturePlanAnalysis(normalizedPlan, indexFundGrowth);
+          const value = goalConfig.metric(analysis);
+          record = { plan: normalizedPlan, analysis, value };
+          evaluationCache.set(key, record);
+          evaluationRecords.set(key, record);
+          evaluatedCount += 1;
+          if (totalVariantCount > 0) {
+            const progress = Math.min(1, evaluatedCount / totalVariantCount);
+            setPlanOptimizationProgress(progress);
+            setPlanOptimizationMessage(
+              `Evaluated ${evaluatedCount} of ${totalVariantCount} plan variation${totalVariantCount === 1 ? '' : 's'}…`
+            );
+          }
+          if (evaluatedCount % 5 === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        } else if (!evaluationRecords.has(key)) {
+          evaluationRecords.set(key, record);
+        }
+        return record;
+      };
+
+      let workingPlan = baselinePlan;
+      let workingRecord = baselineRecord;
+      const maxPasses = 3;
+      for (let pass = 0; pass < maxPasses; pass += 1) {
+        let passImproved = false;
+        for (const property of propertyVariants) {
+          const propertyIndex = workingPlan.findIndex((planItem) => planItem.id === property.id);
+          if (propertyIndex === -1) {
+            continue;
+          }
+          const currentItem = workingPlan[propertyIndex];
+          const currentPurchase = Number.isFinite(currentItem.purchaseYear)
+            ? currentItem.purchaseYear
+            : property.basePurchase;
+          const currentExit = getPlanItemExitYear(currentItem);
+          let bestRecordForProperty = workingRecord;
+          let bestPlanForProperty = workingPlan;
+          for (const option of property.options) {
+            if (option.purchaseYear === currentPurchase && option.exitYear === currentExit) {
+              continue;
+            }
+            const nextPlan = clonePlanItems(workingPlan);
+            const nextItem = {
+              ...nextPlan[propertyIndex],
+              inputs: { ...(nextPlan[propertyIndex].inputs ?? {}) },
+            };
+            if (!nextItem.isPrimary) {
+              nextItem.purchaseYear = option.purchaseYear;
+            }
+            if (!nextItem.neverExit) {
+              nextItem.exitYearOverride = option.exitYear;
+              nextItem.inputs.exitYear = option.exitYear;
+            } else {
+              nextItem.exitYearOverride = Math.max(
+                Number.isFinite(nextItem.exitYearOverride) ? Math.round(nextItem.exitYearOverride) : option.exitYear,
+                option.exitYear
+              );
+              nextItem.inputs.exitYear = Math.max(
+                Number.isFinite(nextItem.inputs?.exitYear) ? Math.round(nextItem.inputs.exitYear) : option.exitYear,
+                option.exitYear
+              );
+            }
+            nextPlan[propertyIndex] = nextItem;
+            const candidateRecord = await evaluatePlanVariant(nextPlan);
+            if (candidateRecord.value > bestRecordForProperty.value + 1e-6) {
+              bestRecordForProperty = candidateRecord;
+              bestPlanForProperty = clonePlanItems(candidateRecord.plan);
+            }
+          }
+          if (bestRecordForProperty !== workingRecord) {
+            workingPlan = bestPlanForProperty;
+            workingRecord = bestRecordForProperty;
+            passImproved = true;
+          }
+        }
+        if (!passImproved) {
+          break;
         }
       }
 
-      const validResults = evaluated.filter((candidate) => Number.isFinite(candidate.value));
-      validResults.sort((a, b) => b.value - a.value);
+      await evaluatePlanVariant(workingPlan);
 
-      const best = validResults[0] ?? null;
-      const alternatives = validResults.slice(1, 4);
+      const sortedRecords = [...evaluationRecords.values()].sort((a, b) => b.value - a.value);
+      const recordSummaries = sortedRecords.map((record) => ({
+        ...record,
+        schedule: describePlanScheduleChanges(baselinePlan, record.plan, planItemsById),
+      }));
+      const variantSummaries = recordSummaries.filter((entry) => entry.schedule.length > 0);
+      const bestEntry = variantSummaries[0] ?? null;
+      const alternativeEntries = variantSummaries.slice(1, 4);
+
+      if (!bestEntry) {
+        const message = 'No improvements over baseline.';
+        setPlanOptimizationStatus('ready');
+        setPlanOptimizationProgress(1);
+        setPlanOptimizationMessage(message);
+        setPlanOptimizationResult({
+          status: 'baseline',
+          goal: goalConfig,
+          baseline: baselinePayload,
+          best: null,
+          alternatives: [],
+          message,
+        });
+        return;
+      }
+
+      const buildScheduleKey = (schedule) =>
+        Array.isArray(schedule) && schedule.length > 0
+          ? schedule
+              .map(
+                (change) =>
+                  `${change.id}-${change.purchaseYear}-${change.exitYear}-${change.neverExit ? 'never' : 'exit'}`
+              )
+              .join('|')
+          : 'baseline';
+
+      const formatRecommendation = (entry, fallbackKey) => {
+        const schedule = Array.isArray(entry.schedule) ? entry.schedule : [];
+        const firstChange = schedule[0] ?? null;
+        const delta = Number.isFinite(baselineValue) ? entry.value - baselineValue : NaN;
+        return {
+          id: `plan-${fallbackKey ?? buildScheduleKey(schedule)}`,
+          label:
+            schedule.length === 1 && firstChange
+              ? firstChange.label
+              : `${schedule.length} propert${schedule.length === 1 ? 'y' : 'ies'}`,
+          plan: entry.plan,
+          analysis: entry.analysis,
+          value: entry.value,
+          schedule,
+          purchaseYear: firstChange ? firstChange.purchaseYear : 0,
+          exitYear: firstChange ? firstChange.exitYear : 0,
+          formattedValue: goalConfig.format(entry.value),
+          delta,
+          formattedDelta: Number.isFinite(delta) ? formatPlanGoalDelta(goalConfig, delta) : '',
+        };
+      };
+
+      const bestRecommendation = formatRecommendation(bestEntry, 'best');
+      const alternativeRecommendations = alternativeEntries.map((entry, index) =>
+        formatRecommendation(entry, `alt-${index}-${buildScheduleKey(entry.schedule)}`)
+      );
 
       setPlanOptimizationStatus('ready');
       setPlanOptimizationProgress(1);
-      setPlanOptimizationMessage(best ? 'Optimisation complete.' : 'No improvements over baseline.');
+      setPlanOptimizationMessage('Optimisation complete.');
       setPlanOptimizationResult({
-        status: best ? 'ready' : 'baseline',
+        status: 'ready',
         goal: goalConfig,
-        baseline: {
-          value: baselineValue,
-          formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
-          analysis: baselineAnalysis,
-        },
-        best: best
-          ? {
-              ...best,
-              formattedValue: goalConfig.format(best.value),
-              delta: Number.isFinite(baselineValue) ? best.value - baselineValue : NaN,
-              formattedDelta: Number.isFinite(baselineValue)
-                ? formatPlanGoalDelta(goalConfig, best.value - baselineValue)
-                : '',
-            }
-          : null,
-        alternatives: alternatives.map((candidate) => ({
-          ...candidate,
-          formattedValue: goalConfig.format(candidate.value),
-          delta: Number.isFinite(baselineValue) ? candidate.value - baselineValue : NaN,
-          formattedDelta: Number.isFinite(baselineValue)
-            ? formatPlanGoalDelta(goalConfig, candidate.value - baselineValue)
-            : '',
-        })),
+        baseline: baselinePayload,
+        best: bestRecommendation,
+        alternatives: alternativeRecommendations,
       });
     } catch (error) {
       console.warn('Unable to run plan optimisation:', error);
@@ -13522,6 +14426,19 @@ export default function App() {
                   </div>
                   {pctInput('rentGrowth', 'Rent growth %')}
                   {smallInput('exitYear', 'Exit year', 1)}
+                  <label className="col-span-2 inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(inputs.neverExit)}
+                      onChange={(event) =>
+                        setInputs((prev) => ({
+                          ...prev,
+                          neverExit: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>Never exit this property</span>
+                  </label>
                   {pctInput('sellingCostsPct', 'Selling costs %')}
                   <div className="col-span-2 rounded-xl border border-slate-200 p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
@@ -13851,7 +14768,7 @@ export default function App() {
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -13869,40 +14786,49 @@ export default function App() {
                     knowledgeKey="wealthTrajectory"
                   />
                 </div>
-                {showChartModal ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowChartModal(false)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Close wealth trajectory analysis"
-                  >
-                    <span>Close</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setShowChartModal(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Expand wealth trajectory analysis"
-                  >
-                    <span>Expand</span>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      className="h-3 w-3"
-                      aria-hidden="true"
+                <div className="flex items-center gap-2">
+                  {renderSummariseButton('wealthTrajectory', 'Wealth trajectory vs Index Fund', filteredChartData, {
+                    keys: ['year', 'propertyValue', 'cashflowAfterTax', 'netWealthAfterTax', 'investedRent', 'indexFund'],
+                    numericKeys: ['propertyValue', 'cashflowAfterTax', 'netWealthAfterTax', 'investedRent', 'indexFund'],
+                    description:
+                      'Property wealth, index fund value, after-tax cashflow, and reinvested balances over the investment horizon.',
+                  })}
+                  {showChartModal ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowChartModal(false)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close wealth trajectory analysis"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                    </svg>
-                  </button>
-                )}
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowChartModal(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand wealth trajectory analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
+              {renderChartSummary('wealthTrajectory')}
               {!collapsedSections.wealthTrajectory ? (
                 <>
                   <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
@@ -13924,19 +14850,38 @@ export default function App() {
                         />
                         <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                         <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={activeSeries}
-                              onToggle={toggleSeries}
-                              excludedKeys={reinvestActive ? [] : ['investedRent']}
-                            />
-                          )}
+                          content={(props) => {
+                            const extraEntries = [
+                              {
+                                dataKey: 'netWealthAfterTax',
+                                value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                                color: SERIES_COLORS.netWealthAfterTax,
+                                type: 'line',
+                              },
+                            ];
+                            if (reinvestActive) {
+                              extraEntries.push({
+                                dataKey: 'investedRent',
+                                value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+                                color: SERIES_COLORS.investedRent,
+                                type: 'line',
+                              });
+                            }
+                            const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                            return (
+                              <ChartLegend
+                                {...props}
+                                payload={legendPayload}
+                                activeSeries={activeSeries}
+                                onToggle={toggleSeries}
+                              />
+                            );
+                          }}
                         />
                         <Area
                           type="monotone"
                           dataKey="indexFund"
-                          name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                          name={SERIES_LABELS.indexFund ?? 'Index fund'}
                           stroke={SERIES_COLORS.indexFund}
                           fill="rgba(249,115,22,0.2)"
                           strokeWidth={2}
@@ -13946,7 +14891,7 @@ export default function App() {
                         <Area
                           type="monotone"
                           dataKey="cashflowAfterTax"
-                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                           stroke={SERIES_COLORS.cashflowAfterTax}
                           fill="rgba(16,185,129,0.18)"
                           strokeWidth={2}
@@ -13963,16 +14908,6 @@ export default function App() {
                           isAnimationActive={false}
                           hide={!activeSeries.propertyValue}
                         />
-                        <Area
-                          type="monotone"
-                          dataKey="propertyNetAfterTax"
-                          name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
-                          stroke={SERIES_COLORS.propertyNetAfterTax}
-                          fill="rgba(147,51,234,0.2)"
-                          strokeWidth={2}
-                          isAnimationActive={false}
-                          hide={!activeSeries.propertyNetAfterTax}
-                        />
                         <RechartsLine
                           type="monotone"
                           dataKey="netWealthAfterTax"
@@ -13983,14 +14918,13 @@ export default function App() {
                           isAnimationActive={false}
                           hide={!activeSeries.netWealthAfterTax}
                         />
-                        <Area
+                        <RechartsLine
                           type="monotone"
                           dataKey="investedRent"
-                          name="Invested rent"
-                          stroke="#0d9488"
-                          fill="rgba(13,148,136,0.15)"
+                          name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                          stroke={SERIES_COLORS.investedRent}
                           strokeWidth={2}
-                          strokeDasharray="5 3"
+                          dot={false}
                           isAnimationActive={false}
                           hide={!activeSeries.investedRent || !reinvestActive}
                         />
@@ -14007,7 +14941,7 @@ export default function App() {
                   collapsedSections.rateTrends ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14026,6 +14960,12 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    {renderSummariseButton('rateTrends', 'Return ratios over time', rateChartDataWithMovingAverage, {
+                      keys: ['year', 'capRate', 'yieldRate', 'cashOnCash', 'irrSeries', 'irrHurdle', 'npvToDate'],
+                      numericKeys: ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries', 'irrHurdle', 'npvToDate'],
+                      description:
+                        'Year-by-year return ratios including cap rate, yield, cash-on-cash, IRR benchmarks, and NPV-to-date.',
+                    })}
                     {showRatesModal ? (
                       <button
                         type="button"
@@ -14061,6 +15001,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {renderChartSummary('rateTrends')}
                 {!collapsedSections.rateTrends ? (
                   <>
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
@@ -14175,7 +15116,7 @@ export default function App() {
                   collapsedSections.npvTimeline ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14194,6 +15135,29 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    {renderSummariseButton('npvTimeline', 'Net present value timeline', npvTimelineFilteredData, {
+                      keys: [
+                        'year',
+                        'operatingCash',
+                        'saleProceeds',
+                        'totalCash',
+                        'discountFactor',
+                        'discountedContribution',
+                        'cumulativeDiscounted',
+                        'cumulativeUndiscounted',
+                      ],
+                      numericKeys: [
+                        'operatingCash',
+                        'saleProceeds',
+                        'totalCash',
+                        'discountFactor',
+                        'discountedContribution',
+                        'cumulativeDiscounted',
+                        'cumulativeUndiscounted',
+                      ],
+                      description:
+                        'Shows how discounted and undiscounted cash flows accumulate toward overall net present value.',
+                    })}
                     {showNpvModal ? (
                       <button
                         type="button"
@@ -14229,6 +15193,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {renderChartSummary('npvTimeline')}
                 {!collapsedSections.npvTimeline ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14257,7 +15222,7 @@ export default function App() {
                   collapsedSections.equityGrowth ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14275,7 +15240,16 @@ export default function App() {
                       knowledgeKey="equityGrowth"
                     />
                   </div>
+                  <div className="flex items-center gap-2">
+                    {renderSummariseButton('equityGrowth', 'Equity growth over time', equityGrowthChartData, {
+                      keys: ['year', 'ownerEquity', 'loanBalance', 'totalValue'],
+                      numericKeys: ['ownerEquity', 'loanBalance', 'totalValue'],
+                      description:
+                        'Tracks outstanding debt versus owned equity and total property value through the hold period.',
+                    })}
+                  </div>
                 </div>
+                {renderChartSummary('equityGrowth')}
                 {!collapsedSections.equityGrowth ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14327,7 +15301,7 @@ export default function App() {
                   collapsedSections.cashflowBars ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14345,7 +15319,16 @@ export default function App() {
                       knowledgeKey="cashflowBars"
                     />
                   </div>
+                  <div className="flex items-center gap-2">
+                    {renderSummariseButton('cashflowBars', 'Annual cash flow', annualCashflowChartData, {
+                      keys: ['year', 'rentIncome', 'operatingExpenses', 'mortgagePayments', 'netCashflow'],
+                      numericKeys: ['rentIncome', 'operatingExpenses', 'mortgagePayments', 'netCashflow'],
+                      description:
+                        'Annual rent, expenses, debt service, and after-tax cash flow for the property.',
+                    })}
+                  </div>
                 </div>
+                {renderChartSummary('cashflowBars')}
                 {!collapsedSections.cashflowBars ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14764,40 +15747,49 @@ export default function App() {
                       knowledgeKey="interestSplit"
                     />
                   </div>
-                  {interestSplitExpanded ? (
-                    <button
-                      type="button"
-                      onClick={closeInterestSplitOverlay}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Close interest split analysis"
-                    >
-                      <span>Close</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setInterestSplitExpanded(true)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Expand interest split analysis"
-                    >
-                      <span>Expand</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        className="h-3 w-3"
-                        aria-hidden="true"
+                  <div className="flex items-center gap-2">
+                    {renderSummariseButton('interestSplit', 'Interest vs principal split', interestSplitDisplayData, {
+                      keys: ['year', 'interestPaid', 'principalPaid'],
+                      numericKeys: ['interestPaid', 'principalPaid'],
+                      description:
+                        'Breaks down annual debt service into interest and principal repayments across the hold.',
+                    })}
+                    {interestSplitExpanded ? (
+                      <button
+                        type="button"
+                        onClick={closeInterestSplitOverlay}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close interest split analysis"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                      </svg>
-                    </button>
-                  )}
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setInterestSplitExpanded(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand interest split analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {renderChartSummary('interestSplit')}
                 {!collapsedSections.interestSplit ? renderInterestSplitChart() : null}
               </div>
               <div
@@ -14823,40 +15815,49 @@ export default function App() {
                       knowledgeKey="leverage"
                     />
                   </div>
-                  {leverageExpanded ? (
-                    <button
-                      type="button"
-                      onClick={closeLeverageOverlay}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Close leverage analysis"
-                    >
-                      <span>Close</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setLeverageExpanded(true)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Expand leverage analysis"
-                    >
-                      <span>Expand</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        className="h-3 w-3"
-                        aria-hidden="true"
+                  <div className="flex items-center gap-2">
+                    {renderSummariseButton('leverage', 'Leverage multiplier', leverageDisplayData, {
+                      keys: ['ltv', 'roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+                      numericKeys: ['roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+                      description:
+                        'Sensitivity of ROI, IRR, and after-tax wealth outcomes across different loan-to-value ratios.',
+                    })}
+                    {leverageExpanded ? (
+                      <button
+                        type="button"
+                        onClick={closeLeverageOverlay}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close leverage analysis"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                      </svg>
-                    </button>
-                  )}
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setLeverageExpanded(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand leverage analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {renderChartSummary('leverage')}
                 {!collapsedSections.leverage ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14871,7 +15872,7 @@ export default function App() {
                   collapsedSections.roiHeatmap ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14889,27 +15890,54 @@ export default function App() {
                       knowledgeKey="roiHeatmap"
                     />
                   </div>
-                  {!collapsedSections.roiHeatmap ? (
-                    <div className="flex items-center gap-2 text-[11px] text-slate-600">
-                      <span className="font-semibold text-slate-500">Metric</span>
-                      {[{ key: 'irr', label: 'IRR' }, { key: 'roi', label: 'Total ROI' }].map((option) => (
-                        <button
-                          key={option.key}
-                          type="button"
-                          onClick={() => setRoiHeatmapMetric(option.key)}
-                          className={`rounded-full px-3 py-1 font-semibold transition ${
-                            roiHeatmapMetric === option.key
-                              ? 'bg-slate-900 text-white'
-                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                          }`}
-                          aria-pressed={roiHeatmapMetric === option.key}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
+                  <div
+                    className={`flex flex-wrap items-center gap-2 ${
+                      collapsedSections.roiHeatmap ? '' : 'text-[11px] text-slate-600'
+                    }`}
+                  >
+                    {renderSummariseButton(
+                      'roiHeatmap',
+                      'ROI vs rental yield heatmap',
+                      (Array.isArray(roiHeatmapData?.rows) ? roiHeatmapData.rows : []).flatMap((row) =>
+                        Array.isArray(row?.cells)
+                          ? row.cells.map((cell) => ({
+                              capitalGrowth: row.growthRate,
+                              rentYield: cell.yieldRate,
+                              irr: cell.irr,
+                              roi: cell.roi,
+                            }))
+                          : []
+                      ),
+                      {
+                        keys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
+                        numericKeys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
+                        description:
+                          'Modeled IRR and total ROI outcomes across combinations of rent yield and capital growth scenarios.',
+                      }
+                    )}
+                    {!collapsedSections.roiHeatmap ? (
+                      <>
+                        <span className="font-semibold text-slate-500">Metric</span>
+                        {[{ key: 'irr', label: 'IRR' }, { key: 'roi', label: 'Total ROI' }].map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => setRoiHeatmapMetric(option.key)}
+                            className={`rounded-full px-3 py-1 font-semibold transition ${
+                              roiHeatmapMetric === option.key
+                                ? 'bg-slate-900 text-white'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                            aria-pressed={roiHeatmapMetric === option.key}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </>
+                    ) : null}
+                  </div>
                 </div>
+                {renderChartSummary('roiHeatmap')}
                 {!collapsedSections.roiHeatmap ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -15542,7 +16570,7 @@ export default function App() {
                     { key: 'indexFund1_5x', label: 'Index fund 1.5×' },
                     { key: 'indexFund2x', label: 'Index fund 2×' },
                     { key: 'indexFund4x', label: 'Index fund 4×' },
-                    { key: 'investedRent', label: 'Invested rent' },
+                    { key: 'investedRent', label: 'Reinvested cash (after tax)' },
                   ].map((option) => {
                     const checked = activeSeries[option.key] !== false;
                     const disabled = option.key === 'investedRent' && !reinvestActive;
@@ -15551,9 +16579,7 @@ export default function App() {
                         key={option.key}
                         className={`flex items-center gap-2 ${disabled ? 'text-slate-400' : ''}`}
                         title={
-                          disabled
-                            ? 'Enable reinvest after-tax cash flow to view invested rent performance.'
-                            : undefined
+                          disabled ? 'Add reinvested after-tax cash to view this line.' : undefined
                         }
                       >
                         <input
@@ -15595,19 +16621,34 @@ export default function App() {
                             width={110}
                           />
                           <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={activeSeries}
-                                onToggle={toggleSeries}
-                                excludedKeys={[
-                                  'indexFund1_5x',
-                                  'indexFund2x',
-                                  'indexFund4x',
-                                  'investedRent',
-                                ]}
-                              />
-                            )}
+                            content={(props) => {
+                              const extraEntries = [
+                                {
+                                  dataKey: 'netWealthAfterTax',
+                                  value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                                  color: SERIES_COLORS.netWealthAfterTax,
+                                  type: 'line',
+                                },
+                              ];
+                              if (reinvestActive) {
+                                extraEntries.push({
+                                  dataKey: 'investedRent',
+                                  value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+                                  color: SERIES_COLORS.investedRent,
+                                  type: 'line',
+                                });
+                              }
+                              const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                              return (
+                                <ChartLegend
+                                  {...props}
+                                  payload={legendPayload}
+                                  activeSeries={activeSeries}
+                                  onToggle={toggleSeries}
+                                  excludedKeys={['indexFund1_5x', 'indexFund2x', 'indexFund4x']}
+                                />
+                              );
+                            }}
                           />
                           {chartFocus ? (
                             <ReferenceLine
@@ -15637,7 +16678,7 @@ export default function App() {
                           <Area
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -15648,7 +16689,7 @@ export default function App() {
                           <Area
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -15667,17 +16708,6 @@ export default function App() {
                             isAnimationActive={false}
                             hide={!activeSeries.propertyValue}
                           />
-                          <Area
-                            type="monotone"
-                            dataKey="propertyNetAfterTax"
-                            name={SERIES_LABELS.propertyNetAfterTax ?? propertyNetAfterTaxLabel}
-                            stroke={SERIES_COLORS.propertyNetAfterTax}
-                            fill="rgba(147,51,234,0.2)"
-                            strokeWidth={2}
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.propertyNetAfterTax}
-                          />
                           <RechartsLine
                             type="monotone"
                             dataKey="netWealthAfterTax"
@@ -15689,17 +16719,16 @@ export default function App() {
                             isAnimationActive={false}
                             hide={!activeSeries.netWealthAfterTax}
                           />
-                          <Area
+                          <RechartsLine
                             type="monotone"
                             dataKey="investedRent"
-                            name="Invested rent"
-                            stroke="#0d9488"
-                            fill="rgba(13,148,136,0.15)"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                            stroke={SERIES_COLORS.investedRent}
                             strokeWidth={2}
-                            strokeDasharray="5 3"
+                            dot={false}
                             yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.investedRent}
+                            hide={!activeSeries.investedRent || !reinvestActive}
                           />
                           <Area
                             type="monotone"
@@ -16677,6 +17706,79 @@ export default function App() {
               </p>
             ) : (
               <div className="space-y-5 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePlanClear}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePlanSaveView}
+                      className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-slate-700"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowPlanViewLoader((prev) => !prev)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    >
+                      {showPlanViewLoader ? 'Hide saved plans' : 'Load'}
+                    </button>
+                  </div>
+                  {savedPlanViews.length > 0 ? (
+                    <div className="text-[11px] text-slate-500">
+                      {savedPlanViews.length} saved plan view
+                      {savedPlanViews.length === 1 ? '' : 's'}
+                    </div>
+                  ) : null}
+                </div>
+                {showPlanViewLoader ? (
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 text-[11px] text-slate-600">
+                    {savedPlanViews.length === 0 ? (
+                      <p>No plan views saved yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {savedPlanViews.map((view) => (
+                          <div
+                            key={view.id}
+                            className="flex flex-wrap items-center justify-between gap-2"
+                          >
+                            <div>
+                              <div className="font-semibold text-slate-700">{view.name}</div>
+                              <div className="text-[10px] text-slate-500">
+                                Saved {friendlyDateTime(view.savedAt)}
+                              </div>
+                              <div className="text-[10px] text-slate-500">
+                                {view.plan.length} propert{view.plan.length === 1 ? 'y' : 'ies'}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handlePlanLoadView(view.id)}
+                                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                              >
+                                Load
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handlePlanDeleteView(view.id)}
+                                className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-slate-200 text-left text-[11px] text-slate-600">
                     <thead className="bg-slate-50 text-slate-500">
@@ -16702,9 +17804,11 @@ export default function App() {
                         );
                         const isExpanded = planExpandedRows[item.id] === true;
                         const isPrimaryRow = item.isPrimary === true || index === 0;
-                        const exitYearDisplay = Number.isFinite(Number(item.exitYearOverride))
+                        const exitYearInputValue = Number.isFinite(Number(item.exitYearOverride))
                           ? Math.max(0, Math.round(Number(item.exitYearOverride)))
                           : Math.max(0, Math.round(Number(item.exitYear)));
+                        const modeledExitYear = Math.max(0, Math.round(Number(item.exitYear)));
+                        const exitYearDisplay = item.neverExit ? modeledExitYear : exitYearInputValue;
                         return (
                           <Fragment key={item.id}>
                             <tr
@@ -16825,13 +17929,22 @@ export default function App() {
                                 <input
                                   type="number"
                                   min={0}
-                                  max={PLAN_MAX_PURCHASE_YEAR}
-                                  value={exitYearDisplay}
+                                  value={exitYearInputValue}
                                   onChange={(event) => handlePlanExitYearChange(item.id, event.target.value)}
                                   className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs"
                                 />
+                                <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-500">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(item.neverExit)}
+                                    onChange={(event) => handlePlanNeverExitToggle(item.id, event.target.checked)}
+                                  />
+                                  <span>Never exit</span>
+                                </div>
                                 <div className="mt-1 text-[10px] text-slate-500">
-                                  Hold for {exitYearDisplay} year{exitYearDisplay === 1 ? '' : 's'}
+                                  {item.neverExit
+                                    ? `Modelled for ${modeledExitYear} year${modeledExitYear === 1 ? '' : 's'} while holding`
+                                    : `Hold for ${exitYearDisplay} year${exitYearDisplay === 1 ? '' : 's'}`}
                                 </div>
                               </td>
                               <td className="px-3 py-3">
@@ -17021,19 +18134,39 @@ export default function App() {
                             labelFormatter={(value) => `Year ${value}`}
                           />
                           <Legend
-                            content={(props) => (
-                              <ChartLegend
-                                {...props}
-                                activeSeries={planChartSeriesActive}
-                                onToggle={togglePlanChartSeries}
-                              />
-                            )}
+                            content={(props) => {
+                              const extraEntries = [
+                                {
+                                  dataKey: 'netWealthAfterTax',
+                                  value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                                  color: SERIES_COLORS.netWealthAfterTax,
+                                  type: 'line',
+                                },
+                              ];
+                              if (planHasReinvestedCash) {
+                                extraEntries.push({
+                                  dataKey: 'investedRent',
+                                  value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+                                  color: SERIES_COLORS.investedRent,
+                                  type: 'line',
+                                });
+                              }
+                              const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                              return (
+                                <ChartLegend
+                                  {...props}
+                                  payload={legendPayload}
+                                  activeSeries={planChartSeriesActive}
+                                  onToggle={togglePlanChartSeries}
+                                />
+                              );
+                            }}
                           />
                           <Area
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -17044,7 +18177,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17061,6 +18194,19 @@ export default function App() {
                             strokeWidth={2}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyValue === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="investedRent"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                            stroke={SERIES_COLORS.investedRent}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={
+                              planChartSeriesActive.investedRent === false || !planHasReinvestedCash
+                            }
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -17485,13 +18631,33 @@ export default function App() {
                           labelFormatter={(value) => `Year ${value}`}
                         />
                         <Legend
-                          content={(props) => (
-                            <ChartLegend
-                              {...props}
-                              activeSeries={planChartSeriesActive}
-                              onToggle={togglePlanChartSeries}
-                            />
-                          )}
+                          content={(props) => {
+                            const extraEntries = [
+                              {
+                                dataKey: 'netWealthAfterTax',
+                                value: SERIES_LABELS.netWealthAfterTax ?? 'Net wealth (after tax)',
+                                color: SERIES_COLORS.netWealthAfterTax,
+                                type: 'line',
+                              },
+                            ];
+                            if (planHasReinvestedCash) {
+                              extraEntries.push({
+                                dataKey: 'investedRent',
+                                value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+                                color: SERIES_COLORS.investedRent,
+                                type: 'line',
+                              });
+                            }
+                            const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                            return (
+                              <ChartLegend
+                                {...props}
+                                payload={legendPayload}
+                                activeSeries={planChartSeriesActive}
+                                onToggle={togglePlanChartSeries}
+                              />
+                            );
+                          }}
                         />
                         {planChartFocus ? (
                           <ReferenceLine
@@ -17531,7 +18697,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
-                            name={SERIES_LABELS.indexFund ?? 'Index fund value'}
+                            name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
@@ -17542,7 +18708,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17559,6 +18725,19 @@ export default function App() {
                             strokeWidth={2}
                             isAnimationActive={false}
                             hide={planChartSeriesActive.propertyValue === false}
+                          />
+                          <RechartsLine
+                            yAxisId="currency"
+                            type="monotone"
+                            dataKey="investedRent"
+                            name={SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)'}
+                            stroke={SERIES_COLORS.investedRent}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                            hide={
+                              planChartSeriesActive.investedRent === false || !planHasReinvestedCash
+                            }
                           />
                           <RechartsLine
                             yAxisId="currency"
@@ -18923,10 +20102,11 @@ function PlanWealthChartOverlay({
     return null;
   }
 
+  const reinvestedValue = Number(point.reinvestedCash ?? point.investedRent ?? 0);
   const summaryMetrics = [
     {
       key: 'indexFund',
-      label: SERIES_LABELS.indexFund ?? 'Index fund value',
+      label: SERIES_LABELS.indexFund ?? 'Index fund',
       value: point.indexFund ?? point.indexFundValue,
     },
     {
@@ -18936,8 +20116,14 @@ function PlanWealthChartOverlay({
     },
     {
       key: 'cashflowAfterTax',
-      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow after tax',
+      label: SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)',
       value: point.cashflowAfterTax ?? point.cumulativeCash,
+    },
+    {
+      key: 'investedRent',
+      label: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
+      value:
+        Number.isFinite(reinvestedValue) && reinvestedValue > 0 ? reinvestedValue : NaN,
     },
     {
       key: 'netWealthAfterTax',
@@ -19076,6 +20262,11 @@ function PlanWealthChartOverlay({
                 type: 'currency',
               },
               {
+                label: 'Debt repaid at sale',
+                value: property.debtPayoff,
+                type: 'currency',
+              },
+              {
                 label: 'Net cash change this year',
                 value: property.cashFlow,
                 type: 'currency',
@@ -19191,6 +20382,66 @@ function PlanOptimizationControls({
     ? readyResult.alternatives
     : [];
 
+  const formatScheduleDetail = (change) => {
+    const purchaseDetail =
+      change.purchaseYear === change.basePurchaseYear
+        ? `Purchase year ${change.purchaseYear}`
+        : `Purchase year ${change.basePurchaseYear} → ${change.purchaseYear}`;
+    let exitDetail;
+    if (change.neverExit) {
+      exitDetail = 'Hold indefinitely';
+    } else if (change.baseNeverExit) {
+      exitDetail = `Exit in year ${change.exitYear}`;
+    } else if (change.exitYear === change.baseExitYear) {
+      exitDetail = `Exit in year ${change.exitYear}`;
+    } else {
+      exitDetail = `Exit year ${change.baseExitYear} → ${change.exitYear}`;
+    }
+    return `${purchaseDetail}; ${exitDetail}`;
+  };
+
+  const buildScheduleHeadline = (schedule) => {
+    if (!Array.isArray(schedule) || schedule.length === 0) {
+      return 'Matches current schedule.';
+    }
+    if (schedule.length === 1) {
+      const change = schedule[0];
+      const purchaseSegment =
+        change.purchaseYear === change.basePurchaseYear
+          ? `Purchase in year ${change.purchaseYear}`
+          : `Purchase year ${change.basePurchaseYear} → ${change.purchaseYear}`;
+      let exitSegment;
+      if (change.neverExit) {
+        exitSegment = 'Hold indefinitely';
+      } else if (change.baseNeverExit) {
+        exitSegment = `Exit in year ${change.exitYear}`;
+      } else if (change.exitYear === change.baseExitYear) {
+        exitSegment = `Hold for ${change.exitYear} year${change.exitYear === 1 ? '' : 's'}`;
+      } else {
+        exitSegment = `Exit year ${change.baseExitYear} → ${change.exitYear}`;
+      }
+      return `${purchaseSegment} · ${exitSegment}`;
+    }
+    return `${schedule.length} properties adjusted.`;
+  };
+
+  const renderScheduleDetails = (schedule) => {
+    if (!Array.isArray(schedule) || schedule.length <= 1) {
+      return null;
+    }
+    return (
+      <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+        {schedule.map((change) => (
+          <div
+            key={`${change.id}-${change.purchaseYear}-${change.exitYear}-${change.neverExit ? 'never' : 'exit'}`}
+          >
+            <span className="font-semibold text-slate-700">{change.label}</span>: {formatScheduleDetail(change)}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderStatusMessage = () => {
     if (running) {
       return (
@@ -19221,9 +20472,9 @@ function PlanOptimizationControls({
                   {bestRecommendation.label}
                 </div>
                 <div className="text-[11px] text-slate-500">
-                  Purchase in year {bestRecommendation.purchaseYear} · hold for {bestRecommendation.exitYear} year
-                  {bestRecommendation.exitYear === 1 ? '' : 's'}
+                  {buildScheduleHeadline(bestRecommendation.schedule)}
                 </div>
+                {renderScheduleDetails(bestRecommendation.schedule)}
               </div>
               <div className="text-right text-[11px] text-slate-500">
                 <div className="text-sm font-semibold text-slate-700">
@@ -19254,16 +20505,16 @@ function PlanOptimizationControls({
               </div>
               {alternatives.map((alternative) => (
                 <div
-                  key={`${alternative.id}-${alternative.purchaseYear}-${alternative.exitYear}`}
+                  key={alternative.id}
                   className="rounded-lg border border-slate-200 bg-white p-3"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-semibold text-slate-800">{alternative.label}</div>
                       <div className="text-[11px] text-slate-500">
-                        Purchase in year {alternative.purchaseYear} · hold for {alternative.exitYear} year
-                        {alternative.exitYear === 1 ? '' : 's'}
+                        {buildScheduleHeadline(alternative.schedule)}
                       </div>
+                      {renderScheduleDetails(alternative.schedule)}
                     </div>
                     <div className="text-right text-[11px] text-slate-500">
                       <div className="text-sm font-semibold text-slate-700">{alternative.formattedValue}</div>
@@ -19782,11 +21033,18 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
             <input
               type="number"
               min={0}
-              max={PLAN_MAX_PURCHASE_YEAR}
               value={exitYearValue}
               onChange={(event) => onExitYearChange?.(event.target.value)}
               className="rounded-lg border border-slate-300 px-3 py-1.5"
             />
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+            <input
+              type="checkbox"
+              checked={Boolean(inputs.neverExit)}
+              onChange={(event) => handleCheckboxChange('neverExit', event.target.checked)}
+            />
+            <span>Never exit this property</span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="font-medium text-slate-600">Selling costs %</span>
