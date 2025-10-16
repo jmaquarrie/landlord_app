@@ -264,6 +264,18 @@ const SERIES_LABELS = {
   netWealthBeforeTax: 'Net wealth (before tax)',
 };
 
+const CASHFLOW_SERIES_OPTIONS = [
+  { key: 'rentIncome', label: 'Rent income' },
+  { key: 'operatingExpenses', label: 'Operating expenses' },
+  { key: 'mortgagePayments', label: 'Mortgage payments' },
+  { key: 'netCashflow', label: 'After-tax cash flow' },
+];
+
+const ROI_HEATMAP_METRIC_OPTIONS = [
+  { key: 'irr', label: 'IRR' },
+  { key: 'roi', label: 'Total ROI' },
+];
+
 const AI_RESPONSE_FORMAT_INSTRUCTIONS =
   'Respond with 2-4 concise, conclusion-level bullet points. Use a single leading "*" for each bullet and wrap any phrases that should be bold in *asterisks*. Focus on the most important implications for the investor.';
 
@@ -7215,6 +7227,9 @@ export default function App() {
   const [showChartModal, setShowChartModal] = useState(false);
   const [showRatesModal, setShowRatesModal] = useState(false);
   const [showNpvModal, setShowNpvModal] = useState(false);
+  const [showEquityModal, setShowEquityModal] = useState(false);
+  const [showCashflowModal, setShowCashflowModal] = useState(false);
+  const [showRoiModal, setShowRoiModal] = useState(false);
   const [chartRange, setChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
   const [chartRangeTouched, setChartRangeTouched] = useState(false);
   const [rateChartRange, setRateChartRange] = useState({ start: 0, end: DEFAULT_INPUTS.exitYear });
@@ -7316,6 +7331,9 @@ export default function App() {
   useOverlayEscape(planChartExpanded, closePlanChartOverlay);
   useOverlayEscape(showOptimizationModal, () => setShowOptimizationModal(false));
   useOverlayEscape(showPlanModal, () => setShowPlanModal(false));
+  useOverlayEscape(showEquityModal, () => setShowEquityModal(false));
+  useOverlayEscape(showCashflowModal, () => setShowCashflowModal(false));
+  useOverlayEscape(showRoiModal, () => setShowRoiModal(false));
 
   useEffect(() => {
     if (!planChartExpanded) {
@@ -9540,83 +9558,115 @@ export default function App() {
     }
     const startYear = Math.max(0, Math.min(chartRange.start, chartRange.end));
     const endYear = Math.max(startYear, chartRange.end);
-    return data
-      .filter((point) => {
-        const year = Number(point?.year);
-        return Number.isFinite(year) ? year >= startYear && year <= endYear : false;
-      })
-      .map((point) => {
-        const cashflowAfterTax = toFiniteNumber(
-          point?.cashflowAfterTax ??
-            point?.meta?.cumulativeCashAfterTaxKeptRealized ??
-            point?.cashflow ??
-            point?.meta?.cumulativeCashAfterTaxNetRealized ??
-            point?.meta?.cumulativeCashAfterTaxNet ??
-            point?.meta?.cumulativeCashAfterTax ??
-            0
-        );
-        const indexFundValue = toFiniteNumber(
-          point?.indexFund ??
-            point?.meta?.indexFundValue ??
-            point?.meta?.totals?.indexFund ??
-            0
-        );
-        const investedRent = toFiniteNumber(
-          point?.investedRent ??
-            point?.reinvestFund ??
-            point?.reinvestedCash ??
-            point?.reinvestedCashAfterTax ??
-            point?.meta?.reinvestedCash ??
-            point?.meta?.reinvestedCashAfterTax ??
-            point?.meta?.cumulativeReinvestedCash ??
-            point?.meta?.cumulativeReinvestedCashAfterTax ??
-            point?.meta?.wealth?.reinvestedCash ??
-            point?.meta?.wealth?.reinvestedCashAfterTax ??
-            point?.meta?.totals?.reinvestedCash ??
-            point?.meta?.totals?.reinvestedCashAfterTax ??
-            point?.meta?.totals?.reinvestFundValue ??
-            point?.meta?.investedRentValue ??
-            point?.meta?.reinvestFundValue ??
-            0
-        );
-        const propertyNetAfterTaxValue = toFiniteNumber(
-          point?.propertyNetAfterTax ??
-            point?.meta?.propertyNetAfterTax ??
-            point?.meta?.totals?.propertyNetAfterTax ??
-            point?.meta?.wealth?.propertyNetAfterTax ??
-            0
-        );
-        const netWealthAfterTaxBase = toFiniteNumber(
-          point?.netWealthAfterTax ??
-            point?.meta?.netWealthAfterTax ??
-            point?.meta?.combinedNetWealthAfterTax ??
-            point?.meta?.totals?.combinedNetWealth ??
-            point?.meta?.totals?.combinedNetWealthAfterTax ??
-            point?.meta?.totals?.netWealthAfterTax ??
-            point?.meta?.wealth?.combinedNetWealth ??
-            point?.meta?.wealth?.netWealthAfterTax ??
-            propertyNetAfterTaxValue + indexFundValue,
-          propertyNetAfterTaxValue + indexFundValue
-        );
-        const netWealthAfterTax = netWealthAfterTaxBase + Math.max(0, investedRent);
-        const cashInvested = toFiniteNumber(
-          point?.cashInvested ??
-            point?.meta?.cashInvested ??
-            point?.meta?.totals?.cashInvested ??
-            point?.meta?.netInitialOutlay ??
-            point?.meta?.initialOutlay ??
-            0
-        );
-        return {
-          ...point,
-          cashflowAfterTax,
-          netWealthAfterTax,
-          indexFund: indexFundValue,
-          indexFundValue,
-          investedRent,
-          cashInvested,
-        };
+    const result = [];
+    let lastCashflow = 0;
+    let lastInvestedRent = 0;
+    let lastNetWealth = 0;
+    let lastCashInvested = 0;
+    data.forEach((point) => {
+      const year = Number(point?.year);
+      if (!Number.isFinite(year) || year < startYear || year > endYear) {
+        return;
+      }
+      const cashflowAfterTaxRaw = toFiniteNumber(
+        point?.cashflowAfterTax ??
+          point?.meta?.cumulativeCashAfterTaxKeptRealized ??
+          point?.cashflow ??
+          point?.meta?.cumulativeCashAfterTaxNetRealized ??
+          point?.meta?.cumulativeCashAfterTaxNet ??
+          point?.meta?.cumulativeCashAfterTax ??
+          lastCashflow,
+        lastCashflow
+      );
+      const cashflowAfterTax = Number.isFinite(cashflowAfterTaxRaw)
+        ? cashflowAfterTaxRaw
+        : lastCashflow;
+
+      const indexFundValue = toFiniteNumber(
+        point?.indexFund ??
+          point?.meta?.indexFundValue ??
+          point?.meta?.totals?.indexFund ??
+          0,
+        0
+      );
+
+      const investedRentRaw = toFiniteNumber(
+        point?.investedRent ??
+          point?.reinvestFund ??
+          point?.reinvestedCash ??
+          point?.reinvestedCashAfterTax ??
+          point?.meta?.reinvestedCash ??
+          point?.meta?.reinvestedCashAfterTax ??
+          point?.meta?.cumulativeReinvestedCash ??
+          point?.meta?.cumulativeReinvestedCashAfterTax ??
+          point?.meta?.wealth?.reinvestedCash ??
+          point?.meta?.wealth?.reinvestedCashAfterTax ??
+          point?.meta?.totals?.reinvestedCash ??
+          point?.meta?.totals?.reinvestedCashAfterTax ??
+          point?.meta?.totals?.reinvestFundValue ??
+          point?.meta?.investedRentValue ??
+          point?.meta?.reinvestFundValue ??
+          lastInvestedRent,
+        lastInvestedRent
+      );
+      const investedRent = Number.isFinite(investedRentRaw) ? investedRentRaw : lastInvestedRent;
+
+      const propertyNetAfterTaxValue = toFiniteNumber(
+        point?.propertyNetAfterTax ??
+          point?.meta?.propertyNetAfterTax ??
+          point?.meta?.totals?.propertyNetAfterTax ??
+          point?.meta?.wealth?.propertyNetAfterTax ??
+          0,
+        0
+      );
+
+      const netWealthAfterTaxBase = toFiniteNumber(
+        point?.netWealthAfterTax ??
+          point?.meta?.netWealthAfterTax ??
+          point?.meta?.combinedNetWealthAfterTax ??
+          point?.meta?.totals?.combinedNetWealth ??
+          point?.meta?.totals?.combinedNetWealthAfterTax ??
+          point?.meta?.totals?.netWealthAfterTax ??
+          point?.meta?.wealth?.combinedNetWealth ??
+          point?.meta?.wealth?.netWealthAfterTax ??
+          propertyNetAfterTaxValue + indexFundValue,
+        propertyNetAfterTaxValue + indexFundValue
+      );
+      const netWealthAfterTaxRaw = netWealthAfterTaxBase + Math.max(0, investedRent);
+      const netWealthAfterTax = Number.isFinite(netWealthAfterTaxRaw)
+        ? netWealthAfterTaxRaw
+        : lastNetWealth;
+
+      const cashInvestedCandidate = toFiniteNumber(
+        point?.cashInvested ??
+          point?.meta?.cashInvested ??
+          point?.meta?.totals?.cashInvested ??
+          point?.meta?.netInitialOutlay ??
+          point?.meta?.initialOutlay ??
+          lastCashInvested,
+        lastCashInvested
+      );
+      const cashInvested = Number.isFinite(cashInvestedCandidate)
+        ? Math.abs(cashInvestedCandidate)
+        : lastCashInvested;
+
+      lastCashflow = cashflowAfterTax;
+      lastInvestedRent = investedRent;
+      lastNetWealth = netWealthAfterTax;
+      lastCashInvested = cashInvested;
+
+      result.push({
+        ...point,
+        cashflowAfterTax,
+        netWealthAfterTax,
+        indexFund: indexFundValue,
+        indexFundValue,
+        investedRent,
+        cashInvested,
       });
+    });
+
+    return result;
   }, [equity.chart, chartRange]);
 
   const rateChartData = useMemo(() => {
@@ -15490,6 +15540,39 @@ export default function App() {
                           }
                         )
                       : null}
+                    {showEquityModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowEquityModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close equity growth analysis"
+                      >
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowEquityModal(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand equity growth analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
                 </div>
                 {!collapsedSections.equityGrowth ? renderChartSummary('equityGrowth') : null}
@@ -15587,6 +15670,39 @@ export default function App() {
                           }
                         )
                       : null}
+                    {showCashflowModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowCashflowModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close annual cash flow analysis"
+                      >
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowCashflowModal(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand annual cash flow analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
                 </div>
                 {!collapsedSections.cashflowBars ? renderChartSummary('cashflowBars') : null}
@@ -16192,10 +16308,43 @@ export default function App() {
                           }
                         )
                       : null}
+                    {showRoiModal ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowRoiModal(false)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close ROI heatmap analysis"
+                      >
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowRoiModal(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand ROI heatmap analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
                     {!collapsedSections.roiHeatmap ? (
                       <>
                         <span className="font-semibold text-slate-500">Metric</span>
-                        {[{ key: 'irr', label: 'IRR' }, { key: 'roi', label: 'Total ROI' }].map((option) => (
+                        {ROI_HEATMAP_METRIC_OPTIONS.map((option) => (
                           <button
                             key={option.key}
                             type="button"
@@ -16527,6 +16676,41 @@ export default function App() {
 
         <section className="mt-6">
           <div className="p-3">
+            <h3 className="mb-2 text-sm font-semibold text-slate-800">Review &amp; Optimise</h3>
+            <p className="text-xs text-slate-600">
+              Compare performance across scenarios or let the optimiser suggest improved purchase and exit timings.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowTableModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Comparison
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowOptimizationModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-500"
+              >
+                Optimise this investment
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenPlanModal}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Optimise Multiple Investments
+              </button>
+            </div>
+            {planNotice ? (
+              <p className="mt-2 text-xs font-semibold text-emerald-600">{planNotice}</p>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="mt-6">
+          <div className="p-3">
             <h3 className="mb-2 text-sm font-semibold text-slate-800">Scenario history</h3>
             <p className="text-xs text-slate-600">
               Save your current inputs and reload any previous scenario to compare different deals quickly.
@@ -16661,41 +16845,6 @@ export default function App() {
             ) : null}
           </div>
 
-        </section>
-
-        <section className="mt-6">
-          <div className="p-3">
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">Review &amp; Optimise</h3>
-            <p className="text-xs text-slate-600">
-              Compare performance across scenarios or let the optimiser suggest improved purchase and exit timings.
-            </p>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setShowTableModal(true)}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Comparison
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowOptimizationModal(true)}
-                className="no-print inline-flex items-center gap-1 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-500"
-              >
-                Optimise this investment
-              </button>
-              <button
-                type="button"
-                onClick={handleOpenPlanModal}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Optimise Multiple Investments
-              </button>
-            </div>
-            {planNotice ? (
-              <p className="mt-2 text-xs font-semibold text-emerald-600">{planNotice}</p>
-            ) : null}
-          </div>
         </section>
 
         {showListingPreview ? (
@@ -17186,6 +17335,354 @@ export default function App() {
                 </div>
               </div>
             </aside>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showEquityModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Equity growth explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowEquityModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <div className="flex flex-1 flex-col overflow-hidden p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <SectionTitle
+                  label="Equity growth over time"
+                  tooltip={SECTION_DESCRIPTIONS.equityGrowth}
+                  className="text-base font-semibold text-slate-700"
+                  knowledgeKey="equityGrowth"
+                />
+                <div className="text-[11px] text-slate-500">Years 0 – {maxChartYear}</div>
+              </div>
+              {(() => {
+                const summary = renderChartSummary('equityGrowth');
+                return summary ? <div className="mt-3">{summary}</div> : null;
+              })()}
+              <div className="mt-4 flex-1">
+                {equityGrowthChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={equityGrowthChartData} margin={{ top: 10, right: 32, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="year"
+                        tickFormatter={(value) => `Y${value}`}
+                        tick={{ fontSize: 11, fill: '#475569' }}
+                      />
+                      <YAxis
+                        tickFormatter={(value) => currencyNoPence(value)}
+                        tick={{ fontSize: 11, fill: '#475569' }}
+                        width={110}
+                      />
+                      <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                      <Legend />
+                      <Area
+                        type="monotone"
+                        dataKey="loanBalance"
+                        name="Lender share"
+                        stackId="equity"
+                        stroke="#94a3b8"
+                        fill="rgba(148,163,184,0.4)"
+                        isAnimationActive={false}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="ownerEquity"
+                        name="Your equity"
+                        stackId="equity"
+                        stroke="#10b981"
+                        fill="rgba(16,185,129,0.35)"
+                        isAnimationActive={false}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-sm text-slate-500">
+                    Equity projections will appear once an exit year and loan details are provided.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showCashflowModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">Annual cash flow explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowCashflowModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+            <aside className="w-full border-b border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-b-0 md:border-r">
+              <div className="h-full overflow-y-auto p-5 space-y-6">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Series visibility</h3>
+                  <p className="mt-1 text-[11px] text-slate-500">Choose which inflows and outflows to display.</p>
+                  <div className="mt-3 space-y-2">
+                    {CASHFLOW_SERIES_OPTIONS.map((option) => (
+                      <label
+                        key={`cashflow-series-${option.key}`}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-transparent px-2 py-1 hover:border-slate-200"
+                      >
+                        <span className="text-slate-700">{option.label}</span>
+                        <input
+                          type="checkbox"
+                          checked={cashflowSeriesActive[option.key] !== false}
+                          onChange={(event) =>
+                            setCashflowSeriesActive((prev) => ({
+                              ...prev,
+                              [option.key]: event.target.checked,
+                            }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="text-sm font-semibold text-slate-700">Notes</div>
+                  <p className="text-[11px] text-slate-500">
+                    Rent inflows include vacancy adjustments; expenses combine operating costs and debt service.
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    After-tax cash flow reflects the investor share after income tax assumptions.
+                  </p>
+                </div>
+              </div>
+            </aside>
+            <div className="flex-1 overflow-hidden p-5">
+              <div className="flex h-full flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionTitle
+                    label="Annual cash flow"
+                    tooltip={SECTION_DESCRIPTIONS.cashflowBars}
+                    className="text-base font-semibold text-slate-700"
+                    knowledgeKey="cashflowBars"
+                  />
+                  <div className="text-[11px] text-slate-500">Years 0 – {maxChartYear}</div>
+                </div>
+                {(() => {
+                  const summary = renderChartSummary('cashflowBars');
+                  return summary ? <div className="mt-3">{summary}</div> : null;
+                })()}
+                <div className="mt-4 flex-1">
+                  {annualCashflowChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart data={annualCashflowChartData} margin={{ top: 10, right: 32, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="year"
+                          tickFormatter={(value) => `Y${value}`}
+                          tick={{ fontSize: 11, fill: '#475569' }}
+                        />
+                        <YAxis
+                          tickFormatter={(value) => currencyNoPence(value)}
+                          tick={{ fontSize: 11, fill: '#475569' }}
+                          width={110}
+                        />
+                        <Tooltip formatter={(value) => currency(value)} labelFormatter={(label) => `Year ${label}`} />
+                        <Legend
+                          content={(props) => (
+                            <ChartLegend
+                              {...props}
+                              activeSeries={cashflowSeriesActive}
+                              onToggle={toggleCashflowSeries}
+                            />
+                          )}
+                        />
+                        <ReferenceLine y={0} stroke="#cbd5f5" strokeDasharray="4 4" />
+                        <Bar
+                          dataKey="rentIncome"
+                          name="Rent income"
+                          fill={CASHFLOW_BAR_COLORS.rentIncome}
+                          isAnimationActive={false}
+                          hide={!cashflowSeriesActive.rentIncome}
+                        />
+                        <Bar
+                          dataKey="operatingExpenses"
+                          name="Operating expenses"
+                          fill={CASHFLOW_BAR_COLORS.operatingExpenses}
+                          isAnimationActive={false}
+                          hide={!cashflowSeriesActive.operatingExpenses}
+                        />
+                        <Bar
+                          dataKey="mortgagePayments"
+                          name="Mortgage payments"
+                          fill={CASHFLOW_BAR_COLORS.mortgagePayments}
+                          isAnimationActive={false}
+                          hide={!cashflowSeriesActive.mortgagePayments}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="netCashflow"
+                          name="After-tax cash flow"
+                          stroke={CASHFLOW_BAR_COLORS.netCashflow}
+                          fill="rgba(16,185,129,0.25)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                          hide={!cashflowSeriesActive.netCashflow}
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-sm text-slate-500">
+                      Not enough annual cash flow data to display.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {showRoiModal && (
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+            <h2 className="text-base font-semibold text-slate-800">ROI vs rental yield explorer</h2>
+            <button
+              type="button"
+              onClick={() => setShowRoiModal(false)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+            <aside className="w-full border-b border-slate-200 bg-slate-50 text-xs text-slate-600 md:w-80 md:border-b-0 md:border-r">
+              <div className="h-full overflow-y-auto p-5 space-y-6">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700">Metric</h3>
+                  <p className="mt-1 text-[11px] text-slate-500">Switch between IRR and total ROI outcomes.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {ROI_HEATMAP_METRIC_OPTIONS.map((option) => (
+                      <button
+                        key={`modal-roi-metric-${option.key}`}
+                        type="button"
+                        onClick={() => setRoiHeatmapMetric(option.key)}
+                        className={`rounded-full px-3 py-1 font-semibold transition ${
+                          roiHeatmapMetric === option.key
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                        aria-pressed={roiHeatmapMetric === option.key}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="text-sm font-semibold text-slate-700">Baseline scenario</div>
+                  <p className="text-[11px] text-slate-500">
+                    Current rent yield: {formatPercent(baselineHeatmapYield)}.
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Capital growth assumption: {formatPercent(appreciationRate)}.
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Selling costs applied: {formatPercent(sellingCostsRate)} of sale proceeds.
+                  </p>
+                </div>
+              </div>
+            </aside>
+            <div className="flex-1 overflow-hidden p-5">
+              <div className="flex h-full flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionTitle
+                    label="ROI vs rental yield heatmap"
+                    tooltip={SECTION_DESCRIPTIONS.roiHeatmap}
+                    className="text-base font-semibold text-slate-700"
+                    knowledgeKey="roiHeatmap"
+                  />
+                  <div className="text-[11px] text-slate-500">
+                    Yield and growth shifts shown in ±1% and ±2% steps around the baseline.
+                  </div>
+                </div>
+                {(() => {
+                  const summary = renderChartSummary('roiHeatmap');
+                  return summary ? <div className="mt-3">{summary}</div> : null;
+                })()}
+                <div className="mt-4 flex-1 overflow-auto">
+                  {roiHeatmapData.rows.length > 0 ? (
+                    <table className="min-w-full table-fixed border-separate border-spacing-2 text-[12px] text-slate-600">
+                      <thead>
+                        <tr>
+                          <th className="w-40 px-2 py-1 text-left font-semibold text-slate-500">Capital growth</th>
+                          {roiHeatmapYieldOptions.map((yieldRate, columnIndex) => (
+                            <th
+                              key={`modal-roi-yield-${columnIndex}`}
+                              className="px-2 py-1 text-center font-semibold text-slate-500"
+                            >
+                              {formatPercent(yieldRate)} rent yield
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {roiHeatmapData.rows.map((row) => {
+                          const range = roiHeatmapMetric === 'irr' ? roiHeatmapData.irrRange : roiHeatmapData.roiRange;
+                          const [minValue, maxValue] = range;
+                          return (
+                            <tr key={`modal-roi-row-${row.rowIndex}`}>
+                              <th className="px-2 py-1 text-left font-semibold text-slate-500">
+                                {formatPercent(row.growthRate)} capital growth
+                              </th>
+                              {row.cells.map((cell) => {
+                                const value = roiHeatmapMetric === 'irr' ? cell.irr : cell.roi;
+                                const background = getHeatmapColor(value, minValue, maxValue);
+                                return (
+                                  <td
+                                    key={`modal-roi-cell-${row.rowIndex}-${cell.columnIndex}`}
+                                    className="px-2 py-1"
+                                  >
+                                    <div
+                                      className="rounded-lg px-3 py-3 text-center text-xs font-semibold text-slate-800"
+                                      style={{ backgroundColor: background }}
+                                      title={`If rent yield is ${formatPercent(cell.yieldRate)} and capital growth is ${formatPercent(
+                                        row.growthRate
+                                      )}, expect ${formatPercent(value)} ${
+                                        roiHeatmapMetric === 'irr' ? 'IRR' : 'total ROI'
+                                      } (IRR ${formatPercent(cell.irr)}, total ROI ${formatPercent(cell.roi)}).`}
+                                    >
+                                      {formatPercent(value)}
+                                    </div>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 px-4 text-center text-sm text-slate-500">
+                      Adjust the purchase price and rent assumptions to generate heatmap results.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
