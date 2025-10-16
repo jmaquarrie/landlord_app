@@ -232,9 +232,10 @@ const SERIES_COLORS = {
 const SERIES_LABELS = {
   indexFund: 'Index fund',
   cashflow: 'Cashflow',
+  cashflowAfterTax: 'Cashflow',
   propertyValue: 'Property value',
   propertyGross: 'Property gross',
-  propertyNet: 'Net wealth',
+  propertyNet: 'Property net',
   propertyNetAfterTax: 'Net wealth (after tax)',
   combinedNetWealth: 'Net wealth (after tax)',
   combinedNetWealthBeforeTax: 'Net wealth (before tax)',
@@ -259,7 +260,6 @@ const SERIES_LABELS = {
   cumulativeDiscounted: 'NPV to date',
   cumulativeUndiscounted: 'Cumulative cash (undiscounted)',
   discountFactor: 'Discount factor',
-  cashflowAfterTax: 'Cashflow (after tax)',
   netWealthAfterTax: 'Net wealth (after tax)',
   netWealthBeforeTax: 'Net wealth (before tax)',
 };
@@ -1348,19 +1348,18 @@ const summarizeCrimeData = (
 
 const INITIAL_CRIME_STATE = { status: 'idle', data: null, error: '' };
 
-const EXPANDED_SERIES_ORDER = [
+const WEALTH_SERIES_ORDER = [
   'indexFund',
-  'cashflow',
+  'cashflowAfterTax',
+  'cashInvested',
   'propertyValue',
   'propertyGross',
   'propertyNet',
-  'propertyNetAfterTax',
-  'investedRent',
-  'cashInvested',
-  'indexFund1_5x',
-  'indexFund2x',
-  'indexFund4x',
 ];
+
+const WEALTH_LINE_KEYS = new Set(['cashInvested', 'propertyGross', 'propertyNet']);
+
+const EXPANDED_SERIES_ORDER = WEALTH_SERIES_ORDER;
 
 const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrIfSold'];
 const RATE_STATIC_PERCENT_KEYS = ['irrAverage', 'irrHurdle'];
@@ -7193,15 +7192,11 @@ export default function App() {
   const [chartSummaries, setChartSummaries] = useState({});
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
-    indexFund1_5x: false,
-    indexFund2x: false,
-    indexFund4x: false,
     cashflowAfterTax: true,
-    propertyValue: true,
-    propertyNet: true,
-    propertyNetAfterTax: false,
-    investedRent: false,
     cashInvested: true,
+    propertyValue: true,
+    propertyGross: true,
+    propertyNet: true,
   });
   const [rateSeriesActive, setRateSeriesActive] = useState({
     capRate: false,
@@ -9587,6 +9582,8 @@ export default function App() {
     let lastInvestedRent = 0;
     let lastNetWealth = 0;
     let lastCashInvested = 0;
+    let lastPropertyValue = 0;
+    let lastPropertyGross = 0;
     data.forEach((point) => {
       const year = Number(point?.year);
       if (!Number.isFinite(year) || year < startYear || year > endYear) {
@@ -9613,6 +9610,26 @@ export default function App() {
           0,
         0
       );
+
+      const propertyValueRaw = toFiniteNumber(
+        point?.propertyValue ??
+          point?.meta?.propertyValue ??
+          point?.meta?.wealth?.propertyValue ??
+          point?.meta?.totals?.propertyValue ??
+          lastPropertyValue,
+        lastPropertyValue
+      );
+      const propertyValue = Number.isFinite(propertyValueRaw) ? propertyValueRaw : lastPropertyValue;
+
+      const propertyGrossRaw = toFiniteNumber(
+        point?.propertyGross ??
+          point?.meta?.propertyGross ??
+          point?.meta?.wealth?.propertyGross ??
+          point?.meta?.totals?.propertyGross ??
+          lastPropertyGross,
+        lastPropertyGross
+      );
+      const propertyGross = Number.isFinite(propertyGrossRaw) ? propertyGrossRaw : lastPropertyGross;
 
       const investedRentRaw = toFiniteNumber(
         point?.investedRent ??
@@ -9679,6 +9696,8 @@ export default function App() {
       lastInvestedRent = investedRent;
       lastNetWealth = netWealthAfterTax;
       lastCashInvested = cashInvested;
+      lastPropertyValue = propertyValue;
+      lastPropertyGross = propertyGross;
 
       result.push({
         ...point,
@@ -9688,6 +9707,8 @@ export default function App() {
         indexFundValue,
         investedRent,
         cashInvested,
+        propertyValue,
+        propertyGross,
       });
     });
 
@@ -15026,18 +15047,20 @@ export default function App() {
                         {
                           keys: [
                             'year',
-                            'propertyValue',
-                            'cashflowAfterTax',
-                            'propertyNet',
-                            'cashInvested',
                             'indexFund',
+                            'cashflowAfterTax',
+                            'cashInvested',
+                            'propertyValue',
+                            'propertyGross',
+                            'propertyNet',
                           ],
                           numericKeys: [
-                            'propertyValue',
-                            'cashflowAfterTax',
-                            'propertyNet',
-                            'cashInvested',
                             'indexFund',
+                            'cashflowAfterTax',
+                            'cashInvested',
+                            'propertyValue',
+                            'propertyGross',
+                            'propertyNet',
                           ],
                           description:
                             'Property wealth, invested cash, and comparative index fund growth across the investment horizon.',
@@ -15105,21 +15128,12 @@ export default function App() {
                         <Tooltip formatter={(v) => currency(v)} labelFormatter={(l) => `Year ${l}`} />
                         <Legend
                           content={(props) => {
-                            const extraEntries = [
-                              {
-                                dataKey: 'propertyNet',
-                                value: SERIES_LABELS.propertyNet ?? 'Net wealth',
-                                color: SERIES_COLORS.propertyNet,
-                                type: 'line',
-                              },
-                              {
-                                dataKey: 'cashInvested',
-                                value: SERIES_LABELS.cashInvested ?? 'Cash invested',
-                                color: SERIES_COLORS.cashInvested,
-                                type: 'line',
-                              },
-                            ];
-                            const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                            const legendPayload = WEALTH_SERIES_ORDER.map((key) => ({
+                              dataKey: key,
+                              value: SERIES_LABELS[key] ?? key,
+                              color: SERIES_COLORS[key] ?? '#64748b',
+                              type: WEALTH_LINE_KEYS.has(key) ? 'line' : 'square',
+                            }));
                             return (
                               <ChartLegend
                                 {...props}
@@ -15145,7 +15159,7 @@ export default function App() {
                           yAxisId="currency"
                           type="monotone"
                           dataKey="cashflowAfterTax"
-                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
+                          name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow'}
                           stroke={SERIES_COLORS.cashflowAfterTax}
                           fill="rgba(16,185,129,0.18)"
                           strokeWidth={2}
@@ -15165,18 +15179,6 @@ export default function App() {
                         />
                         <RechartsLine
                           type="monotone"
-                          dataKey="propertyNet"
-                          name={SERIES_LABELS.propertyNet ?? 'Net wealth'}
-                          stroke={SERIES_COLORS.propertyNet}
-                          strokeWidth={2}
-                          dot={false}
-                          connectNulls
-                          yAxisId="currency"
-                          isAnimationActive={false}
-                          hide={!activeSeries.propertyNet}
-                        />
-                        <RechartsLine
-                          type="monotone"
                           dataKey="cashInvested"
                           name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
                           stroke={SERIES_COLORS.cashInvested}
@@ -15186,6 +15188,30 @@ export default function App() {
                           yAxisId="currency"
                           isAnimationActive={false}
                           hide={!activeSeries.cashInvested}
+                        />
+                        <RechartsLine
+                          type="monotone"
+                          dataKey="propertyGross"
+                          name={SERIES_LABELS.propertyGross ?? 'Property gross'}
+                          stroke={SERIES_COLORS.propertyGross}
+                          strokeWidth={2}
+                          dot={false}
+                          connectNulls
+                          yAxisId="currency"
+                          isAnimationActive={false}
+                          hide={!activeSeries.propertyGross}
+                        />
+                        <RechartsLine
+                          type="monotone"
+                          dataKey="propertyNet"
+                          name={SERIES_LABELS.propertyNet ?? 'Property net'}
+                          stroke={SERIES_COLORS.propertyNet}
+                          strokeWidth={2}
+                          dot={false}
+                          connectNulls
+                          yAxisId="currency"
+                          isAnimationActive={false}
+                          hide={!activeSeries.propertyNet}
                         />
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -17006,33 +17032,6 @@ export default function App() {
                     Reset range
                   </button>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-600">
-                  {[
-                    { key: 'indexFund1_5x', label: 'Index fund 1.5×' },
-                    { key: 'indexFund2x', label: 'Index fund 2×' },
-                    { key: 'indexFund4x', label: 'Index fund 4×' },
-                  ].map((option) => {
-                    const checked = activeSeries[option.key] !== false;
-                    return (
-                      <label
-                        key={option.key}
-                        className="flex items-center gap-2"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) =>
-                            setActiveSeries((prev) => ({
-                              ...prev,
-                              [option.key]: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
                 <div className="mt-4 flex-1">
                   <div className="flex h-full flex-col">
                     <div
@@ -17057,28 +17056,18 @@ export default function App() {
                           />
                           <Legend
                             content={(props) => {
-                              const extraEntries = [
-                                {
-                                  dataKey: 'propertyNet',
-                                  value: SERIES_LABELS.propertyNet ?? 'Net wealth',
-                                  color: SERIES_COLORS.propertyNet,
-                                  type: 'line',
-                                },
-                                {
-                                  dataKey: 'cashInvested',
-                                  value: SERIES_LABELS.cashInvested ?? 'Cash invested',
-                                  color: SERIES_COLORS.cashInvested,
-                                  type: 'line',
-                                },
-                              ];
-                              const legendPayload = mergeLegendPayload(props.payload, extraEntries);
+                              const legendPayload = WEALTH_SERIES_ORDER.map((key) => ({
+                                dataKey: key,
+                                value: SERIES_LABELS[key] ?? key,
+                                color: SERIES_COLORS[key] ?? '#64748b',
+                                type: WEALTH_LINE_KEYS.has(key) ? 'line' : 'square',
+                              }));
                               return (
                                 <ChartLegend
                                   {...props}
                                   payload={legendPayload}
                                   activeSeries={activeSeries}
                                   onToggle={toggleSeries}
-                                  excludedKeys={['indexFund1_5x', 'indexFund2x', 'indexFund4x']}
                                 />
                               );
                             }}
@@ -17123,7 +17112,7 @@ export default function App() {
                             yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
-                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
+                            name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
@@ -17143,18 +17132,6 @@ export default function App() {
                           />
                           <RechartsLine
                             type="monotone"
-                            dataKey="propertyNet"
-                            name={SERIES_LABELS.propertyNet ?? 'Net wealth'}
-                            stroke={SERIES_COLORS.propertyNet}
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls
-                            yAxisId="currency"
-                            isAnimationActive={false}
-                            hide={!activeSeries.propertyNet}
-                          />
-                          <RechartsLine
-                            type="monotone"
                             dataKey="cashInvested"
                             name={SERIES_LABELS.cashInvested ?? 'Cash invested'}
                             stroke={SERIES_COLORS.cashInvested}
@@ -17165,41 +17142,29 @@ export default function App() {
                             isAnimationActive={false}
                             hide={!activeSeries.cashInvested}
                           />
-                          <Area
-                            yAxisId="currency"
+                          <RechartsLine
                             type="monotone"
-                            dataKey="indexFund1_5x"
-                            name="Index fund 1.5×"
-                            stroke="#fb7185"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="6 3"
+                            dataKey="propertyGross"
+                            name={SERIES_LABELS.propertyGross ?? 'Property gross'}
+                            stroke={SERIES_COLORS.propertyGross}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                            yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.indexFund1_5x}
+                            hide={!activeSeries.propertyGross}
                           />
-                          <Area
-                            yAxisId="currency"
+                          <RechartsLine
                             type="monotone"
-                            dataKey="indexFund2x"
-                            name="Index fund 2×"
-                            stroke="#ec4899"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="4 2"
-                            isAnimationActive={false}
-                            hide={!activeSeries.indexFund2x}
-                          />
-                          <Area
+                            dataKey="propertyNet"
+                            name={SERIES_LABELS.propertyNet ?? 'Property net'}
+                            stroke={SERIES_COLORS.propertyNet}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
                             yAxisId="currency"
-                            type="monotone"
-                            dataKey="indexFund4x"
-                            name="Index fund 4×"
-                            stroke="#c026d3"
-                            fillOpacity={0}
-                            strokeWidth={1.5}
-                            strokeDasharray="2 2"
                             isAnimationActive={false}
-                            hide={!activeSeries.indexFund4x}
+                            hide={!activeSeries.propertyNet}
                           />
                         </ComposedChart>
                       </ResponsiveContainer>
