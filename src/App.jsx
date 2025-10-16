@@ -212,7 +212,7 @@ const SERIES_COLORS = {
   capRate: '#1e293b',
   yieldRate: '#0369a1',
   cashOnCash: '#0f766e',
-  irrSeries: '#7c3aed',
+  irrIfSold: '#7c3aed',
   irrHurdle: '#f43f5e',
   npvToDate: '#0f172a',
   operatingCash: '#0ea5e9',
@@ -245,7 +245,7 @@ const SERIES_LABELS = {
   capRate: 'Cap rate',
   yieldRate: 'Yield rate',
   cashOnCash: 'Cash on cash',
-  irrSeries: 'IRR',
+  irrIfSold: 'IRR (if sold)',
   irrHurdle: 'IRR hurdle',
   npvToDate: 'Net present value',
   operatingCash: 'After-tax cash flow',
@@ -1243,7 +1243,7 @@ const EXPANDED_SERIES_ORDER = [
   'indexFund4x',
 ];
 
-const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries'];
+const RATE_PERCENT_KEYS = ['capRate', 'yieldRate', 'cashOnCash', 'irrIfSold'];
 const RATE_STATIC_PERCENT_KEYS = ['irrHurdle'];
 const RATE_PERCENT_SERIES = [...RATE_PERCENT_KEYS, ...RATE_STATIC_PERCENT_KEYS];
 const RATE_VALUE_KEYS = ['npvToDate'];
@@ -5648,7 +5648,7 @@ function calculateEquity(rawInputs) {
     capRate: null,
     yieldRate: null,
     cashOnCash: null,
-    irrSeries: null,
+    irrIfSold: null,
     netWealthAfterTax: initialNetEquity + indexVal,
     netWealthBeforeTax: initialNetEquity + indexVal,
     meta: {
@@ -5841,7 +5841,7 @@ function calculateEquity(rawInputs) {
       capRate: capRateYear,
       yieldRate: yieldRateYear,
       cashOnCash: cashOnCashYear,
-      irrSeries: irrToDate,
+      irrIfSold: irrToDate,
       irrHurdle: irrHurdleValue,
       npvToDate,
       netWealthAfterTax: netWealthAfterTaxValue,
@@ -5882,7 +5882,7 @@ function calculateEquity(rawInputs) {
         capRate: capRateYear,
         yieldRate: yieldRateYear,
         cashOnCash: cashOnCashYear,
-        irrSeries: irrToDate,
+        irrIfSold: irrToDate,
         neverExit: Boolean(inputs.neverExit),
         yearly: {
           gross,
@@ -5987,7 +5987,7 @@ function calculateEquity(rawInputs) {
       capRate: null,
       yieldRate: null,
       cashOnCash: null,
-      irrSeries: lastPoint.irrSeries ?? null,
+      irrIfSold: lastPoint.irrIfSold ?? null,
       irrHurdle: lastPoint.irrHurdle ?? irrHurdleValue,
       npvToDate: lastPoint.npvToDate ?? null,
       netWealthAfterTax: extensionNetWealthAfterTax,
@@ -7023,7 +7023,7 @@ export default function App() {
     capRate: false,
     yieldRate: false,
     cashOnCash: false,
-    irrSeries: true,
+    irrIfSold: true,
     irrHurdle: true,
     npvToDate: true,
   });
@@ -12418,7 +12418,7 @@ export default function App() {
               dataKey="irr"
               name="IRR"
               yAxisId="left"
-              stroke={SERIES_COLORS.irrSeries}
+              stroke={SERIES_COLORS.irrIfSold}
               strokeWidth={2}
               dot={{ r: 3 }}
               isAnimationActive={false}
@@ -14961,8 +14961,8 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2">
                     {renderSummariseButton('rateTrends', 'Return ratios over time', rateChartDataWithMovingAverage, {
-                      keys: ['year', 'capRate', 'yieldRate', 'cashOnCash', 'irrSeries', 'irrHurdle', 'npvToDate'],
-                      numericKeys: ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries', 'irrHurdle', 'npvToDate'],
+                      keys: ['year', 'capRate', 'yieldRate', 'cashOnCash', 'irrIfSold', 'irrHurdle', 'npvToDate'],
+                      numericKeys: ['capRate', 'yieldRate', 'cashOnCash', 'irrIfSold', 'irrHurdle', 'npvToDate'],
                       description:
                         'Year-by-year return ratios including cap rate, yield, cash-on-cash, IRR benchmarks, and NPV-to-date.',
                     })}
@@ -19684,7 +19684,7 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       breakdowns.push({ label: 'Cash-on-cash', value: point.cashOnCash || 0, type: 'percent' });
       break;
     }
-    case 'irrSeries': {
+    case 'irrIfSold': {
       const holdYears = Number(point?.year) || 0;
       const initialInvested = -(meta.initialOutlay || 0);
       breakdowns.push({ label: 'Initial cash invested', value: initialInvested });
@@ -19693,7 +19693,7 @@ function getOverlayBreakdown(key, { point, meta, propertyNetAfterTaxLabel, renta
       if (holdYears > 0) {
         breakdowns.push({ label: 'Years held', value: `${holdYears} ${holdYears === 1 ? 'year' : 'years'}`, type: 'text' });
       }
-      breakdowns.push({ label: 'IRR if sold this year', value: point.irrSeries || 0, type: 'percent' });
+      breakdowns.push({ label: 'IRR if sold this year', value: point.irrIfSold || 0, type: 'percent' });
       break;
     }
     default:
