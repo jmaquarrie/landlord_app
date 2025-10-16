@@ -287,6 +287,160 @@ const mergeLegendPayload = (payload, entries) => {
   return base;
 };
 
+const MAX_SUMMARY_POINTS = 60;
+
+const formatSummaryNumber = (value) => {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const abs = Math.abs(value);
+  const decimals = abs >= 1_000_000 ? 0 : abs >= 1_000 ? 1 : 2;
+  return value.toFixed(decimals);
+};
+
+const deriveSummaryKeys = (data, providedKeys) => {
+  if (Array.isArray(providedKeys) && providedKeys.length > 0) {
+    return providedKeys;
+  }
+  const keySet = new Set();
+  data.forEach((point) => {
+    if (!point || typeof point !== 'object') {
+      return;
+    }
+    Object.keys(point).forEach((key) => {
+      keySet.add(key);
+    });
+  });
+  return Array.from(keySet);
+};
+
+const formatPointForSummary = (point, keys) => {
+  if (!point || typeof point !== 'object') {
+    return null;
+  }
+  const formatted = {};
+  keys.forEach((key) => {
+    if (!(key in point)) {
+      return;
+    }
+    const value = point[key];
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const abs = Math.abs(value);
+      const decimals = abs >= 1_000_000 ? 0 : abs >= 1_000 ? 1 : 2;
+      formatted[key] = Number(value.toFixed(decimals));
+    } else if (value !== null && value !== undefined) {
+      formatted[key] = value;
+    }
+  });
+  return Object.keys(formatted).length > 0 ? formatted : null;
+};
+
+const sampleDataForSummary = (data, keys, limit = MAX_SUMMARY_POINTS) => {
+  if (!Array.isArray(data) || data.length === 0) {
+    return [];
+  }
+  const safeLimit = Math.max(1, limit);
+  const summaryKeys = deriveSummaryKeys(data, keys);
+  const step = Math.max(1, Math.floor(data.length / safeLimit));
+  const sampled = [];
+  for (let index = 0; index < data.length && sampled.length < safeLimit; index += step) {
+    const point = formatPointForSummary(data[index], summaryKeys);
+    if (point) {
+      sampled.push(point);
+    }
+  }
+  const lastPoint = formatPointForSummary(data[data.length - 1], summaryKeys);
+  if (lastPoint && sampled.length > 0) {
+    const lastSampled = sampled[sampled.length - 1];
+    const differs = summaryKeys.some((key) => lastSampled?.[key] !== lastPoint?.[key]);
+    if (differs && sampled.length < safeLimit) {
+      sampled.push(lastPoint);
+    }
+  } else if (lastPoint && sampled.length === 0) {
+    sampled.push(lastPoint);
+  }
+  return sampled;
+};
+
+const computeSummaryStats = (data, numericKeys) => {
+  if (!Array.isArray(data) || data.length === 0) {
+    return {};
+  }
+  const stats = {};
+  const keys = Array.isArray(numericKeys) && numericKeys.length > 0 ? numericKeys : deriveSummaryKeys(data);
+  keys.forEach((key) => {
+    let first = null;
+    let last = null;
+    let min = Infinity;
+    let max = -Infinity;
+    data.forEach((point) => {
+      const value = Number(point?.[key]);
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      if (first === null) {
+        first = value;
+      }
+      last = value;
+      if (value < min) {
+        min = value;
+      }
+      if (value > max) {
+        max = value;
+      }
+    });
+    if (first !== null) {
+      stats[key] = { first, last, min, max };
+    }
+  });
+  return stats;
+};
+
+const formatSummaryStats = (stats) => {
+  const entries = Object.entries(stats);
+  if (entries.length === 0) {
+    return '';
+  }
+  return entries
+    .map(([key, value]) => {
+      const first = formatSummaryNumber(value.first);
+      const last = formatSummaryNumber(value.last);
+      const min = formatSummaryNumber(value.min);
+      const max = formatSummaryNumber(value.max);
+      return `${key}: start=${first}, end=${last}, min=${min}, max=${max}`;
+    })
+    .join('\n');
+};
+
+const buildChartSummaryContext = (
+  chartLabel,
+  description,
+  keys,
+  sample,
+  stats,
+  totalCount
+) => {
+  const lines = [
+    `Chart: ${chartLabel}`,
+    description ? `Description: ${description}` : null,
+    Number.isFinite(totalCount) ? `Total data points: ${totalCount}` : null,
+    Array.isArray(keys) && keys.length > 0 ? `Fields included: ${keys.join(', ')}` : null,
+  ].filter(Boolean);
+  const statsText = formatSummaryStats(stats);
+  if (statsText) {
+    lines.push('', 'Field statistics:', statsText);
+  }
+  if (Array.isArray(sample) && sample.length > 0) {
+    lines.push('', `Sampled data (${sample.length}${
+      Number.isFinite(totalCount) ? ` of ${totalCount}` : ''
+    } points):`, JSON.stringify(sample, null, 2));
+  }
+  return lines.join('\n');
+};
+
 const CASHFLOW_BAR_COLORS = {
   rentIncome: '#0ea5e9',
   operatingExpenses: '#ef4444',
@@ -6853,6 +7007,7 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [chatStatus, setChatStatus] = useState('idle');
   const [chatError, setChatError] = useState('');
+  const [chartSummaries, setChartSummaries] = useState({});
   const [activeSeries, setActiveSeries] = useState({
     indexFund: true,
     indexFund1_5x: false,
@@ -9261,18 +9416,36 @@ export default function App() {
           point?.investedRent ??
             point?.reinvestFund ??
             point?.reinvestedCash ??
+            point?.reinvestedCashAfterTax ??
+            point?.meta?.reinvestedCash ??
+            point?.meta?.reinvestedCashAfterTax ??
+            point?.meta?.cumulativeReinvestedCash ??
+            point?.meta?.cumulativeReinvestedCashAfterTax ??
+            point?.meta?.wealth?.reinvestedCash ??
+            point?.meta?.wealth?.reinvestedCashAfterTax ??
             point?.meta?.totals?.reinvestedCash ??
+            point?.meta?.totals?.reinvestedCashAfterTax ??
+            point?.meta?.totals?.reinvestFundValue ??
             point?.meta?.investedRentValue ??
             point?.meta?.reinvestFundValue ??
             0
         );
         const propertyNetAfterTaxValue = toFiniteNumber(
-          point?.propertyNetAfterTax ?? point?.meta?.propertyNetAfterTax ?? 0
+          point?.propertyNetAfterTax ??
+            point?.meta?.propertyNetAfterTax ??
+            point?.meta?.totals?.propertyNetAfterTax ??
+            point?.meta?.wealth?.propertyNetAfterTax ??
+            0
         );
         const netWealthAfterTaxBase = toFiniteNumber(
           point?.netWealthAfterTax ??
             point?.meta?.netWealthAfterTax ??
+            point?.meta?.combinedNetWealthAfterTax ??
             point?.meta?.totals?.combinedNetWealth ??
+            point?.meta?.totals?.combinedNetWealthAfterTax ??
+            point?.meta?.totals?.netWealthAfterTax ??
+            point?.meta?.wealth?.combinedNetWealth ??
+            point?.meta?.wealth?.netWealthAfterTax ??
             propertyNetAfterTaxValue + indexFundValue,
           propertyNetAfterTaxValue + indexFundValue
         );
@@ -10486,6 +10659,13 @@ export default function App() {
           point?.investedRent,
           point?.reinvestFund,
           point?.reinvestedCash,
+          point?.reinvestedCashAfterTax,
+          point?.meta?.reinvestedCash,
+          point?.meta?.reinvestedCashAfterTax,
+          point?.meta?.cumulativeReinvestedCash,
+          point?.meta?.cumulativeReinvestedCashAfterTax,
+          point?.meta?.wealth?.reinvestedCash,
+          point?.meta?.wealth?.reinvestedCashAfterTax,
           point?.meta?.totals?.reinvestedCash,
           point?.meta?.totals?.reinvestedCashAfterTax,
           point?.meta?.totals?.reinvestFundValue,
@@ -10504,6 +10684,8 @@ export default function App() {
       equity.reinvestFundValue,
       equity.investedRentValue,
       equity.totalReinvested,
+      equity.totalReinvestedAfterTax,
+      equity.reinvestedCashAfterTax,
     ];
     summaryCandidates.forEach((candidate) => {
       const numeric = toFiniteNumber(candidate, 0);
@@ -11569,6 +11751,149 @@ export default function App() {
       .join('\n\n');
 
     return text;
+  };
+
+  const summariseChart = useCallback(
+    async (chartKey, chartLabel, data, options = {}) => {
+      if (!chatEnabled) {
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: {
+            status: 'error',
+            error:
+              'AI summaries are unavailable. Add a Google Gemini API key or chat endpoint in the settings to enable this feature.',
+          },
+        }));
+        return;
+      }
+
+      const entries = Array.isArray(data) ? data : [];
+      if (entries.length === 0) {
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: {
+            status: 'error',
+            error: 'No data is available to summarise for this chart.',
+          },
+        }));
+        return;
+      }
+
+      const keys = deriveSummaryKeys(entries, options.keys);
+      const numericKeys = Array.isArray(options.numericKeys) && options.numericKeys.length > 0
+        ? options.numericKeys
+        : keys.filter((key) =>
+            entries.some((point) => {
+              const value = Number(point?.[key]);
+              return Number.isFinite(value);
+            })
+          );
+      const description = typeof options.description === 'string' ? options.description : '';
+      const totalCount = entries.length;
+      const sample = sampleDataForSummary(entries, keys, options.limit ?? MAX_SUMMARY_POINTS);
+      const stats = computeSummaryStats(entries, numericKeys);
+      const extraSummary = buildChartSummaryContext(
+        chartLabel,
+        description,
+        keys,
+        sample,
+        stats,
+        totalCount
+      );
+
+      setChartSummaries((prev) => ({
+        ...prev,
+        [chartKey]: { status: 'loading' },
+      }));
+
+      const question =
+        typeof options.prompt === 'string' && options.prompt.trim().length > 0
+          ? options.prompt.trim()
+          : `Provide a concise, insight-driven summary of the "${chartLabel}" data. Explain the key trends, how to interpret them, and how the results compare with typical UK market benchmarks for similar property investments.`;
+
+      try {
+        let answer = '';
+        if (GOOGLE_API_KEY) {
+          answer = await callGoogleChat(question, extraSummary);
+        } else if (CHAT_API_URL) {
+          const contextPayload = {
+            chartKey,
+            chartLabel,
+            description,
+            totalCount,
+            fields: keys,
+            numericFields: numericKeys,
+            sample,
+            stats,
+          };
+          answer = await callCustomChat(question, extraSummary, contextPayload);
+        } else {
+          throw new Error('AI summarisation is not currently configured.');
+        }
+
+        const content = answer && answer.trim().length > 0 ? answer.trim() : 'The AI service returned an empty response.';
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: { status: 'success', message: content },
+        }));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Unable to generate a summary at this time. Please try again.';
+        setChartSummaries((prev) => ({
+          ...prev,
+          [chartKey]: { status: 'error', error: message },
+        }));
+      }
+    },
+    [chatEnabled, setChartSummaries, callGoogleChat, callCustomChat]
+  );
+
+  const renderChartSummary = useCallback(
+    (key) => {
+      const summary = chartSummaries[key];
+      if (!summary) {
+        return null;
+      }
+      if (summary.status === 'loading') {
+        return (
+          <div className="mb-2 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-[11px] text-indigo-700">
+            Summarising chart data…
+          </div>
+        );
+      }
+      if (summary.status === 'error') {
+        return (
+          <div className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700" role="alert">
+            {summary.error}
+          </div>
+        );
+      }
+      if (summary.status === 'success') {
+        return (
+          <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-700">
+            <p className="whitespace-pre-line">{summary.message}</p>
+          </div>
+        );
+      }
+      return null;
+    },
+    [chartSummaries]
+  );
+
+  const renderSummariseButton = (key, chartLabel, data, options = {}) => {
+    const summary = chartSummaries[key];
+    const loading = summary?.status === 'loading';
+    return (
+      <button
+        type="button"
+        onClick={() => summariseChart(key, chartLabel, data, options)}
+        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 disabled:opacity-60"
+        disabled={loading}
+        title="Send this chart to Gemini for an AI-generated summary"
+      >
+        {loading ? 'Summarising…' : 'Summarise'}
+      </button>
+    );
   };
 
   const handleSendChat = async (event) => {
@@ -14443,7 +14768,7 @@ export default function App() {
             </div>
 
             <div className="rounded-2xl bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -14461,40 +14786,49 @@ export default function App() {
                     knowledgeKey="wealthTrajectory"
                   />
                 </div>
-                {showChartModal ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowChartModal(false)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Close wealth trajectory analysis"
-                  >
-                    <span>Close</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setShowChartModal(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                    title="Expand wealth trajectory analysis"
-                  >
-                    <span>Expand</span>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      className="h-3 w-3"
-                      aria-hidden="true"
+                <div className="flex items-center gap-2">
+                  {renderSummariseButton('wealthTrajectory', 'Wealth trajectory vs Index Fund', filteredChartData, {
+                    keys: ['year', 'propertyValue', 'cashflowAfterTax', 'netWealthAfterTax', 'investedRent', 'indexFund'],
+                    numericKeys: ['propertyValue', 'cashflowAfterTax', 'netWealthAfterTax', 'investedRent', 'indexFund'],
+                    description:
+                      'Property wealth, index fund value, after-tax cashflow, and reinvested balances over the investment horizon.',
+                  })}
+                  {showChartModal ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowChartModal(false)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Close wealth trajectory analysis"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                    </svg>
-                  </button>
-                )}
+                      <span>Close</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowChartModal(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                      title="Expand wealth trajectory analysis"
+                    >
+                      <span>Expand</span>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        className="h-3 w-3"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
+              {renderChartSummary('wealthTrajectory')}
               {!collapsedSections.wealthTrajectory ? (
                 <>
                   <div className="mb-2 flex items-center gap-2 text-[11px] text-slate-500">
@@ -14607,7 +14941,7 @@ export default function App() {
                   collapsedSections.rateTrends ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14626,6 +14960,12 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    {renderSummariseButton('rateTrends', 'Return ratios over time', rateChartDataWithMovingAverage, {
+                      keys: ['year', 'capRate', 'yieldRate', 'cashOnCash', 'irrSeries', 'irrHurdle', 'npvToDate'],
+                      numericKeys: ['capRate', 'yieldRate', 'cashOnCash', 'irrSeries', 'irrHurdle', 'npvToDate'],
+                      description:
+                        'Year-by-year return ratios including cap rate, yield, cash-on-cash, IRR benchmarks, and NPV-to-date.',
+                    })}
                     {showRatesModal ? (
                       <button
                         type="button"
@@ -14661,6 +15001,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {renderChartSummary('rateTrends')}
                 {!collapsedSections.rateTrends ? (
                   <>
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-500">
@@ -14775,7 +15116,7 @@ export default function App() {
                   collapsedSections.npvTimeline ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14794,6 +15135,29 @@ export default function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2">
+                    {renderSummariseButton('npvTimeline', 'Net present value timeline', npvTimelineFilteredData, {
+                      keys: [
+                        'year',
+                        'operatingCash',
+                        'saleProceeds',
+                        'totalCash',
+                        'discountFactor',
+                        'discountedContribution',
+                        'cumulativeDiscounted',
+                        'cumulativeUndiscounted',
+                      ],
+                      numericKeys: [
+                        'operatingCash',
+                        'saleProceeds',
+                        'totalCash',
+                        'discountFactor',
+                        'discountedContribution',
+                        'cumulativeDiscounted',
+                        'cumulativeUndiscounted',
+                      ],
+                      description:
+                        'Shows how discounted and undiscounted cash flows accumulate toward overall net present value.',
+                    })}
                     {showNpvModal ? (
                       <button
                         type="button"
@@ -14829,6 +15193,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {renderChartSummary('npvTimeline')}
                 {!collapsedSections.npvTimeline ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14857,7 +15222,7 @@ export default function App() {
                   collapsedSections.equityGrowth ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14875,7 +15240,16 @@ export default function App() {
                       knowledgeKey="equityGrowth"
                     />
                   </div>
+                  <div className="flex items-center gap-2">
+                    {renderSummariseButton('equityGrowth', 'Equity growth over time', equityGrowthChartData, {
+                      keys: ['year', 'ownerEquity', 'loanBalance', 'totalValue'],
+                      numericKeys: ['ownerEquity', 'loanBalance', 'totalValue'],
+                      description:
+                        'Tracks outstanding debt versus owned equity and total property value through the hold period.',
+                    })}
+                  </div>
                 </div>
+                {renderChartSummary('equityGrowth')}
                 {!collapsedSections.equityGrowth ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -14927,7 +15301,7 @@ export default function App() {
                   collapsedSections.cashflowBars ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -14945,7 +15319,16 @@ export default function App() {
                       knowledgeKey="cashflowBars"
                     />
                   </div>
+                  <div className="flex items-center gap-2">
+                    {renderSummariseButton('cashflowBars', 'Annual cash flow', annualCashflowChartData, {
+                      keys: ['year', 'rentIncome', 'operatingExpenses', 'mortgagePayments', 'netCashflow'],
+                      numericKeys: ['rentIncome', 'operatingExpenses', 'mortgagePayments', 'netCashflow'],
+                      description:
+                        'Annual rent, expenses, debt service, and after-tax cash flow for the property.',
+                    })}
+                  </div>
                 </div>
+                {renderChartSummary('cashflowBars')}
                 {!collapsedSections.cashflowBars ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -15364,40 +15747,49 @@ export default function App() {
                       knowledgeKey="interestSplit"
                     />
                   </div>
-                  {interestSplitExpanded ? (
-                    <button
-                      type="button"
-                      onClick={closeInterestSplitOverlay}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Close interest split analysis"
-                    >
-                      <span>Close</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setInterestSplitExpanded(true)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Expand interest split analysis"
-                    >
-                      <span>Expand</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        className="h-3 w-3"
-                        aria-hidden="true"
+                  <div className="flex items-center gap-2">
+                    {renderSummariseButton('interestSplit', 'Interest vs principal split', interestSplitDisplayData, {
+                      keys: ['year', 'interestPaid', 'principalPaid'],
+                      numericKeys: ['interestPaid', 'principalPaid'],
+                      description:
+                        'Breaks down annual debt service into interest and principal repayments across the hold.',
+                    })}
+                    {interestSplitExpanded ? (
+                      <button
+                        type="button"
+                        onClick={closeInterestSplitOverlay}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close interest split analysis"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                      </svg>
-                    </button>
-                  )}
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setInterestSplitExpanded(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand interest split analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {renderChartSummary('interestSplit')}
                 {!collapsedSections.interestSplit ? renderInterestSplitChart() : null}
               </div>
               <div
@@ -15423,40 +15815,49 @@ export default function App() {
                       knowledgeKey="leverage"
                     />
                   </div>
-                  {leverageExpanded ? (
-                    <button
-                      type="button"
-                      onClick={closeLeverageOverlay}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Close leverage analysis"
-                    >
-                      <span>Close</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setLeverageExpanded(true)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                      title="Expand leverage analysis"
-                    >
-                      <span>Expand</span>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        className="h-3 w-3"
-                        aria-hidden="true"
+                  <div className="flex items-center gap-2">
+                    {renderSummariseButton('leverage', 'Leverage multiplier', leverageDisplayData, {
+                      keys: ['ltv', 'roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+                      numericKeys: ['roi', 'irr', 'propertyNetAfterTax', 'efficiency', 'irrHurdle'],
+                      description:
+                        'Sensitivity of ROI, IRR, and after-tax wealth outcomes across different loan-to-value ratios.',
+                    })}
+                    {leverageExpanded ? (
+                      <button
+                        type="button"
+                        onClick={closeLeverageOverlay}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Close leverage analysis"
                       >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
-                      </svg>
-                    </button>
-                  )}
+                        <span>Close</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setLeverageExpanded(true)}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        title="Expand leverage analysis"
+                      >
+                        <span>Expand</span>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          className="h-3 w-3"
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4h4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 12v4h-4" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4 8.5 8.5" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16 16 11.5 11.5" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {renderChartSummary('leverage')}
                 {!collapsedSections.leverage ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
@@ -15471,7 +15872,7 @@ export default function App() {
                   collapsedSections.roiHeatmap ? 'md:col-span-1' : 'md:col-span-2'
                 }`}
               >
-                <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -15489,27 +15890,54 @@ export default function App() {
                       knowledgeKey="roiHeatmap"
                     />
                   </div>
-                  {!collapsedSections.roiHeatmap ? (
-                    <div className="flex items-center gap-2 text-[11px] text-slate-600">
-                      <span className="font-semibold text-slate-500">Metric</span>
-                      {[{ key: 'irr', label: 'IRR' }, { key: 'roi', label: 'Total ROI' }].map((option) => (
-                        <button
-                          key={option.key}
-                          type="button"
-                          onClick={() => setRoiHeatmapMetric(option.key)}
-                          className={`rounded-full px-3 py-1 font-semibold transition ${
-                            roiHeatmapMetric === option.key
-                              ? 'bg-slate-900 text-white'
-                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                          }`}
-                          aria-pressed={roiHeatmapMetric === option.key}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
+                  <div
+                    className={`flex flex-wrap items-center gap-2 ${
+                      collapsedSections.roiHeatmap ? '' : 'text-[11px] text-slate-600'
+                    }`}
+                  >
+                    {renderSummariseButton(
+                      'roiHeatmap',
+                      'ROI vs rental yield heatmap',
+                      (Array.isArray(roiHeatmapData?.rows) ? roiHeatmapData.rows : []).flatMap((row) =>
+                        Array.isArray(row?.cells)
+                          ? row.cells.map((cell) => ({
+                              capitalGrowth: row.growthRate,
+                              rentYield: cell.yieldRate,
+                              irr: cell.irr,
+                              roi: cell.roi,
+                            }))
+                          : []
+                      ),
+                      {
+                        keys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
+                        numericKeys: ['capitalGrowth', 'rentYield', 'irr', 'roi'],
+                        description:
+                          'Modeled IRR and total ROI outcomes across combinations of rent yield and capital growth scenarios.',
+                      }
+                    )}
+                    {!collapsedSections.roiHeatmap ? (
+                      <>
+                        <span className="font-semibold text-slate-500">Metric</span>
+                        {[{ key: 'irr', label: 'IRR' }, { key: 'roi', label: 'Total ROI' }].map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => setRoiHeatmapMetric(option.key)}
+                            className={`rounded-full px-3 py-1 font-semibold transition ${
+                              roiHeatmapMetric === option.key
+                                ? 'bg-slate-900 text-white'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                            aria-pressed={roiHeatmapMetric === option.key}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </>
+                    ) : null}
+                  </div>
                 </div>
+                {renderChartSummary('roiHeatmap')}
                 {!collapsedSections.roiHeatmap ? (
                   <>
                     <p className="mb-2 text-[11px] text-slate-500">
