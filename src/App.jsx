@@ -15072,7 +15072,7 @@ export default function App() {
                   </div>
                   <div className="h-72 w-full">
                     <ResponsiveContainer>
-                      <AreaChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                      <ComposedChart data={filteredChartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis
                           dataKey="year"
@@ -15080,6 +15080,7 @@ export default function App() {
                           tick={{ fontSize: 10, fill: '#475569' }}
                         />
                         <YAxis
+                          yAxisId="currency"
                           tickFormatter={(v) => currencyNoPence(v)}
                           tick={{ fontSize: 10, fill: '#475569' }}
                           width={90}
@@ -15121,6 +15122,7 @@ export default function App() {
                           }}
                         />
                         <Area
+                          yAxisId="currency"
                           type="monotone"
                           dataKey="indexFund"
                           name={SERIES_LABELS.indexFund ?? 'Index fund'}
@@ -15131,6 +15133,7 @@ export default function App() {
                           hide={!activeSeries.indexFund}
                         />
                         <Area
+                          yAxisId="currency"
                           type="monotone"
                           dataKey="cashflowAfterTax"
                           name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
@@ -15141,6 +15144,7 @@ export default function App() {
                           hide={!activeSeries.cashflowAfterTax}
                         />
                         <Area
+                          yAxisId="currency"
                           type="monotone"
                           dataKey="propertyValue"
                           name={SERIES_LABELS.propertyValue ?? 'Property value'}
@@ -15158,6 +15162,7 @@ export default function App() {
                           strokeWidth={2}
                           dot={false}
                           connectNulls
+                          yAxisId="currency"
                           isAnimationActive={false}
                           hide={!activeSeries.netWealthAfterTax}
                         />
@@ -15169,6 +15174,7 @@ export default function App() {
                           strokeWidth={2}
                           dot={false}
                           connectNulls
+                          yAxisId="currency"
                           isAnimationActive={false}
                           hide={!activeSeries.cashInvested}
                         />
@@ -15180,10 +15186,11 @@ export default function App() {
                           strokeWidth={2}
                           dot={false}
                           connectNulls
+                          yAxisId="currency"
                           isAnimationActive={false}
                           hide={!activeSeries.investedRent || !reinvestActive}
                         />
-                      </AreaChart>
+                      </ComposedChart>
                     </ResponsiveContainer>
                   </div>
                 </>
@@ -17042,7 +17049,7 @@ export default function App() {
                       className="relative flex-1 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm min-h-[320px]"
                     >
                       <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart
+                        <ComposedChart
                           data={filteredChartData}
                           margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
                           onClick={handleChartPointClick}
@@ -17119,35 +17126,35 @@ export default function App() {
                               ))
                             : null}
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund"
                             name={SERIES_LABELS.indexFund ?? 'Index fund'}
                             stroke={SERIES_COLORS.indexFund}
                             fill="rgba(249,115,22,0.2)"
                             strokeWidth={2}
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.indexFund}
                           />
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="cashflowAfterTax"
                             name={SERIES_LABELS.cashflowAfterTax ?? 'Cashflow (after tax)'}
                             stroke={SERIES_COLORS.cashflowAfterTax}
                             fill="rgba(16,185,129,0.18)"
                             strokeWidth={2}
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.cashflowAfterTax}
                           />
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="propertyValue"
                             name={SERIES_LABELS.propertyValue ?? 'Property value'}
                             stroke={SERIES_COLORS.propertyValue}
                             fill="rgba(14,165,233,0.18)"
                             strokeWidth={2}
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.propertyValue}
                           />
@@ -17188,6 +17195,7 @@ export default function App() {
                             hide={!activeSeries.investedRent || !reinvestActive}
                           />
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund1_5x"
                             name="Index fund 1.5×"
@@ -17195,11 +17203,11 @@ export default function App() {
                             fillOpacity={0}
                             strokeWidth={1.5}
                             strokeDasharray="6 3"
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.indexFund1_5x}
                           />
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund2x"
                             name="Index fund 2×"
@@ -17207,11 +17215,11 @@ export default function App() {
                             fillOpacity={0}
                             strokeWidth={1.5}
                             strokeDasharray="4 2"
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.indexFund2x}
                           />
                           <Area
+                            yAxisId="currency"
                             type="monotone"
                             dataKey="indexFund4x"
                             name="Index fund 4×"
@@ -17219,11 +17227,10 @@ export default function App() {
                             fillOpacity={0}
                             strokeWidth={1.5}
                             strokeDasharray="2 2"
-                            yAxisId="currency"
                             isAnimationActive={false}
                             hide={!activeSeries.indexFund4x}
                           />
-                        </AreaChart>
+                        </ComposedChart>
                       </ResponsiveContainer>
                       {chartFocus && chartFocus.data ? (
                         <WealthChartOverlay
