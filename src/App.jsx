@@ -10338,23 +10338,42 @@ export default function App() {
   const exitCumCashAfterTax = Number.isFinite(equity.exitCumCashAfterTax) ? equity.exitCumCashAfterTax : 0;
   const reinvestRate = Math.min(Math.max(Number(inputs.reinvestPct ?? 0), 0), 1);
   const reinvestSelected = Boolean(inputs.reinvestIncome) && reinvestRate > 0;
-  const reinvestSeriesHasBalance = useMemo(
-    () =>
-      Array.isArray(equity.chart) &&
-      equity.chart.some(
-        (point) =>
-          toFiniteNumber(
-            point?.investedRent ??
-              point?.reinvestFund ??
-              point?.reinvestedCash ??
-              point?.meta?.totals?.reinvestedCash ??
-              point?.meta?.investedRentValue ??
-              point?.meta?.reinvestFundValue ??
-              0
-          ) > 0
-      ),
-    [equity.chart]
-  );
+  const reinvestSeriesBalance = useMemo(() => {
+    let maxBalance = 0;
+    if (Array.isArray(equity.chart)) {
+      equity.chart.forEach((point) => {
+        const candidates = [
+          point?.investedRent,
+          point?.reinvestFund,
+          point?.reinvestedCash,
+          point?.meta?.totals?.reinvestedCash,
+          point?.meta?.totals?.reinvestedCashAfterTax,
+          point?.meta?.totals?.reinvestFundValue,
+          point?.meta?.investedRentValue,
+          point?.meta?.reinvestFundValue,
+        ];
+        candidates.forEach((candidate) => {
+          const numeric = toFiniteNumber(candidate, 0);
+          if (numeric > maxBalance) {
+            maxBalance = numeric;
+          }
+        });
+      });
+    }
+    const summaryCandidates = [
+      equity.reinvestFundValue,
+      equity.investedRentValue,
+      equity.totalReinvested,
+    ];
+    summaryCandidates.forEach((candidate) => {
+      const numeric = toFiniteNumber(candidate, 0);
+      if (numeric > maxBalance) {
+        maxBalance = numeric;
+      }
+    });
+    return maxBalance;
+  }, [equity.chart, equity.investedRentValue, equity.reinvestFundValue, equity.totalReinvested]);
+  const reinvestSeriesHasBalance = reinvestSeriesBalance > 0;
   const reinvestActive = reinvestSelected || reinvestSeriesHasBalance;
 
   useEffect(() => {
@@ -14176,7 +14195,7 @@ export default function App() {
                                 type: 'line',
                               },
                             ];
-                            if (reinvestSeriesHasBalance) {
+                            if (reinvestActive) {
                               extraEntries.push({
                                 dataKey: 'investedRent',
                                 value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
@@ -14243,7 +14262,7 @@ export default function App() {
                           strokeWidth={2}
                           dot={false}
                           isAnimationActive={false}
-                          hide={!activeSeries.investedRent || !reinvestSeriesHasBalance}
+                          hide={!activeSeries.investedRent || !reinvestActive}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -15796,7 +15815,7 @@ export default function App() {
                     { key: 'investedRent', label: 'Reinvested cash (after tax)' },
                   ].map((option) => {
                     const checked = activeSeries[option.key] !== false;
-                    const disabled = option.key === 'investedRent' && !reinvestSeriesHasBalance;
+                    const disabled = option.key === 'investedRent' && !reinvestActive;
                     return (
                       <label
                         key={option.key}
@@ -15853,7 +15872,7 @@ export default function App() {
                                   type: 'line',
                                 },
                               ];
-                              if (reinvestSeriesHasBalance) {
+                              if (reinvestActive) {
                                 extraEntries.push({
                                   dataKey: 'investedRent',
                                   value: SERIES_LABELS.investedRent ?? 'Reinvested cash (after tax)',
@@ -15951,7 +15970,7 @@ export default function App() {
                             dot={false}
                             yAxisId="currency"
                             isAnimationActive={false}
-                            hide={!activeSeries.investedRent || !reinvestSeriesHasBalance}
+                            hide={!activeSeries.investedRent || !reinvestActive}
                           />
                           <Area
                             type="monotone"
