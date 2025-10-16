@@ -152,6 +152,7 @@ const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
 const FUTURE_PLAN_STORAGE_KEY = 'qc_future_plan_v1';
+const FUTURE_PLAN_VIEWS_STORAGE_KEY = 'qc_future_plan_views_v1';
 const PLAN_MAX_PURCHASE_YEAR = 20;
 const {
   VITE_SCENARIO_API_URL,
@@ -2062,6 +2063,130 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
     cashflows: planCashflows,
     irr: planIrr,
   };
+};
+
+const sanitizeStoredPlanView = (entry) => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const planItems = Array.isArray(entry.plan)
+    ? entry.plan.map((item) => sanitizePlanItem(item)).filter(Boolean)
+    : [];
+  if (planItems.length === 0) {
+    return null;
+  }
+  const id =
+    typeof entry.id === 'string' && entry.id.trim() !== ''
+      ? entry.id.trim()
+      : `plan-view-${Math.random().toString(36).slice(2, 10)}`;
+  const name =
+    typeof entry.name === 'string' && entry.name.trim() !== ''
+      ? entry.name.trim()
+      : 'Saved plan view';
+  const savedAt =
+    typeof entry.savedAt === 'string' && entry.savedAt.trim() !== ''
+      ? entry.savedAt
+      : new Date().toISOString();
+  return {
+    id,
+    name,
+    savedAt,
+    plan: planItems,
+  };
+};
+
+const sortPlanViews = (views) => {
+  if (!Array.isArray(views)) {
+    return [];
+  }
+  return [...views].sort((a, b) => {
+    const aTime = new Date(a?.savedAt ?? 0).getTime();
+    const bTime = new Date(b?.savedAt ?? 0).getTime();
+    return bTime - aTime;
+  });
+};
+
+const loadStoredPlanViews = () => {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(FUTURE_PLAN_VIEWS_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return sortPlanViews(parsed.map((entry) => sanitizeStoredPlanView(entry)).filter(Boolean));
+  } catch (error) {
+    console.warn('Unable to read saved future plan views from storage:', error);
+    return [];
+  }
+};
+
+const getPlanItemExitYear = (item) => {
+  if (!item || typeof item !== 'object') {
+    return 0;
+  }
+  const override = Number.isFinite(item.exitYearOverride)
+    ? Math.max(0, Math.round(item.exitYearOverride))
+    : NaN;
+  const inputExit = Number.isFinite(item.inputs?.exitYear)
+    ? Math.max(0, Math.round(item.inputs.exitYear))
+    : 0;
+  return Number.isFinite(override) ? override : inputExit;
+};
+
+const describePlanScheduleChanges = (baselinePlan, comparisonPlan, planItemsById = new Map()) => {
+  if (!Array.isArray(baselinePlan) || !Array.isArray(comparisonPlan)) {
+    return [];
+  }
+  const baselineById = new Map(
+    baselinePlan.map((item) => [item?.id, item]).filter((entry) => entry[0])
+  );
+  return comparisonPlan
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const base = baselineById.get(item.id);
+      if (!base) {
+        return null;
+      }
+      const basePurchase = Number.isFinite(base.purchaseYear) ? base.purchaseYear : 0;
+      const nextPurchase = Number.isFinite(item.purchaseYear) ? item.purchaseYear : 0;
+      const baseExit = getPlanItemExitYear(base);
+      const nextExit = getPlanItemExitYear(item);
+      const baseNeverExit = base.neverExit === true;
+      const nextNeverExit = item.neverExit === true;
+      if (
+        basePurchase === nextPurchase &&
+        baseExit === nextExit &&
+        baseNeverExit === nextNeverExit
+      ) {
+        return null;
+      }
+      const planEntry = planItemsById.get(item.id);
+      const label =
+        typeof planEntry?.displayName === 'string' && planEntry.displayName.trim() !== ''
+          ? planEntry.displayName
+          : typeof item.name === 'string' && item.name.trim() !== ''
+            ? item.name.trim()
+            : 'Plan property';
+      return {
+        id: item.id,
+        label,
+        purchaseYear: nextPurchase,
+        basePurchaseYear: basePurchase,
+        exitYear: nextExit,
+        baseExitYear: baseExit,
+        neverExit: nextNeverExit,
+        baseNeverExit,
+      };
+    })
+    .filter(Boolean);
 };
 
 const loadStoredFuturePlan = () => {
@@ -6604,6 +6729,8 @@ export default function App() {
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
   const [futurePlan, setFuturePlan] = useState(() => loadStoredFuturePlan());
+  const [savedPlanViews, setSavedPlanViews] = useState(() => loadStoredPlanViews());
+  const [showPlanViewLoader, setShowPlanViewLoader] = useState(false);
   const [showLoadPanel, setShowLoadPanel] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [showTableModal, setShowTableModal] = useState(false);
@@ -8481,6 +8608,19 @@ export default function App() {
       console.warn('Unable to persist future plan:', error);
     }
   }, [futurePlan]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const payload = savedPlanViews.map((view) => ({
+        ...view,
+        plan: view.plan.map((item) => sanitizePlanItem(item)).filter(Boolean),
+      }));
+      window.localStorage.setItem(FUTURE_PLAN_VIEWS_STORAGE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      console.warn('Unable to persist future plan views:', error);
+    }
+  }, [savedPlanViews]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -12618,6 +12758,67 @@ export default function App() {
     [futurePlan, setFuturePlan, setPlanNotice]
   );
 
+  const handlePlanClear = useCallback(() => {
+    if (futurePlan.length === 0) {
+      return;
+    }
+    setFuturePlan([]);
+    setPlanNotice('Cleared future plan.');
+    setShowPlanViewLoader(false);
+  }, [futurePlan.length, setFuturePlan, setPlanNotice]);
+
+  const handlePlanSaveView = useCallback(() => {
+    const sanitizedPlan = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+    if (sanitizedPlan.length === 0) {
+      setPlanNotice('Add at least one property before saving a plan view.');
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const defaultName = `Plan view ${new Date().toLocaleString()}`;
+    const input = window.prompt('Name this plan view', defaultName);
+    if (input === null) {
+      return;
+    }
+    const trimmed = input.trim();
+    const name = trimmed !== '' ? trimmed : defaultName;
+    const view = {
+      id: `plan-view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      savedAt: new Date().toISOString(),
+      plan: sanitizedPlan,
+    };
+    setSavedPlanViews((prev) => sortPlanViews([...(Array.isArray(prev) ? prev : []), view]));
+    setPlanNotice(`Saved plan view "${name}".`);
+    setShowPlanViewLoader(false);
+  }, [futurePlan, setPlanNotice]);
+
+  const handlePlanLoadView = useCallback(
+    (id) => {
+      const view = savedPlanViews.find((item) => item.id === id);
+      if (!view) {
+        return;
+      }
+      const sanitizedPlan = view.plan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+      setFuturePlan(sanitizedPlan);
+      setPlanNotice(`Loaded plan view "${view.name}".`);
+      setShowPlanViewLoader(false);
+    },
+    [savedPlanViews, setFuturePlan, setPlanNotice]
+  );
+
+  const handlePlanDeleteView = useCallback(
+    (id) => {
+      const target = savedPlanViews.find((item) => item.id === id);
+      setSavedPlanViews((prev) => (prev ? prev.filter((entry) => entry.id !== id) : prev));
+      if (target) {
+        setPlanNotice(`Deleted plan view "${target.name}".`);
+      }
+    },
+    [savedPlanViews, setPlanNotice]
+  );
+
   const handlePlanDragStart = useCallback((id, event) => {
     planDragIdRef.current = id;
     if (event?.dataTransfer) {
@@ -12809,87 +13010,89 @@ export default function App() {
       }
 
       const baselineValue = goalConfig.metric(baselineAnalysis);
-      const planItemsById = new Map((planAnalysis.items ?? []).map((entry) => [entry.id, entry]));
+      const planItemsSource =
+        planAnalysis?.status === 'ready' && Array.isArray(planAnalysis.items)
+          ? planAnalysis.items
+          : Array.isArray(baselineAnalysis?.items)
+            ? baselineAnalysis.items
+            : [];
+      const planItemsById = new Map(planItemsSource.map((entry) => [entry.id, entry]));
       const purchaseDeltas = [-2, -1, 0, 1, 2];
       const exitDeltas = [-2, -1, 0, 1, 2];
-      const candidates = [];
+      const sanitizedPlan = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
+      const baselinePlan = sanitizedPlan.map((item) => ({ ...item, inputs: { ...(item.inputs ?? {}) } }));
+      const baselinePayload = {
+        value: baselineValue,
+        formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
+        analysis: baselineAnalysis,
+      };
 
-      futurePlan.forEach((rawItem) => {
-        const baseItem = sanitizePlanItem(rawItem);
-        if (!baseItem) {
+      const propertyVariants = [];
+      baselinePlan.forEach((item, index) => {
+        const planEntry = planItemsById.get(item.id);
+        if (!planEntry || planEntry.include === false || planEntry.valid === false) {
           return;
         }
-        const planEntry = planItemsById.get(baseItem.id);
-        const basePurchase = Number.isFinite(planEntry?.purchaseYear)
+        const basePurchase = Number.isFinite(planEntry.purchaseYear)
           ? planEntry.purchaseYear
-          : baseItem.purchaseYear ?? 0;
-        const baseExit = Number.isFinite(planEntry?.exitYear)
+          : Number.isFinite(item.purchaseYear)
+            ? item.purchaseYear
+            : 0;
+        const baseExit = Number.isFinite(planEntry.exitYear)
           ? planEntry.exitYear
-          : Number.isFinite(baseItem.exitYearOverride)
-            ? baseItem.exitYearOverride
-            : Number.isFinite(baseItem.inputs?.exitYear)
-              ? baseItem.inputs.exitYear
-              : 0;
-
-        const purchaseOptions = planOptimizationHold.purchaseYear
-          ? [basePurchase]
-          : Array.from(
-              new Set(
-                purchaseDeltas
-                  .map((delta) => clamp(Math.round(basePurchase + delta), 0, PLAN_MAX_PURCHASE_YEAR))
-                  .concat(basePurchase)
-              )
-            ).sort((a, b) => a - b);
-
-        const exitOptions = planOptimizationHold.exitYear
-          ? [baseExit]
-          : Array.from(
-              new Set(exitDeltas.map((delta) => Math.max(0, Math.round(baseExit + delta))).concat(baseExit))
-            ).sort((a, b) => a - b);
-
+          : getPlanItemExitYear(item);
+        const neverExit = item.neverExit === true;
+        const purchaseOptions =
+          planOptimizationHold.purchaseYear || item.isPrimary
+            ? [basePurchase]
+            : Array.from(
+                new Set(
+                  purchaseDeltas
+                    .map((delta) => clamp(Math.round(basePurchase + delta), 0, PLAN_MAX_PURCHASE_YEAR))
+                    .concat(basePurchase)
+                )
+              ).sort((a, b) => a - b);
+        const exitOptions =
+          planOptimizationHold.exitYear || neverExit
+            ? [baseExit]
+            : Array.from(
+                new Set(exitDeltas.map((delta) => Math.max(0, Math.round(baseExit + delta))).concat(baseExit))
+              ).sort((a, b) => a - b);
+        const options = [];
         purchaseOptions.forEach((purchaseYear) => {
           exitOptions.forEach((exitYear) => {
-            if (purchaseYear === basePurchase && exitYear === baseExit) {
-              return;
-            }
-            const updatedPlan = futurePlan.map((planItem) => {
-              if (planItem.id !== baseItem.id) {
-                return planItem;
-              }
-              return sanitizePlanItem({
-                ...planItem,
-                purchaseYear,
-                exitYearOverride: exitYear,
-                inputs: {
-                  ...(planItem.inputs ?? {}),
-                  exitYear,
-                },
-              });
-            });
-            candidates.push({
-              id: baseItem.id,
-              label: planEntry?.displayName || baseItem.name || 'Plan property',
-              plan: updatedPlan,
-              purchaseYear,
-              exitYear,
-            });
+            options.push({ purchaseYear, exitYear });
           });
+        });
+        propertyVariants.push({
+          id: item.id,
+          index,
+          label: planEntry.displayName || item.name || 'Plan property',
+          basePurchase,
+          baseExit,
+          neverExit,
+          options,
         });
       });
 
-      if (candidates.length === 0) {
+      const totalVariantCount = propertyVariants.reduce(
+        (sum, entry) =>
+          sum +
+          entry.options.filter(
+            (option) => option.purchaseYear !== entry.basePurchase || option.exitYear !== entry.baseExit
+          ).length,
+        0
+      );
+
+      if (propertyVariants.length === 0 || totalVariantCount === 0) {
+        const message = 'No alternative purchase or exit combinations available under the current constraints.';
         setPlanOptimizationStatus('ready');
         setPlanOptimizationProgress(1);
-        const message = 'No alternative purchase or exit combinations available under the current constraints.';
         setPlanOptimizationMessage(message);
         setPlanOptimizationResult({
           status: 'baseline',
           goal: goalConfig,
-          baseline: {
-            value: baselineValue,
-            formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
-            analysis: baselineAnalysis,
-          },
+          baseline: baselinePayload,
           best: null,
           alternatives: [],
           message,
@@ -12897,61 +13100,188 @@ export default function App() {
         return;
       }
 
-      const evaluated = [];
-      for (let index = 0; index < candidates.length; index += 1) {
-        const candidate = candidates[index];
-        const analysis = computeFuturePlanAnalysis(candidate.plan, indexFundGrowth);
-        const value = goalConfig.metric(analysis);
-        evaluated.push({
-          ...candidate,
-          analysis,
-          value,
-        });
-        const progress = (index + 1) / candidates.length;
-        setPlanOptimizationProgress(progress);
-        setPlanOptimizationMessage(
-          `Evaluated ${index + 1} of ${candidates.length} plan variation${candidates.length === 1 ? '' : 's'}…`
-        );
-        if ((index + 1) % 5 === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
+      const clonePlanItems = (plan) =>
+        plan.map((planItem) => ({ ...planItem, inputs: { ...(planItem.inputs ?? {}) } }));
+      const buildPlanKey = (plan) =>
+        plan
+          .map((planItem) => {
+            const exitYear = getPlanItemExitYear(planItem);
+            const exitTag = planItem.neverExit === true ? `never-${exitYear}` : `exit-${exitYear}`;
+            const purchaseYear = Number.isFinite(planItem.purchaseYear) ? planItem.purchaseYear : 0;
+            return `${planItem.id}:${planItem.include === false ? 0 : 1}:${purchaseYear}:${exitTag}`;
+          })
+          .join('|');
+
+      const evaluationCache = new Map();
+      const evaluationRecords = new Map();
+      const baselineKey = buildPlanKey(baselinePlan);
+      const baselineRecord = { plan: baselinePlan, analysis: baselineAnalysis, value: baselineValue, meta: { baseline: true } };
+      evaluationCache.set(baselineKey, baselineRecord);
+      evaluationRecords.set(baselineKey, baselineRecord);
+
+      let evaluatedCount = 0;
+      const evaluatePlanVariant = async (plan) => {
+        const normalizedPlan = clonePlanItems(plan)
+          .map((planItem) => sanitizePlanItem(planItem))
+          .filter(Boolean);
+        const key = buildPlanKey(normalizedPlan);
+        let record = evaluationCache.get(key);
+        if (!record) {
+          const analysis = computeFuturePlanAnalysis(normalizedPlan, indexFundGrowth);
+          const value = goalConfig.metric(analysis);
+          record = { plan: normalizedPlan, analysis, value };
+          evaluationCache.set(key, record);
+          evaluationRecords.set(key, record);
+          evaluatedCount += 1;
+          if (totalVariantCount > 0) {
+            const progress = Math.min(1, evaluatedCount / totalVariantCount);
+            setPlanOptimizationProgress(progress);
+            setPlanOptimizationMessage(
+              `Evaluated ${evaluatedCount} of ${totalVariantCount} plan variation${totalVariantCount === 1 ? '' : 's'}…`
+            );
+          }
+          if (evaluatedCount % 5 === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        } else if (!evaluationRecords.has(key)) {
+          evaluationRecords.set(key, record);
+        }
+        return record;
+      };
+
+      let workingPlan = baselinePlan;
+      let workingRecord = baselineRecord;
+      const maxPasses = 3;
+      for (let pass = 0; pass < maxPasses; pass += 1) {
+        let passImproved = false;
+        for (const property of propertyVariants) {
+          const propertyIndex = workingPlan.findIndex((planItem) => planItem.id === property.id);
+          if (propertyIndex === -1) {
+            continue;
+          }
+          const currentItem = workingPlan[propertyIndex];
+          const currentPurchase = Number.isFinite(currentItem.purchaseYear)
+            ? currentItem.purchaseYear
+            : property.basePurchase;
+          const currentExit = getPlanItemExitYear(currentItem);
+          let bestRecordForProperty = workingRecord;
+          let bestPlanForProperty = workingPlan;
+          for (const option of property.options) {
+            if (option.purchaseYear === currentPurchase && option.exitYear === currentExit) {
+              continue;
+            }
+            const nextPlan = clonePlanItems(workingPlan);
+            const nextItem = {
+              ...nextPlan[propertyIndex],
+              inputs: { ...(nextPlan[propertyIndex].inputs ?? {}) },
+            };
+            if (!nextItem.isPrimary) {
+              nextItem.purchaseYear = option.purchaseYear;
+            }
+            if (!nextItem.neverExit) {
+              nextItem.exitYearOverride = option.exitYear;
+              nextItem.inputs.exitYear = option.exitYear;
+            } else {
+              nextItem.exitYearOverride = Math.max(
+                Number.isFinite(nextItem.exitYearOverride) ? Math.round(nextItem.exitYearOverride) : option.exitYear,
+                option.exitYear
+              );
+              nextItem.inputs.exitYear = Math.max(
+                Number.isFinite(nextItem.inputs?.exitYear) ? Math.round(nextItem.inputs.exitYear) : option.exitYear,
+                option.exitYear
+              );
+            }
+            nextPlan[propertyIndex] = nextItem;
+            const candidateRecord = await evaluatePlanVariant(nextPlan);
+            if (candidateRecord.value > bestRecordForProperty.value + 1e-6) {
+              bestRecordForProperty = candidateRecord;
+              bestPlanForProperty = clonePlanItems(candidateRecord.plan);
+            }
+          }
+          if (bestRecordForProperty !== workingRecord) {
+            workingPlan = bestPlanForProperty;
+            workingRecord = bestRecordForProperty;
+            passImproved = true;
+          }
+        }
+        if (!passImproved) {
+          break;
         }
       }
 
-      const validResults = evaluated.filter((candidate) => Number.isFinite(candidate.value));
-      validResults.sort((a, b) => b.value - a.value);
+      await evaluatePlanVariant(workingPlan);
 
-      const best = validResults[0] ?? null;
-      const alternatives = validResults.slice(1, 4);
+      const sortedRecords = [...evaluationRecords.values()].sort((a, b) => b.value - a.value);
+      const recordSummaries = sortedRecords.map((record) => ({
+        ...record,
+        schedule: describePlanScheduleChanges(baselinePlan, record.plan, planItemsById),
+      }));
+      const variantSummaries = recordSummaries.filter((entry) => entry.schedule.length > 0);
+      const bestEntry = variantSummaries[0] ?? null;
+      const alternativeEntries = variantSummaries.slice(1, 4);
+
+      if (!bestEntry) {
+        const message = 'No improvements over baseline.';
+        setPlanOptimizationStatus('ready');
+        setPlanOptimizationProgress(1);
+        setPlanOptimizationMessage(message);
+        setPlanOptimizationResult({
+          status: 'baseline',
+          goal: goalConfig,
+          baseline: baselinePayload,
+          best: null,
+          alternatives: [],
+          message,
+        });
+        return;
+      }
+
+      const buildScheduleKey = (schedule) =>
+        Array.isArray(schedule) && schedule.length > 0
+          ? schedule
+              .map(
+                (change) =>
+                  `${change.id}-${change.purchaseYear}-${change.exitYear}-${change.neverExit ? 'never' : 'exit'}`
+              )
+              .join('|')
+          : 'baseline';
+
+      const formatRecommendation = (entry, fallbackKey) => {
+        const schedule = Array.isArray(entry.schedule) ? entry.schedule : [];
+        const firstChange = schedule[0] ?? null;
+        const delta = Number.isFinite(baselineValue) ? entry.value - baselineValue : NaN;
+        return {
+          id: `plan-${fallbackKey ?? buildScheduleKey(schedule)}`,
+          label:
+            schedule.length === 1 && firstChange
+              ? firstChange.label
+              : `${schedule.length} propert${schedule.length === 1 ? 'y' : 'ies'}`,
+          plan: entry.plan,
+          analysis: entry.analysis,
+          value: entry.value,
+          schedule,
+          purchaseYear: firstChange ? firstChange.purchaseYear : 0,
+          exitYear: firstChange ? firstChange.exitYear : 0,
+          formattedValue: goalConfig.format(entry.value),
+          delta,
+          formattedDelta: Number.isFinite(delta) ? formatPlanGoalDelta(goalConfig, delta) : '',
+        };
+      };
+
+      const bestRecommendation = formatRecommendation(bestEntry, 'best');
+      const alternativeRecommendations = alternativeEntries.map((entry, index) =>
+        formatRecommendation(entry, `alt-${index}-${buildScheduleKey(entry.schedule)}`)
+      );
 
       setPlanOptimizationStatus('ready');
       setPlanOptimizationProgress(1);
-      setPlanOptimizationMessage(best ? 'Optimisation complete.' : 'No improvements over baseline.');
+      setPlanOptimizationMessage('Optimisation complete.');
       setPlanOptimizationResult({
-        status: best ? 'ready' : 'baseline',
+        status: 'ready',
         goal: goalConfig,
-        baseline: {
-          value: baselineValue,
-          formattedValue: Number.isFinite(baselineValue) ? goalConfig.format(baselineValue) : '—',
-          analysis: baselineAnalysis,
-        },
-        best: best
-          ? {
-              ...best,
-              formattedValue: goalConfig.format(best.value),
-              delta: Number.isFinite(baselineValue) ? best.value - baselineValue : NaN,
-              formattedDelta: Number.isFinite(baselineValue)
-                ? formatPlanGoalDelta(goalConfig, best.value - baselineValue)
-                : '',
-            }
-          : null,
-        alternatives: alternatives.map((candidate) => ({
-          ...candidate,
-          formattedValue: goalConfig.format(candidate.value),
-          delta: Number.isFinite(baselineValue) ? candidate.value - baselineValue : NaN,
-          formattedDelta: Number.isFinite(baselineValue)
-            ? formatPlanGoalDelta(goalConfig, candidate.value - baselineValue)
-            : '',
-        })),
+        baseline: baselinePayload,
+        best: bestRecommendation,
+        alternatives: alternativeRecommendations,
       });
     } catch (error) {
       console.warn('Unable to run plan optimisation:', error);
@@ -16948,6 +17278,79 @@ export default function App() {
               </p>
             ) : (
               <div className="space-y-5 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePlanClear}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePlanSaveView}
+                      className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-slate-700"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowPlanViewLoader((prev) => !prev)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    >
+                      {showPlanViewLoader ? 'Hide saved plans' : 'Load'}
+                    </button>
+                  </div>
+                  {savedPlanViews.length > 0 ? (
+                    <div className="text-[11px] text-slate-500">
+                      {savedPlanViews.length} saved plan view
+                      {savedPlanViews.length === 1 ? '' : 's'}
+                    </div>
+                  ) : null}
+                </div>
+                {showPlanViewLoader ? (
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 text-[11px] text-slate-600">
+                    {savedPlanViews.length === 0 ? (
+                      <p>No plan views saved yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {savedPlanViews.map((view) => (
+                          <div
+                            key={view.id}
+                            className="flex flex-wrap items-center justify-between gap-2"
+                          >
+                            <div>
+                              <div className="font-semibold text-slate-700">{view.name}</div>
+                              <div className="text-[10px] text-slate-500">
+                                Saved {friendlyDateTime(view.savedAt)}
+                              </div>
+                              <div className="text-[10px] text-slate-500">
+                                {view.plan.length} propert{view.plan.length === 1 ? 'y' : 'ies'}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handlePlanLoadView(view.id)}
+                                className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                              >
+                                Load
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handlePlanDeleteView(view.id)}
+                                className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-slate-200 text-left text-[11px] text-slate-600">
                     <thead className="bg-slate-50 text-slate-500">
@@ -19551,6 +19954,66 @@ function PlanOptimizationControls({
     ? readyResult.alternatives
     : [];
 
+  const formatScheduleDetail = (change) => {
+    const purchaseDetail =
+      change.purchaseYear === change.basePurchaseYear
+        ? `Purchase year ${change.purchaseYear}`
+        : `Purchase year ${change.basePurchaseYear} → ${change.purchaseYear}`;
+    let exitDetail;
+    if (change.neverExit) {
+      exitDetail = 'Hold indefinitely';
+    } else if (change.baseNeverExit) {
+      exitDetail = `Exit in year ${change.exitYear}`;
+    } else if (change.exitYear === change.baseExitYear) {
+      exitDetail = `Exit in year ${change.exitYear}`;
+    } else {
+      exitDetail = `Exit year ${change.baseExitYear} → ${change.exitYear}`;
+    }
+    return `${purchaseDetail}; ${exitDetail}`;
+  };
+
+  const buildScheduleHeadline = (schedule) => {
+    if (!Array.isArray(schedule) || schedule.length === 0) {
+      return 'Matches current schedule.';
+    }
+    if (schedule.length === 1) {
+      const change = schedule[0];
+      const purchaseSegment =
+        change.purchaseYear === change.basePurchaseYear
+          ? `Purchase in year ${change.purchaseYear}`
+          : `Purchase year ${change.basePurchaseYear} → ${change.purchaseYear}`;
+      let exitSegment;
+      if (change.neverExit) {
+        exitSegment = 'Hold indefinitely';
+      } else if (change.baseNeverExit) {
+        exitSegment = `Exit in year ${change.exitYear}`;
+      } else if (change.exitYear === change.baseExitYear) {
+        exitSegment = `Hold for ${change.exitYear} year${change.exitYear === 1 ? '' : 's'}`;
+      } else {
+        exitSegment = `Exit year ${change.baseExitYear} → ${change.exitYear}`;
+      }
+      return `${purchaseSegment} · ${exitSegment}`;
+    }
+    return `${schedule.length} properties adjusted.`;
+  };
+
+  const renderScheduleDetails = (schedule) => {
+    if (!Array.isArray(schedule) || schedule.length <= 1) {
+      return null;
+    }
+    return (
+      <div className="mt-2 space-y-1 text-[11px] text-slate-500">
+        {schedule.map((change) => (
+          <div
+            key={`${change.id}-${change.purchaseYear}-${change.exitYear}-${change.neverExit ? 'never' : 'exit'}`}
+          >
+            <span className="font-semibold text-slate-700">{change.label}</span>: {formatScheduleDetail(change)}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderStatusMessage = () => {
     if (running) {
       return (
@@ -19581,9 +20044,9 @@ function PlanOptimizationControls({
                   {bestRecommendation.label}
                 </div>
                 <div className="text-[11px] text-slate-500">
-                  Purchase in year {bestRecommendation.purchaseYear} · hold for {bestRecommendation.exitYear} year
-                  {bestRecommendation.exitYear === 1 ? '' : 's'}
+                  {buildScheduleHeadline(bestRecommendation.schedule)}
                 </div>
+                {renderScheduleDetails(bestRecommendation.schedule)}
               </div>
               <div className="text-right text-[11px] text-slate-500">
                 <div className="text-sm font-semibold text-slate-700">
@@ -19614,16 +20077,16 @@ function PlanOptimizationControls({
               </div>
               {alternatives.map((alternative) => (
                 <div
-                  key={`${alternative.id}-${alternative.purchaseYear}-${alternative.exitYear}`}
+                  key={alternative.id}
                   className="rounded-lg border border-slate-200 bg-white p-3"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-semibold text-slate-800">{alternative.label}</div>
                       <div className="text-[11px] text-slate-500">
-                        Purchase in year {alternative.purchaseYear} · hold for {alternative.exitYear} year
-                        {alternative.exitYear === 1 ? '' : 's'}
+                        {buildScheduleHeadline(alternative.schedule)}
                       </div>
+                      {renderScheduleDetails(alternative.schedule)}
                     </div>
                     <div className="text-right text-[11px] text-slate-500">
                       <div className="text-sm font-semibold text-slate-700">{alternative.formattedValue}</div>
