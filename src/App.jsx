@@ -2078,7 +2078,15 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
           Number(chartPoint.reinvestFund ?? chartPoint.investedRent ?? chartPoint.meta?.reinvestFundValue) || 0;
         const propertyReinvestedContributions =
           Number(
-            chartPoint.meta?.investedRentContributions ?? chartPoint.meta?.cumulativeReinvested ?? 0
+            chartPoint.cashInvested ??
+              chartPoint.reinvestContributions ??
+              chartPoint.meta?.investedRentContributions ??
+              chartPoint.meta?.cumulativeReinvestedCashAfterTax ??
+              chartPoint.meta?.cumulativeReinvestedCash ??
+              chartPoint.meta?.cumulativeReinvested ??
+              chartPoint.meta?.totals?.cashInvested ??
+              chartPoint.meta?.totals?.reinvestedCashContributions ??
+              0
           ) || 0;
         const propertyReinvestContributionYear =
           Number(chartPoint.meta?.yearly?.reinvestContribution ?? 0) || 0;
@@ -15097,12 +15105,6 @@ export default function App() {
                     value={currency(equity.propertyNetWealthAtExit)}
                     tooltip={propertyNetTooltip}
                     knowledgeKey="propertyNet"
-                  />
-                  <Line
-                    label={propertyNetAfterTaxLabel}
-                    value={currency(equity.propertyNetWealthAfterTax)}
-                    tooltip={propertyNetAfterTaxTooltip}
-                    knowledgeKey="propertyNetAfterTax"
                   />
                   <Line
                     label="Capital gains tax"
