@@ -132,6 +132,58 @@ const encodeForSrcdoc = (value) => {
   }
 };
 
+const toRadians = (value) => (Number.isFinite(value) ? (value * Math.PI) / 180 : NaN);
+
+const calculateDistanceKm = (lat1, lon1, lat2, lon2) => {
+  if (!Number.isFinite(lat1) || !Number.isFinite(lon1) || !Number.isFinite(lat2) || !Number.isFinite(lon2)) {
+    return null;
+  }
+  const earthRadiusKm = 6371;
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const originLat = toRadians(lat1);
+  const destinationLat = toRadians(lat2);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(originLat) * Math.cos(destinationLat);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+  const distance = earthRadiusKm * c;
+  return Number.isFinite(distance) ? distance : null;
+};
+
+const formatDistanceKm = (value) => {
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  if (value < 0.001) {
+    return '0 m';
+  }
+  if (value < 1) {
+    return `${Math.round(value * 1000).toLocaleString()} m`;
+  }
+  if (value < 10) {
+    return `${value.toFixed(1)} km`;
+  }
+  return `${Math.round(value).toLocaleString()} km`;
+};
+
+const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+});
+
+const formatIsoDate = (value) => {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return '';
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+  return SHORT_DATE_FORMATTER.format(parsed);
+};
+
 const useOverlayEscape = (open, onClose) => {
   useEffect(() => {
     if (!open) {
@@ -594,6 +646,7 @@ const CRIME_CATEGORY_PALETTE = [
   '#8b5cf6',
   '#f472b6',
 ];
+const INFRASTRUCTURE_SEARCH_RADIUS_METERS = 5000;
 const CASHFLOW_VIEW_OPTIONS = [
   { value: 'all', label: 'All cash flow' },
   { value: 'positive', label: 'Positive after-tax cash flow' },
@@ -1354,6 +1407,7 @@ const summarizeCrimeData = (
 };
 
 const INITIAL_CRIME_STATE = { status: 'idle', data: null, error: '' };
+const INITIAL_INFRASTRUCTURE_STATE = { status: 'idle', data: null, error: '' };
 
 const WEALTH_SERIES_ORDER = [
   'indexFund',
@@ -3703,6 +3757,254 @@ const isPlaceholderCoordinateQuery = (value) => {
   return !hasUsableCoordinates(lat, lon);
 };
 
+const parseCoordinateValue = (value) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') {
+      return null;
+    }
+    const parsed = Number.parseFloat(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const extractCoordinates = (source, depth = 0) => {
+  if (!source || depth > 6) {
+    return null;
+  }
+  if (Array.isArray(source)) {
+    if (source.length >= 2 && !Array.isArray(source[0])) {
+      const lon = parseCoordinateValue(source[0]);
+      const lat = parseCoordinateValue(source[1]);
+      if (lat !== null && lon !== null) {
+        return { lat, lon };
+      }
+    }
+    for (const candidate of source) {
+      const nested = extractCoordinates(candidate, depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
+  if (typeof source !== 'object') {
+    return null;
+  }
+  const directLat = parseCoordinateValue(
+    source.lat ??
+      source.latitude ??
+      source.lat_wgs84 ??
+      source.latWgs84 ??
+      source.geo_lat ??
+      source.geoLat ??
+      source.y ??
+      source.northing
+  );
+  const directLon = parseCoordinateValue(
+    source.lon ??
+      source.lng ??
+      source.long ??
+      source.longitude ??
+      source.lon_wgs84 ??
+      source.lonWgs84 ??
+      source.geo_lon ??
+      source.geoLon ??
+      source.x ??
+      source.easting
+  );
+  if (directLat !== null && directLon !== null) {
+    return { lat: directLat, lon: directLon };
+  }
+  const arrayCandidates = [source.coordinates, source.centroid, source.centre, source.center];
+  for (const candidate of arrayCandidates) {
+    const resolved = extractCoordinates(candidate, depth + 1);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  const objectCandidates = ['location', 'point', 'position', 'site', 'geometry', 'geojson', 'spatial'];
+  for (const key of objectCandidates) {
+    if (source[key]) {
+      const resolved = extractCoordinates(source[key], depth + 1);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+  if (source.type === 'Point' && Array.isArray(source.coordinates)) {
+    const resolved = extractCoordinates(source.coordinates, depth + 1);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return null;
+};
+
+const pickFirstString = (values = []) => {
+  for (const value of values) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed !== '') {
+        return trimmed;
+      }
+    }
+  }
+  return '';
+};
+
+const pickUrlString = (values = []) => {
+  for (const value of values) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed !== '' && /^https?:\/\//i.test(trimmed)) {
+        return trimmed;
+      }
+    }
+  }
+  return '';
+};
+
+const normalizePlanningEntries = (payload, datasetType, originLat, originLon) => {
+  const rows = [];
+  if (Array.isArray(payload?.results)) rows.push(...payload.results);
+  if (Array.isArray(payload?.entries)) rows.push(...payload.entries);
+  if (Array.isArray(payload?.items)) rows.push(...payload.items);
+  if (Array.isArray(payload?.features)) rows.push(...payload.features);
+  if (Array.isArray(payload?.records)) rows.push(...payload.records);
+  if (payload && typeof payload === 'object') {
+    if (payload.entity && typeof payload.entity === 'object') {
+      rows.push(payload.entity);
+    }
+  }
+  const label = datasetType === 'planning' ? 'Planning application' : 'Infrastructure project';
+  const seen = new Set();
+  const results = [];
+  rows.forEach((row, index) => {
+    const entity =
+      (row && typeof row === 'object' && (row.entity || row.item || row.properties)) || row;
+    if (!entity || typeof entity !== 'object') {
+      return;
+    }
+    const coordinates =
+      extractCoordinates(row) ||
+      extractCoordinates(row?.geometry) ||
+      extractCoordinates(entity) ||
+      extractCoordinates(entity?.geometry) ||
+      extractCoordinates(entity?.location);
+    if (!coordinates) {
+      return;
+    }
+    const lat = parseCoordinateValue(coordinates.lat);
+    const lon = parseCoordinateValue(coordinates.lon);
+    if (lat === null || lon === null) {
+      return;
+    }
+    const idCandidates = [
+      entity['@id'],
+      row?.['@id'],
+      entity.id,
+      entity.reference,
+      entity['reference-number'],
+      entity['application-reference'],
+    ];
+    let identifier = pickFirstString(idCandidates);
+    if (identifier === '') {
+      identifier = `${datasetType}-item-${index + 1}`;
+    }
+    let uniqueId = identifier;
+    let counter = 1;
+    while (seen.has(uniqueId)) {
+      uniqueId = `${identifier}-${counter += 1}`;
+    }
+    seen.add(uniqueId);
+    const reference = pickFirstString([
+      entity.reference,
+      entity['reference-number'],
+      entity['application-reference'],
+      entity['case-reference'],
+    ]);
+    const organisation = pickFirstString([
+      entity.organisation,
+      entity['organisation-name'],
+      entity['local-planning-authority-name'],
+      entity['applicant-name'],
+    ]);
+    const status = pickFirstString([
+      entity.status,
+      entity['status-text'],
+      entity['application-status'],
+      entity['development-status'],
+    ]);
+    const decisionDate = pickFirstString([
+      entity['decision-date'],
+      entity.decision_date,
+      entity.decisionDate,
+    ]);
+    const startDate = pickFirstString([
+      entity['start-date'],
+      entity.start_date,
+      entity.startDate,
+      entity['project-start-date'],
+      entity['anticipated-start-date'],
+    ]);
+    const title =
+      pickFirstString([
+        entity.title,
+        entity.name,
+        entity['application-name'],
+        entity['project-name'],
+        entity.description,
+        entity.summary,
+        reference,
+      ]) || label;
+    const description = pickFirstString([
+      entity.description,
+      entity.summary,
+      entity.proposal,
+      entity['project-description'],
+      entity['development-description'],
+    ]);
+    const url = pickUrlString([
+      entity.url,
+      entity.website,
+      entity['application-url'],
+      entity['information-url'],
+      entity['planning-application'],
+      entity['@id'],
+    ]);
+    const distanceKm = calculateDistanceKm(originLat, originLon, lat, lon);
+    results.push({
+      id: uniqueId,
+      lat,
+      lon,
+      title,
+      description,
+      url,
+      reference,
+      organisation,
+      status,
+      decisionDate,
+      startDate,
+      dataset: label,
+      distanceKm,
+    });
+  });
+  results.sort((a, b) => {
+    const distanceA = Number.isFinite(a.distanceKm) ? a.distanceKm : Infinity;
+    const distanceB = Number.isFinite(b.distanceKm) ? b.distanceKm : Infinity;
+    if (distanceA !== distanceB) {
+      return distanceA - distanceB;
+    }
+    return a.title.localeCompare(b.title);
+  });
+  return results;
+};
+
 const CrimeMap = ({ center, bounds, markers, className, title }) => {
   const normalizedCenter = useMemo(() => {
     const lat = Number(center?.lat);
@@ -3849,6 +4151,189 @@ const CrimeMap = ({ center, bounds, markers, className, title }) => {
           if (marker.street) parts.push(escapeHtml(marker.street));
           if (marker.outcome) parts.push(escapeHtml(marker.outcome));
           if (marker.month) parts.push(escapeHtml(marker.month));
+          if (parts.length > 0) {
+            circle.bindPopup(parts.join('<br/>'), { closeButton: false });
+          }
+          circle.addTo(map);
+        });
+      })();
+    </script>
+  </body>
+</html>`;
+  }, [mapTitle, normalizedBounds, normalizedCenter, normalizedMarkers]);
+
+  return (
+    <iframe
+      title={mapTitle}
+      srcDoc={mapDocument}
+      className={['h-full w-full border-0', className].filter(Boolean).join(' ')}
+      loading="lazy"
+      sandbox="allow-scripts allow-same-origin"
+      referrerPolicy="no-referrer-when-downgrade"
+    />
+  );
+};
+
+const InfrastructureMap = ({ center, bounds, markers, className, title }) => {
+  const normalizedCenter = useMemo(() => {
+    const lat = Number(center?.lat);
+    const lon = Number(center?.lon);
+    const zoom = Number(center?.zoom);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return { lat: 54.0, lon: -2.0, zoom: 6 };
+    }
+    return {
+      lat,
+      lon,
+      zoom: Number.isFinite(zoom) ? clamp(zoom, 3, 18) : 13,
+    };
+  }, [center]);
+
+  const normalizedBounds = useMemo(() => {
+    if (
+      !Array.isArray(bounds) ||
+      bounds.length !== 2 ||
+      !Array.isArray(bounds[0]) ||
+      !Array.isArray(bounds[1])
+    ) {
+      return null;
+    }
+    const southLat = Number(bounds[0][0]);
+    const southLon = Number(bounds[0][1]);
+    const northLat = Number(bounds[1][0]);
+    const northLon = Number(bounds[1][1]);
+    if (
+      !Number.isFinite(southLat) ||
+      !Number.isFinite(southLon) ||
+      !Number.isFinite(northLat) ||
+      !Number.isFinite(northLon)
+    ) {
+      return null;
+    }
+    const minLat = Math.min(southLat, northLat);
+    const maxLat = Math.max(southLat, northLat);
+    const minLon = Math.min(southLon, northLon);
+    const maxLon = Math.max(southLon, northLon);
+    if (minLat === maxLat && minLon === maxLon) {
+      return [
+        [minLat - 0.0005, minLon - 0.0005],
+        [maxLat + 0.0005, maxLon + 0.0005],
+      ];
+    }
+    return [
+      [minLat, minLon],
+      [maxLat, maxLon],
+    ];
+  }, [bounds]);
+
+  const normalizedMarkers = useMemo(() => {
+    if (!Array.isArray(markers)) {
+      return [];
+    }
+    return markers
+      .map((marker) => {
+        const lat = parseCoordinateValue(marker?.lat);
+        const lon = parseCoordinateValue(marker?.lon);
+        if (lat === null || lon === null) {
+          return null;
+        }
+        return {
+          lat,
+          lon,
+          type: typeof marker?.type === 'string' ? marker.type : 'planning',
+          title: typeof marker?.title === 'string' ? marker.title : '',
+          subtitle: typeof marker?.subtitle === 'string' ? marker.subtitle : '',
+          description: typeof marker?.description === 'string' ? marker.description : '',
+          distance: typeof marker?.distance === 'string' ? marker.distance : '',
+          status: typeof marker?.status === 'string' ? marker.status : '',
+          reference: typeof marker?.reference === 'string' ? marker.reference : '',
+          url: typeof marker?.url === 'string' ? marker.url : '',
+        };
+      })
+      .filter(Boolean);
+  }, [markers]);
+
+  const mapTitle = title || 'Infrastructure projects map';
+
+  const mapDocument = useMemo(() => {
+    const encodedCenter = encodeForSrcdoc(normalizedCenter);
+    const encodedBounds = normalizedBounds ? encodeForSrcdoc(normalizedBounds) : '';
+    const encodedMarkers = encodeForSrcdoc(normalizedMarkers);
+    const ariaLabel = escapeHtml(mapTitle);
+    return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous" />
+    <style>
+      html, body, #map { height: 100%; margin: 0; }
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .leaflet-popup-content { font-size: 12px; line-height: 1.4; }
+    </style>
+  </head>
+  <body>
+    <div id="map" role="img" aria-label="${ariaLabel}"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
+    <script>
+      (function() {
+        const decode = (value) => JSON.parse(decodeURIComponent(value));
+        const center = decode('${encodedCenter}');
+        const bounds = ${normalizedBounds ? `decode('${encodedBounds}')` : 'null'};
+        const markers = decode('${encodedMarkers}');
+        const map = L.map('map', { zoomControl: true, scrollWheelZoom: false, attributionControl: true });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        if (Array.isArray(bounds) && bounds.length === 2) {
+          const sw = bounds[0];
+          const ne = bounds[1];
+          if (Array.isArray(sw) && Array.isArray(ne) && sw.length === 2 && ne.length === 2) {
+            const latLngBounds = L.latLngBounds([sw[0], sw[1]], [ne[0], ne[1]]);
+            map.fitBounds(latLngBounds, { padding: [24, 24], maxZoom: 17 });
+          }
+        } else if (center && Number.isFinite(center.lat) && Number.isFinite(center.lon)) {
+          map.setView([center.lat, center.lon], center.zoom || 13);
+        }
+        const escapeHtml = (value) => String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+        const strokeForType = (type) => {
+          if (type === 'property') return '#6366f1';
+          if (type === 'project') return '#f97316';
+          return '#0ea5e9';
+        };
+        const fillForType = (type) => {
+          if (type === 'property') return '#c4b5fd';
+          if (type === 'project') return '#fed7aa';
+          return '#bae6fd';
+        };
+        markers.forEach((marker) => {
+          if (!marker || !Number.isFinite(marker.lat) || !Number.isFinite(marker.lon)) {
+            return;
+          }
+          const color = strokeForType(marker.type);
+          const fill = fillForType(marker.type);
+          const circle = L.circleMarker([marker.lat, marker.lon], {
+            radius: marker.type === 'property' ? 8 : 6,
+            color,
+            weight: 1,
+            opacity: 0.95,
+            fillColor: fill,
+            fillOpacity: 0.8
+          });
+          const parts = [];
+          if (marker.title) parts.push('<strong>' + escapeHtml(marker.title) + '</strong>');
+          if (marker.subtitle) parts.push(escapeHtml(marker.subtitle));
+          if (marker.reference) parts.push('Reference: ' + escapeHtml(marker.reference));
+          if (marker.status) parts.push('Status: ' + escapeHtml(marker.status));
+          if (marker.distance) parts.push('Distance: ' + escapeHtml(marker.distance));
+          if (marker.description) parts.push(escapeHtml(marker.description));
+          if (marker.url) parts.push('<a href="' + escapeHtml(marker.url) + '" target="_blank" rel="noreferrer noopener">View details</a>');
           if (parts.length > 0) {
             circle.bindPopup(parts.join('<br/>'), { closeButton: false });
           }
@@ -4024,6 +4509,8 @@ const SECTION_DESCRIPTIONS = {
     'Stress-tests IRR and total ROI outcomes across different loan-to-value ratios to gauge the impact of leverage.',
   crime:
     'Summarises recent police-reported crime around the property and plots the incidents on an interactive map.',
+  infrastructure:
+    'Maps nearby planning applications and infrastructure projects so you can gauge future development activity around the property.',
   investmentProfile:
     'Synthesises IRR, cash-on-cash return, and discounted net present value into a narrative on overall deal quality.',
 };
@@ -7316,6 +7803,7 @@ export default function App() {
     extraSettings: true,
     cashflowDetail: true,
     crime: true,
+    infrastructure: true,
     wealthTrajectory: false,
     rateTrends: true,
     npvTimeline: true,
@@ -7451,6 +7939,7 @@ export default function App() {
   const geocodeAbortRef = useRef(null);
   const crimeAbortRef = useRef(null);
   const crimePostcodeAbortRef = useRef(null);
+  const infrastructureAbortRef = useRef(null);
   const lastGeocodeQueryRef = useRef('');
   const lastCrimePostcodeRef = useRef('');
   const [rateChartSettings, setRateChartSettings] = useState({
@@ -7473,6 +7962,7 @@ export default function App() {
   const [syncError, setSyncError] = useState('');
   const [geocodeState, setGeocodeState] = useState({ status: 'idle', data: null, error: '' });
   const [crimeState, setCrimeState] = useState(INITIAL_CRIME_STATE);
+  const [infrastructureState, setInfrastructureState] = useState(INITIAL_INFRASTRUCTURE_STATE);
   const [crimePostcodeState, setCrimePostcodeState] = useState({ status: 'idle', data: null, error: '' });
   const [crimeSelectedMonth, setCrimeSelectedMonth] = useState('');
   const [crimeTrendActiveCategories, setCrimeTrendActiveCategories] = useState({});
@@ -9026,6 +9516,165 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (infrastructureAbortRef.current) {
+      infrastructureAbortRef.current.abort();
+      infrastructureAbortRef.current = null;
+    }
+
+    if (!hasPropertyAddress) {
+      setInfrastructureState(INITIAL_INFRASTRUCTURE_STATE);
+      return;
+    }
+
+    if (!hasUsableCoordinates(crimeLat, crimeLon)) {
+      if (geocodeState.status === 'error') {
+        setInfrastructureState({
+          status: 'error',
+          data: null,
+          error:
+            geocodeState.error || 'Unable to resolve the property location for planning data.',
+        });
+      } else if (geocodeState.status === 'loading') {
+        setInfrastructureState((prev) =>
+          prev.status === 'loading' && prev.data === null && prev.error === ''
+            ? prev
+            : { status: 'loading', data: null, error: '' }
+        );
+      } else {
+        setInfrastructureState(INITIAL_INFRASTRUCTURE_STATE);
+      }
+      return;
+    }
+
+    const controller = new AbortController();
+    infrastructureAbortRef.current = controller;
+    setInfrastructureState({ status: 'loading', data: null, error: '' });
+
+    (async () => {
+      const lat = crimeLat;
+      const lon = crimeLon;
+      const datasetConfigs = [
+        { key: 'applications', dataset: 'planning_applications', type: 'planning' },
+        { key: 'projects', dataset: 'infrastructure_projects', type: 'project' },
+      ];
+
+      try {
+        const results = await Promise.all(
+          datasetConfigs.map(async ({ key, dataset, type }) => {
+            try {
+              const params = new URLSearchParams({
+                dataset,
+                lat: Number(lat).toFixed(6),
+                lon: Number(lon).toFixed(6),
+                radius: String(INFRASTRUCTURE_SEARCH_RADIUS_METERS),
+                limit: '50',
+              });
+              params.set('sort', 'distance');
+              const response = await fetch(
+                `https://www.planning.data.gov.uk/entity.json?${params.toString()}`,
+                {
+                  signal: controller.signal,
+                  headers: { Accept: 'application/json' },
+                }
+              );
+              if (!response.ok) {
+                throw new Error(`Request failed with status ${response.status}`);
+              }
+              const payload = await response.json();
+              const items = normalizePlanningEntries(payload, type, lat, lon);
+              return { key, items, error: '' };
+            } catch (error) {
+              if (error?.name === 'AbortError') {
+                throw error;
+              }
+              console.warn(`Unable to load ${dataset} dataset:`, error);
+              const message =
+                error instanceof Error && error.message
+                  ? error.message
+                  : 'Unable to load dataset.';
+              return { key, items: [], error: message };
+            }
+          })
+        );
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const applicationsResult = results.find((entry) => entry.key === 'applications');
+        const projectsResult = results.find((entry) => entry.key === 'projects');
+        const applications = applicationsResult?.items ?? [];
+        const projects = projectsResult?.items ?? [];
+        const warningMessages = results
+          .filter((entry) => entry.error)
+          .map((entry) =>
+            entry.key === 'applications'
+              ? `Planning applications: ${entry.error}`
+              : `Infrastructure projects: ${entry.error}`
+          );
+        const hasAnyData = applications.length > 0 || projects.length > 0;
+        if (!hasAnyData && warningMessages.length === results.length) {
+          setInfrastructureState({
+            status: 'error',
+            data: null,
+            error:
+              warningMessages.join(' ') ||
+              'Unable to load nearby planning applications or infrastructure projects.',
+          });
+          return;
+        }
+
+        setInfrastructureState({
+          status: 'success',
+          data: {
+            property: {
+              lat,
+              lon,
+              label: geocodeDisplayName || propertyAddress || 'Selected property',
+            },
+            applications,
+            projects,
+            warnings: warningMessages,
+          },
+          error: '',
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          return;
+        }
+        console.warn('Unable to load planning data:', error);
+        setInfrastructureState({
+          status: 'error',
+          data: null,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : 'Unable to load nearby planning datasets.',
+        });
+      } finally {
+        if (infrastructureAbortRef.current === controller) {
+          infrastructureAbortRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      if (infrastructureAbortRef.current === controller) {
+        infrastructureAbortRef.current = null;
+      }
+    };
+  }, [
+    hasPropertyAddress,
+    crimeLat,
+    crimeLon,
+    geocodeState.status,
+    geocodeState.error,
+    geocodeDisplayName,
+    propertyAddress,
+  ]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
       const stored = window.localStorage.getItem(SCENARIO_STORAGE_KEY);
@@ -10403,6 +11052,185 @@ export default function App() {
       6
     )}#map=${mapZoom}/${lat.toFixed(6)}/${lon.toFixed(6)}`;
   }, [crimeMapCenter]);
+
+  const infrastructureData = infrastructureState.data;
+  const infrastructureLoading = infrastructureState.status === 'loading';
+  const infrastructureError =
+    infrastructureState.status === 'error'
+      ? infrastructureState.error || 'Unable to load nearby planning datasets.'
+      : '';
+  const infrastructureWarnings = Array.isArray(infrastructureData?.warnings)
+    ? infrastructureData.warnings.filter((warning) => typeof warning === 'string' && warning.trim() !== '')
+    : [];
+  const infrastructureApplications = Array.isArray(infrastructureData?.applications)
+    ? infrastructureData.applications
+    : [];
+  const infrastructureProjects = Array.isArray(infrastructureData?.projects)
+    ? infrastructureData.projects
+    : [];
+  const infrastructureProperty = infrastructureData?.property ?? null;
+
+  const infrastructureMapMarkers = useMemo(() => {
+    const markers = [];
+    if (
+      infrastructureProperty &&
+      Number.isFinite(infrastructureProperty.lat) &&
+      Number.isFinite(infrastructureProperty.lon)
+    ) {
+      markers.push({
+        type: 'property',
+        lat: infrastructureProperty.lat,
+        lon: infrastructureProperty.lon,
+        title: 'Subject property',
+        subtitle:
+          typeof infrastructureProperty.label === 'string' && infrastructureProperty.label.trim() !== ''
+            ? infrastructureProperty.label
+            : propertyAddress || 'Selected property',
+      });
+    }
+    infrastructureApplications.forEach((item) => {
+      if (!Number.isFinite(item?.lat) || !Number.isFinite(item?.lon)) {
+        return;
+      }
+      markers.push({
+        type: 'planning',
+        lat: item.lat,
+        lon: item.lon,
+        title: item.title || 'Planning application',
+        description: item.description || '',
+        distance: formatDistanceKm(item.distanceKm),
+        status: item.status || '',
+        reference: item.reference || '',
+        url: item.url || '',
+      });
+    });
+    infrastructureProjects.forEach((item) => {
+      if (!Number.isFinite(item?.lat) || !Number.isFinite(item?.lon)) {
+        return;
+      }
+      markers.push({
+        type: 'project',
+        lat: item.lat,
+        lon: item.lon,
+        title: item.title || 'Infrastructure project',
+        description: item.description || '',
+        distance: formatDistanceKm(item.distanceKm),
+        status: item.status || '',
+        reference: item.reference || '',
+        url: item.url || '',
+      });
+    });
+    return markers;
+  }, [
+    infrastructureApplications,
+    infrastructureProjects,
+    infrastructureProperty,
+    propertyAddress,
+  ]);
+
+  const infrastructureMapBounds = useMemo(() => {
+    if (!infrastructureMapMarkers.length) {
+      return null;
+    }
+    let minLat = Infinity;
+    let maxLat = -Infinity;
+    let minLon = Infinity;
+    let maxLon = -Infinity;
+    infrastructureMapMarkers.forEach((marker) => {
+      const lat = Number(marker?.lat);
+      const lon = Number(marker?.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        return;
+      }
+      minLat = Math.min(minLat, lat);
+      maxLat = Math.max(maxLat, lat);
+      minLon = Math.min(minLon, lon);
+      maxLon = Math.max(maxLon, lon);
+    });
+    if (!Number.isFinite(minLat) || !Number.isFinite(minLon) || !Number.isFinite(maxLat) || !Number.isFinite(maxLon)) {
+      return null;
+    }
+    if (minLat === maxLat && minLon === maxLon) {
+      return [
+        [minLat - 0.0005, minLon - 0.0005],
+        [maxLat + 0.0005, maxLon + 0.0005],
+      ];
+    }
+    return [
+      [minLat, minLon],
+      [maxLat, maxLon],
+    ];
+  }, [infrastructureMapMarkers]);
+
+  const infrastructureMapCenter = useMemo(() => {
+    if (
+      infrastructureProperty &&
+      Number.isFinite(infrastructureProperty.lat) &&
+      Number.isFinite(infrastructureProperty.lon)
+    ) {
+      return { lat: infrastructureProperty.lat, lon: infrastructureProperty.lon, zoom: 13 };
+    }
+    const fallback = infrastructureMapMarkers.find(
+      (marker) => Number.isFinite(marker?.lat) && Number.isFinite(marker?.lon)
+    );
+    if (fallback) {
+      return { lat: fallback.lat, lon: fallback.lon, zoom: 13 };
+    }
+    return null;
+  }, [infrastructureProperty, infrastructureMapMarkers]);
+
+  const infrastructureMapKey = useMemo(() => {
+    if (!infrastructureMapCenter) {
+      return '';
+    }
+    const markerCount = infrastructureMapMarkers.length;
+    return `infrastructure-${infrastructureMapCenter.lat?.toFixed(4) ?? '0'}-${
+      infrastructureMapCenter.lon?.toFixed(4) ?? '0'
+    }-${markerCount}`;
+  }, [infrastructureMapCenter, infrastructureMapMarkers.length]);
+
+  const infrastructureSummaryEntries = useMemo(() => {
+    const entries = [];
+    infrastructureApplications.forEach((item) => {
+      entries.push({
+        dataset: 'Planning application',
+        title: item.title || 'Planning application',
+        distanceKm: Number.isFinite(item.distanceKm) ? item.distanceKm : null,
+        status: item.status || '',
+        organisation: item.organisation || '',
+        reference: item.reference || '',
+      });
+    });
+    infrastructureProjects.forEach((item) => {
+      entries.push({
+        dataset: 'Infrastructure project',
+        title: item.title || 'Infrastructure project',
+        distanceKm: Number.isFinite(item.distanceKm) ? item.distanceKm : null,
+        status: item.status || '',
+        organisation: item.organisation || '',
+        reference: item.reference || '',
+      });
+    });
+    return entries;
+  }, [infrastructureApplications, infrastructureProjects]);
+
+  const infrastructureListSections = useMemo(
+    () => [
+      {
+        key: 'applications',
+        title: 'Planning applications',
+        emptyMessage: 'No nearby planning applications were found within the current search radius.',
+        items: infrastructureApplications,
+      },
+      {
+        key: 'projects',
+        title: 'Infrastructure projects',
+        emptyMessage: 'No nearby infrastructure projects were found within the current search radius.',
+        items: infrastructureProjects,
+      },
+    ],
+    [infrastructureApplications, infrastructureProjects]
+  );
 
   const crimeTrendActiveKeys = useMemo(() => {
     if (!crimeTrendData || !Array.isArray(crimeTrendData.categories)) {
@@ -16285,13 +17113,197 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                  ) : null}
-                </div>
               ) : null}
+            </div>
+          ) : null}
+          {hasPropertyAddress ? (
+            <div
+              className={`rounded-2xl bg-white p-3 shadow-sm ${
+                collapsedSections.infrastructure ? 'md:col-span-1' : 'md:col-span-2'
+              }`}
+            >
               <div
-                className={`rounded-2xl bg-white p-3 shadow-sm ${
-                  collapsedSections.interestSplit ? 'md:col-span-1' : 'md:col-span-2'
+                className={`flex flex-wrap items-center justify-between gap-3 ${
+                  collapsedSections.infrastructure ? '' : 'mb-2'
                 }`}
+              >
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('infrastructure')}
+                    aria-expanded={!collapsedSections.infrastructure}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.infrastructure ? 'Show infrastructure report' : 'Hide infrastructure report'}
+                  >
+                    {collapsedSections.infrastructure ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Infrastructure Projects"
+                    tooltip={SECTION_DESCRIPTIONS.infrastructure}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {!collapsedSections.infrastructure && infrastructureSummaryEntries.length > 0
+                    ? renderSummariseButton(
+                        'infrastructure',
+                        'Infrastructure Projects',
+                        infrastructureSummaryEntries,
+                        {
+                          keys: ['dataset', 'title', 'distanceKm', 'status', 'organisation', 'reference'],
+                          numericKeys: ['distanceKm'],
+                          description:
+                            'Nearby planning applications and infrastructure projects provided by planning.data.gov.uk.',
+                        }
+                      )
+                    : null}
+                </div>
+              </div>
+              {!collapsedSections.infrastructure ? (
+                <>
+                  {renderChartSummary('infrastructure')}
+                  {waitingForGeocode ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                      Resolving property location…
+                    </div>
+                  ) : infrastructureLoading ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                      Loading nearby planning applications and infrastructure projects…
+                    </div>
+                  ) : infrastructureError ? (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-600">
+                      {infrastructureError}
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {infrastructureWarnings.length > 0 ? (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+                          {infrastructureWarnings.length === 1 ? (
+                            <span>{infrastructureWarnings[0]}</span>
+                          ) : (
+                            <ul className="list-disc space-y-1 pl-4">
+                              {infrastructureWarnings.map((warning, index) => (
+                                <li key={`infrastructure-warning-${index}`}>{warning}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ) : null}
+                      <div className="h-72 w-full overflow-hidden rounded-xl border border-slate-200">
+                        {infrastructureMapMarkers.length > 0 && infrastructureMapCenter ? (
+                          <InfrastructureMap
+                            key={infrastructureMapKey || 'infrastructure-map'}
+                            className="h-full w-full"
+                            center={infrastructureMapCenter}
+                            bounds={infrastructureMapBounds}
+                            markers={infrastructureMapMarkers}
+                            title={`Infrastructure near ${propertyAddress || 'the selected property'}`}
+                          />
+                        ) : (
+                          <div className="flex h-full items-center justify-center bg-slate-50 text-center text-[11px] text-slate-500">
+                            No map preview available for this area.
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-3">
+                        {infrastructureListSections.map((section) => (
+                          <div key={section.key}>
+                            <h4 className="mb-1 text-xs font-semibold text-slate-700">{section.title}</h4>
+                            {Array.isArray(section.items) && section.items.length > 0 ? (
+                              <ul className="space-y-2">
+                                {section.items.map((item, index) => {
+                                  const itemKey = item?.id || `${section.key}-${index}`;
+                                  const distanceLabel = formatDistanceKm(item?.distanceKm);
+                                  const metaParts = [];
+                                  if (item?.reference) {
+                                    metaParts.push(`Ref: ${item.reference}`);
+                                  }
+                                  if (item?.organisation) {
+                                    metaParts.push(item.organisation);
+                                  }
+                                  if (item?.status) {
+                                    metaParts.push(`Status: ${item.status}`);
+                                  }
+                                  if (distanceLabel) {
+                                    metaParts.push(distanceLabel);
+                                  }
+                                  const timelineParts = [];
+                                  const startLabel = formatIsoDate(item?.startDate);
+                                  if (startLabel) {
+                                    timelineParts.push(`Start: ${startLabel}`);
+                                  }
+                                  const decisionLabel = formatIsoDate(item?.decisionDate);
+                                  if (decisionLabel) {
+                                    timelineParts.push(`Decision: ${decisionLabel}`);
+                                  }
+                                  const description = typeof item?.description === 'string' ? item.description : '';
+                                  const url = typeof item?.url === 'string' && item.url.trim() !== '' ? item.url : '';
+                                  return (
+                                    <li
+                                      key={itemKey}
+                                      className="rounded-lg border border-slate-200 px-3 py-2"
+                                    >
+                                      <div className="flex flex-wrap items-start justify-between gap-2">
+                                        <div className="space-y-1">
+                                          <p className="text-sm font-semibold text-slate-800">
+                                            {item?.title || 'Untitled project'}
+                                          </p>
+                                          {metaParts.length > 0 ? (
+                                            <p className="text-[11px] text-slate-500">{metaParts.join(' • ')}</p>
+                                          ) : null}
+                                          {timelineParts.length > 0 ? (
+                                            <p className="text-[11px] text-slate-500">{timelineParts.join(' • ')}</p>
+                                          ) : null}
+                                          {description ? (
+                                            <p className="text-[11px] text-slate-600">{description}</p>
+                                          ) : null}
+                                        </div>
+                                        {url ? (
+                                          <a
+                                            href={url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-slate-800"
+                                          >
+                                            <span>View details</span>
+                                            <svg
+                                              xmlns="http://www.w3.org/2000/svg"
+                                              viewBox="0 0 20 20"
+                                              fill="currentColor"
+                                              className="h-3 w-3"
+                                              aria-hidden="true"
+                                            >
+                                              <path d="M3.75 4A.75.75 0 0 1 4.5 3.25h4.75a.75.75 0 0 1 0 1.5H5.81l10.22 10.22a.75.75 0 0 1-1.06 1.06L4.75 5.81v3.44a.75.75 0 0 1-1.5 0V4Z" />
+                                              <path d="M3.75 17a.75.75 0 0 1-.75-.75V12a.75.75 0 0 1 1.5 0v3.19l10.22-10.22a.75.75 0 1 1 1.06 1.06L5.56 16.25H9a.75.75 0 0 1 0 1.5H3.75Z" />
+                                            </svg>
+                                          </a>
+                                        ) : null}
+                                      </div>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            ) : (
+                              <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+                                {section.emptyMessage}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        Planning data © planning.data.gov.uk (UK Government open data).
+                      </p>
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+          <div
+            className={`rounded-2xl bg-white p-3 shadow-sm ${
+              collapsedSections.interestSplit ? 'md:col-span-1' : 'md:col-span-2'
+            }`}
               >
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
