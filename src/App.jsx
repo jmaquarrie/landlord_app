@@ -2010,6 +2010,8 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       const reinvestState = reinvestmentStates.get(item.id) || { balance: 0, contributions: 0 };
       reinvestmentStates.set(item.id, reinvestState);
 
+      let reinvestContributionForYear = 0;
+
       if (propertyYear < 0) {
         if (reinvestState.balance > 0) {
           reinvestedFundBalance += reinvestState.balance;
@@ -2088,15 +2090,24 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
               chartPoint.meta?.totals?.reinvestedCashContributions ??
               0
           ) || 0;
-        const propertyReinvestContributionYear =
-          Number(chartPoint.meta?.yearly?.reinvestContribution ?? 0) || 0;
+        reinvestContributionForYear = Math.max(
+          0,
+          Number(
+            chartPoint.meta?.yearly?.reinvestContribution ??
+              chartPoint.meta?.yearly?.reinvestedContribution ??
+              chartPoint.meta?.yearly?.reinvestedCashContribution ??
+              chartPoint.meta?.yearly?.reinvestedCash ??
+              chartPoint.meta?.reinvestContribution ??
+              0
+          ) || 0
+        );
         const propertyReinvestGrowthYear =
           Number(chartPoint.meta?.yearly?.investedRentGrowth ?? 0) || 0;
         const propertyAfterTaxCashYear =
           Number(chartPoint.meta?.yearly?.cashAfterTax ?? 0);
         reinvestedFundBalance += propertyReinvestedValue;
         reinvestedFundContributionTotal += propertyReinvestedContributions;
-        reinvestContributionYear += propertyReinvestContributionYear;
+        reinvestContributionYear += reinvestContributionForYear;
         reinvestGrowthYear += propertyReinvestGrowthYear;
         if (propertyAfterTaxCashYear > 0) {
           reinvestEligibleCashYear += propertyAfterTaxCashYear;
@@ -2154,8 +2165,12 @@ const computeFuturePlanAnalysis = (futurePlanItems, indexFundGrowthInput) => {
       } else if (propertyYear > 0) {
         const cashIndex = propertyYear - 1;
         const annualCash = item.annualCashflows[cashIndex] ?? 0;
+        const netAnnualCash = annualCash - reinvestContributionForYear;
         contribution.operatingCashflow = annualCash;
-        contribution.cashFlow += annualCash;
+        if (reinvestContributionForYear > 0) {
+          contribution.reinvestContribution = reinvestContributionForYear;
+        }
+        contribution.cashFlow += netAnnualCash;
         if (!item.neverExit && propertyYear === item.exitYear) {
           const saleValue = Number(chartMeta.saleValue) || 0;
           const saleCosts = Number(chartMeta.saleCosts) || 0;
