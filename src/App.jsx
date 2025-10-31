@@ -17116,6 +17116,56 @@ export default function App() {
               ) : null}
             </div>
           ) : null}
+          {!hasPropertyAddress ? (
+            <div
+              className={`rounded-2xl bg-white p-3 shadow-sm ${
+                collapsedSections.infrastructure ? 'md:col-span-1' : 'md:col-span-2'
+              }`}
+            >
+              <div
+                className={`flex flex-wrap items-center justify-between gap-3 ${
+                  collapsedSections.infrastructure ? '' : 'mb-2'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection('infrastructure')}
+                    aria-expanded={!collapsedSections.infrastructure}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                    aria-label={collapsedSections.infrastructure ? 'Show infrastructure report' : 'Hide infrastructure report'}
+                  >
+                    {collapsedSections.infrastructure ? '+' : '−'}
+                  </button>
+                  <SectionTitle
+                    label="Infrastructure Projects"
+                    tooltip={SECTION_DESCRIPTIONS.infrastructure}
+                    className="text-sm font-semibold text-slate-700"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {!collapsedSections.infrastructure && infrastructureSummaryEntries.length > 0
+                    ? renderSummariseButton(
+                        'infrastructure',
+                        'Infrastructure Projects',
+                        infrastructureSummaryEntries,
+                        {
+                          keys: ['dataset', 'title', 'distanceKm', 'status', 'organisation', 'reference'],
+                          numericKeys: ['distanceKm'],
+                          description:
+                            'Nearby planning applications and infrastructure projects provided by planning.data.gov.uk.',
+                        }
+                      )
+                    : null}
+                </div>
+              </div>
+              {!collapsedSections.infrastructure ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-[11px] text-slate-500">
+                  Enter a property address to explore nearby infrastructure projects.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {hasPropertyAddress ? (
             <div
               className={`rounded-2xl bg-white p-3 shadow-sm ${
