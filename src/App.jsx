@@ -1622,6 +1622,9 @@ const DEFAULT_INPUTS = {
   useBridgingLoan: false,
   bridgingLoanTermMonths: 12,
   bridgingLoanInterestRate: 0.008,
+  bridgingLoanDepositPct: 0.25,
+  bridgingValueAdded: 0,
+  bridgingInterestPaymentMode: 'monthly',
   monthlyRent: 800,
   vacancyPct: 0.05,
   mgmtPct: 0.1,
@@ -4527,6 +4530,8 @@ const SECTION_DESCRIPTIONS = {
     'Summarises recent police-reported crime around the property and plots the incidents on an interactive map.',
   infrastructure:
     'Maps nearby planning applications and infrastructure projects so you can gauge future development activity around the property.',
+  bridgingSummary:
+    'Breaks down bridge funding assumptions, interest handling, post-refurbishment value, and refinance cash extracted once the bridge exits.',
   marketValue:
     'Compares cap rate, gross rent multiplier, discounted cash flow, and after-repair value signals to triangulate a fair market price.',
   investmentProfile:
@@ -6248,19 +6253,35 @@ function calculateEquity(rawInputs) {
   );
 
   const isCompanyBuyer = inputs.buyerType === 'company';
-  const deposit = inputs.purchasePrice * inputs.depositPct;
+  const baseDepositAmount = Math.max(0, inputs.purchasePrice * inputs.depositPct);
   const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
   const packageFees = Number(inputs.mortgagePackageFee ?? 0) || 0;
   const closing = otherClosing + packageFees + stampDuty;
 
-  const loan = inputs.purchasePrice - deposit;
+  const bridgingEnabled = Boolean(inputs.useBridgingLoan);
+  const rawBridgingDepositPct = Number(inputs.bridgingLoanDepositPct ?? inputs.depositPct ?? 0);
+  const bridgingDepositShare = bridgingEnabled
+    ? clamp(Number.isFinite(rawBridgingDepositPct) ? rawBridgingDepositPct : inputs.depositPct || 0, 0, 0.95)
+    : inputs.depositPct;
+  const bridgingDepositAmount = bridgingEnabled
+    ? Math.min(inputs.purchasePrice, Math.max(0, inputs.purchasePrice * bridgingDepositShare))
+    : baseDepositAmount;
+  const bridgingValueAddedRaw = Number(inputs.bridgingValueAdded ?? 0);
+  const bridgingValueAdded =
+    bridgingEnabled && Number.isFinite(bridgingValueAddedRaw) ? bridgingValueAddedRaw : 0;
+  const postBridgeValue = bridgingEnabled
+    ? Math.max(0, inputs.purchasePrice + bridgingValueAdded)
+    : inputs.purchasePrice;
+  const permanentDepositAmount = Math.max(0, postBridgeValue * inputs.depositPct);
+  const deposit = bridgingEnabled ? bridgingDepositAmount : baseDepositAmount;
+
+  const loan = Math.max(0, postBridgeValue - permanentDepositAmount);
   const irrHurdleValue = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
   const mortgageMonthly =
     inputs.loanType === 'interest_only'
       ? (loan * inputs.interestRate) / 12
       : monthlyMortgagePayment({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears });
 
-  const bridgingEnabled = Boolean(inputs.useBridgingLoan);
   const rawBridgingTerm = Number(inputs.bridgingLoanTermMonths ?? 0);
   const bridgingLoanTermMonths =
     bridgingEnabled && Number.isFinite(rawBridgingTerm)
@@ -6273,10 +6294,12 @@ function calculateEquity(rawInputs) {
     bridgingEnabled && Number.isFinite(rawBridgingRate)
       ? Math.max(0, rawBridgingRate)
       : 0;
-  const bridgingAmount = bridgingEnabled ? deposit : 0;
+  const bridgingInterestPaymentMode =
+    bridgingEnabled && inputs.bridgingInterestPaymentMode === 'roll_up' ? 'roll_up' : 'monthly';
+  const bridgingAmount = bridgingEnabled ? Math.max(0, inputs.purchasePrice - bridgingDepositAmount) : 0;
   const totalCashRequired = deposit + closing + inputs.renovationCost;
-  const initialCashOutlay = Math.max(totalCashRequired - bridgingAmount, 0);
-  const indexInitialInvestment = bridgingEnabled ? deposit : initialCashOutlay;
+  const initialCashOutlay = totalCashRequired;
+  const indexInitialInvestment = totalCashRequired;
 
   const baseIncome1 = isCompanyBuyer ? 0 : (inputs.incomePerson1 ?? 0);
   const baseIncome2 = isCompanyBuyer ? 0 : (inputs.incomePerson2 ?? 0);
@@ -6291,6 +6314,8 @@ function calculateEquity(rawInputs) {
   const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
   const annualPrincipal = Array.from({ length: inputs.exitYear }, () => 0);
   const annualBridgingDebtService = Array.from({ length: inputs.exitYear }, () => 0);
+  let bridgingInterestPaidDuringTerm = 0;
+  let bridgingInterestPaidAtExit = 0;
   const monthlyRate = inputs.interestRate / 12;
   let balance = loan;
   const totalMonths = inputs.exitYear * 12;
@@ -6338,22 +6363,45 @@ function calculateEquity(rawInputs) {
     const monthsToModel = Math.min(bridgingLoanTermMonths, inputs.exitYear * 12);
     const monthlyInterest =
       bridgingMonthlyRate > 0 ? bridgingAmount * bridgingMonthlyRate : 0;
+    let accruedInterest = 0;
     for (let month = 1; month <= monthsToModel; month++) {
       const yearIndex = Math.ceil(month / 12) - 1;
       if (yearIndex < 0 || yearIndex >= annualDebtService.length) {
         continue;
       }
       if (monthlyInterest !== 0) {
-        annualDebtService[yearIndex] += monthlyInterest;
-        annualInterest[yearIndex] += monthlyInterest;
-        annualBridgingDebtService[yearIndex] += monthlyInterest;
+        if (bridgingInterestPaymentMode === 'monthly') {
+          annualDebtService[yearIndex] += monthlyInterest;
+          annualInterest[yearIndex] += monthlyInterest;
+          annualBridgingDebtService[yearIndex] += monthlyInterest;
+          bridgingInterestPaidDuringTerm += monthlyInterest;
+        } else {
+          accruedInterest += monthlyInterest;
+        }
       }
       if (month === monthsToModel) {
         annualDebtService[yearIndex] += bridgingAmount;
         annualPrincipal[yearIndex] += bridgingAmount;
+        annualBridgingDebtService[yearIndex] += bridgingAmount;
+        if (bridgingInterestPaymentMode === 'roll_up' && accruedInterest !== 0) {
+          annualDebtService[yearIndex] += accruedInterest;
+          annualInterest[yearIndex] += accruedInterest;
+          annualBridgingDebtService[yearIndex] += accruedInterest;
+          bridgingInterestPaidAtExit += accruedInterest;
+        }
       }
     }
   }
+
+  const bridgingInterestTotal = bridgingInterestPaidDuringTerm + bridgingInterestPaidAtExit;
+  const bridgingExitPayoff = bridgingAmount + bridgingInterestPaidAtExit;
+  const totalCashInvestedDuringBridge = bridgingEnabled
+    ? totalCashRequired + bridgingInterestPaidDuringTerm
+    : 0;
+  const refinanceCashAvailable = bridgingEnabled ? loan - bridgingExitPayoff : 0;
+  const netCashAfterRefinance = bridgingEnabled
+    ? refinanceCashAvailable - totalCashInvestedDuringBridge
+    : 0;
 
   const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
   const variableOpex = inputs.monthlyRent * 12 * (inputs.mgmtPct + inputs.repairsPct);
@@ -6937,6 +6985,20 @@ function calculateEquity(rawInputs) {
     bridgingLoanAmount: bridgingAmount,
     bridgingLoanTermMonths,
     bridgingLoanInterestRate: bridgingMonthlyRate,
+    bridgingLoanDepositPct: bridgingEnabled ? bridgingDepositShare : inputs.depositPct,
+    bridgingDepositAmount: bridgingEnabled ? deposit : 0,
+    bridgingInterestPaymentMode,
+    bridgingInterestPaidDuringTerm,
+    bridgingInterestPaidAtExit,
+    bridgingInterestTotal,
+    bridgingExitPayoff,
+    bridgingValueAdded: bridgingEnabled ? bridgingValueAdded : 0,
+    postBridgeValue,
+    permanentDepositAmount,
+    permanentLoanAmount: loan,
+    refinanceCashAvailable,
+    totalCashInvestedDuringBridge,
+    netCashAfterRefinance,
     projectCost,
     yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
     indexValEnd: indexVal,
@@ -7830,6 +7892,7 @@ export default function App() {
     equityGrowth: true,
     interestSplit: true,
     leverage: true,
+    bridgingSummary: false,
     marketValue: true,
     investmentProfile: true,
   });
@@ -12512,6 +12575,59 @@ export default function App() {
     inputs.exitYear,
     inputs.renovationCost,
   ]);
+  const bridgingLoanSummary = useMemo(() => {
+    if (!inputs.useBridgingLoan || !equity) {
+      return null;
+    }
+
+    const depositAmount = Number(equity.deposit) || 0;
+    const bridgeDepositPct = Number.isFinite(equity.bridgingLoanDepositPct)
+      ? equity.bridgingLoanDepositPct
+      : Number(inputs.bridgingLoanDepositPct ?? inputs.depositPct ?? 0) || 0;
+    const bridgingLoanAmount = Number(equity.bridgingLoanAmount) || 0;
+    const interestMode = equity.bridgingInterestPaymentMode === 'roll_up' ? 'roll_up' : 'monthly';
+    const interestDuringTerm = Number(equity.bridgingInterestPaidDuringTerm) || 0;
+    const interestAtExit = Number(equity.bridgingInterestPaidAtExit) || 0;
+    const interestTotalValue = Number(equity.bridgingInterestTotal) || interestDuringTerm + interestAtExit;
+    const bridgePayoff = Number(equity.bridgingExitPayoff) || bridgingLoanAmount + interestAtExit;
+    const cashRequired = Number(equity.cashIn) || 0;
+    const totalInvested = Number(equity.totalCashInvestedDuringBridge) || cashRequired + interestDuringTerm;
+    const valueAdded = Number(equity.bridgingValueAdded) || 0;
+    const postBridgeValue = Number(equity.postBridgeValue) || Number(inputs.purchasePrice) + valueAdded;
+    const permanentDeposit = Number(equity.permanentDepositAmount) || 0;
+    const permanentLoan = Number(equity.permanentLoanAmount ?? equity.loan) || 0;
+    const refinanceCash = Number(equity.refinanceCashAvailable);
+    const refinanceCashAvailable = Number.isFinite(refinanceCash) ? refinanceCash : permanentLoan - bridgePayoff;
+    const netCash = Number(equity.netCashAfterRefinance);
+    const netCashAfterRefinance = Number.isFinite(netCash) ? netCash : refinanceCashAvailable - totalInvested;
+    const normalizedBridgePct = clamp(bridgeDepositPct, 0, 1);
+    const refinanceLtv = postBridgeValue > 0 ? permanentLoan / postBridgeValue : null;
+    return {
+      depositAmount,
+      bridgeDepositPct: normalizedBridgePct,
+      bridgingLoanAmount,
+      interestMode,
+      interestDuringTerm,
+      interestAtExit,
+      interestTotalValue,
+      bridgePayoff,
+      cashRequired,
+      totalInvested,
+      valueAdded,
+      postBridgeValue,
+      permanentDeposit,
+      permanentLoan,
+      refinanceCashAvailable,
+      netCashAfterRefinance,
+      refinanceLtv,
+    };
+  }, [
+    inputs.useBridgingLoan,
+    inputs.bridgingLoanDepositPct,
+    inputs.depositPct,
+    inputs.purchasePrice,
+    equity,
+  ]);
   const investmentProfile = useMemo(() => {
     if (!equity) {
       return null;
@@ -15895,18 +16011,54 @@ export default function App() {
                           }))
                         }
                       />
-                      <span>Use bridging loan for deposit</span>
+                      <span>Use bridging loan to complete purchase</span>
                     </label>
                     {inputs.useBridgingLoan ? (
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
-                        {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
+                          {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
+                          {pctInput('bridgingLoanDepositPct', 'Bridge deposit %', 0.001)}
+                          {moneyInput('bridgingValueAdded', 'Value added after works (£)', 1000)}
+                        </div>
+                        <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="font-semibold">Interest handling</div>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                            <label className="inline-flex items-center gap-2">
+                              <input
+                                type="radio"
+                                name="bridgingInterestMode"
+                                checked={inputs.bridgingInterestPaymentMode !== 'roll_up'}
+                                onChange={() =>
+                                  setInputs((prev) => ({
+                                    ...prev,
+                                    bridgingInterestPaymentMode: 'monthly',
+                                  }))
+                                }
+                              />
+                              <span>Pay interest monthly</span>
+                            </label>
+                            <label className="inline-flex items-center gap-2">
+                              <input
+                                type="radio"
+                                name="bridgingInterestMode"
+                                checked={inputs.bridgingInterestPaymentMode === 'roll_up'}
+                                onChange={() =>
+                                  setInputs((prev) => ({
+                                    ...prev,
+                                    bridgingInterestPaymentMode: 'roll_up',
+                                  }))
+                                }
+                              />
+                              <span>Roll up and pay at exit</span>
+                            </label>
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          The bridge funds the purchase price minus your bridge deposit for the term selected before switching to
+                          the standard mortgage. Any value added is applied to the refinance valuation once the bridge ends.
+                        </p>
                       </div>
-                    ) : null}
-                    {inputs.useBridgingLoan ? (
-                      <p className="text-[11px] text-slate-500">
-                        Deposit funds are covered by the bridge during the selected term before reverting to the standard mortgage.
-                      </p>
                     ) : null}
                   </div>
                 </div>
@@ -18066,6 +18218,163 @@ export default function App() {
                   </>
                 ) : null}
               </div>
+              {inputs.useBridgingLoan ? (
+                <div
+                  className={`rounded-2xl bg-white p-3 shadow-sm ${
+                    collapsedSections.bridgingSummary ? 'md:col-span-1' : 'md:col-span-2'
+                  }`}
+                >
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleSection('bridgingSummary')}
+                        aria-expanded={!collapsedSections.bridgingSummary}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                        aria-label={
+                          collapsedSections.bridgingSummary
+                            ? 'Show bridging finance summary'
+                            : 'Hide bridging finance summary'
+                        }
+                      >
+                        {collapsedSections.bridgingSummary ? '+' : '−'}
+                      </button>
+                      <SectionTitle
+                        label="Bridging finance"
+                        tooltip={SECTION_DESCRIPTIONS.bridgingSummary}
+                        className="text-sm font-semibold text-slate-700"
+                      />
+                    </div>
+                  </div>
+                  {!collapsedSections.bridgingSummary ? (
+                    <>
+                      <p className="mb-3 text-[11px] text-slate-500">
+                        Track the bridge set-up, interest handling, and refinance outcome to understand total bridge cost and
+                        how much equity you can recycle when the loan converts to standard financing.
+                      </p>
+                      {bridgingLoanSummary ? (
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="h-full rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Bridge facility</h4>
+                            <dl className="mt-2 space-y-1 text-[11px] text-slate-600">
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Bridge deposit</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.depositAmount)} ({formatPercent(
+                                    bridgingLoanSummary.bridgeDepositPct
+                                  )})
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Cash required upfront</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.cashRequired)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Bridge loan amount</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.bridgingLoanAmount)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Interest handling</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {bridgingLoanSummary.interestMode === 'roll_up'
+                                    ? 'Roll up and pay at exit'
+                                    : 'Pay interest monthly'}
+                                </dd>
+                              </div>
+                              {bridgingLoanSummary.interestDuringTerm !== 0 ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <dt>Interest paid during term</dt>
+                                  <dd className="font-medium text-slate-800">
+                                    {currency(bridgingLoanSummary.interestDuringTerm)}
+                                  </dd>
+                                </div>
+                              ) : null}
+                              {bridgingLoanSummary.interestAtExit !== 0 ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <dt>Interest paid at exit</dt>
+                                  <dd className="font-medium text-slate-800">
+                                    {currency(bridgingLoanSummary.interestAtExit)}
+                                  </dd>
+                                </div>
+                              ) : null}
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Total interest cost</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.interestTotalValue)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Bridge payoff at refinance</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.bridgePayoff)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Total cash invested (bridge stage)</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.totalInvested)}
+                                </dd>
+                              </div>
+                            </dl>
+                          </div>
+                          <div className="h-full rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Refinance outlook</h4>
+                            <dl className="mt-2 space-y-1 text-[11px] text-slate-600">
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Value added before refinance</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.valueAdded)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Post-bridge valuation</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.postBridgeValue)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Permanent deposit requirement</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.permanentDeposit)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Permanent loan after refinance</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.permanentLoan)}
+                                  {Number.isFinite(bridgingLoanSummary.refinanceLtv)
+                                    ? ` (${formatPercent(bridgingLoanSummary.refinanceLtv)} LTV)`
+                                    : ''}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Cash after repaying bridge</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.refinanceCashAvailable)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Net cash after reimbursing costs</dt>
+                                <dd className={`font-medium ${bridgingLoanSummary.netCashAfterRefinance >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                  {currency(bridgingLoanSummary.netCashAfterRefinance)}
+                                </dd>
+                              </div>
+                            </dl>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-3 text-center text-[11px] text-slate-500">
+                          Provide bridge term, rate, deposit, and value-add assumptions to model the refinance.
+                        </div>
+                      )}
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
               <div
                 className={`rounded-2xl bg-white p-3 shadow-sm ${
                   collapsedSections.marketValue ? 'md:col-span-1' : 'md:col-span-2'
@@ -23369,32 +23678,84 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
             checked={bridgingChecked}
             onChange={(event) => handleCheckboxChange('useBridgingLoan', event.target.checked)}
           />
-          <span>Use bridging loan for deposit</span>
+          <span>Use bridging loan to complete purchase</span>
         </label>
         {bridgingChecked ? (
-          <div className="mt-2 grid gap-2 md:grid-cols-2">
-            <label className="flex flex-col gap-1">
-              <span className="font-medium text-slate-600">Bridging term (months)</span>
-              <input
-                type="number"
-                min={1}
-              value={numericValue('bridgingLoanTermMonths')}
-                onChange={(event) => handleNumberChange('bridgingLoanTermMonths', event.target.value)}
-                className="rounded-lg border border-slate-300 px-3 py-1.5"
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="font-medium text-slate-600">Bridging rate %</span>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={0.01}
-                value={percentValue('bridgingLoanInterestRate')}
-                onChange={(event) => handlePercentChange('bridgingLoanInterestRate', event.target.value)}
-                className="rounded-lg border border-slate-300 px-3 py-1.5"
-              />
-            </label>
+          <div className="mt-2 space-y-3">
+            <div className="grid gap-2 md:grid-cols-2">
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Bridging term (months)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={numericValue('bridgingLoanTermMonths')}
+                  onChange={(event) => handleNumberChange('bridgingLoanTermMonths', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Bridging rate %</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.01}
+                  value={percentValue('bridgingLoanInterestRate')}
+                  onChange={(event) => handlePercentChange('bridgingLoanInterestRate', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Bridge deposit %</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.01}
+                  value={percentValue('bridgingLoanDepositPct')}
+                  onChange={(event) => handlePercentChange('bridgingLoanDepositPct', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Value added after works (£)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={numericValue('bridgingValueAdded')}
+                  onChange={(event) => handleNumberChange('bridgingValueAdded', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700">
+              <div className="font-semibold">Interest handling</div>
+              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name={`${loanTypeName}-bridge-interest`}
+                    checked={inputs.bridgingInterestPaymentMode !== 'roll_up'}
+                    onChange={() => handleTextChange('bridgingInterestPaymentMode', 'monthly')}
+                  />
+                  <span>Pay interest monthly</span>
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name={`${loanTypeName}-bridge-interest`}
+                    checked={inputs.bridgingInterestPaymentMode === 'roll_up'}
+                    onChange={() => handleTextChange('bridgingInterestPaymentMode', 'roll_up')}
+                  />
+                  <span>Roll up and pay at exit</span>
+                </label>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              The bridge covers the purchase price less your selected bridge deposit during the term before converting to your
+              standard mortgage. Added value is included in the refinance valuation once the bridge ends.
+            </p>
           </div>
         ) : null}
       </div>
