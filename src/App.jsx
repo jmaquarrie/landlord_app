@@ -133,6 +133,14 @@ const PROPERTY_TYPE_PREMIUM = {
   bungalow: 0.08,
 };
 
+const PROPERTY_TYPE_LABELS = {
+  flat: 'Flat',
+  terrace: 'Terrace',
+  semi: 'Semi-detached',
+  detached: 'Detached',
+  bungalow: 'Bungalow',
+};
+
 const ENERGY_RATING_FACTORS = {
   A: 0.08,
   B: 0.05,
@@ -160,6 +168,75 @@ const SENTIMENT_LEVELS = {
   positive: 0.03,
   neutral: 0,
   negative: -0.04,
+};
+
+const LOCATION_VALUATION_BENCHMARKS = {
+  london: {
+    capRate: 0.035,
+    grm: 19,
+    discountRate: 0.07,
+    exitCapRate: 0.045,
+    arvPremium: 0.12,
+  },
+  manchester: {
+    capRate: 0.052,
+    grm: 15.5,
+    discountRate: 0.075,
+    exitCapRate: 0.055,
+    arvPremium: 0.09,
+  },
+  birmingham: {
+    capRate: 0.05,
+    grm: 16,
+    discountRate: 0.075,
+    exitCapRate: 0.054,
+    arvPremium: 0.088,
+  },
+  bristol: {
+    capRate: 0.045,
+    grm: 17.2,
+    discountRate: 0.072,
+    exitCapRate: 0.05,
+    arvPremium: 0.095,
+  },
+  leeds: {
+    capRate: 0.051,
+    grm: 15.8,
+    discountRate: 0.074,
+    exitCapRate: 0.055,
+    arvPremium: 0.085,
+  },
+  liverpool: {
+    capRate: 0.055,
+    grm: 15,
+    discountRate: 0.078,
+    exitCapRate: 0.058,
+    arvPremium: 0.09,
+  },
+  cleveleys: {
+    capRate: 0.053,
+    grm: 15.2,
+    discountRate: 0.076,
+    exitCapRate: 0.056,
+    arvPremium: 0.082,
+  },
+  default: {
+    capRate: 0.049,
+    grm: 16.2,
+    discountRate: 0.075,
+    exitCapRate: 0.052,
+    arvPremium: 0.088,
+  },
+};
+
+const ENERGY_EXPENSE_ADJUSTMENTS = {
+  A: -0.06,
+  B: -0.04,
+  C: -0.02,
+  D: 0,
+  E: 0.02,
+  F: 0.05,
+  G: 0.07,
 };
 
 const DEFAULT_POSTCODE = 'FY5 1LH';
@@ -1235,6 +1312,32 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function formatPercentOrDash(value, fractionDigits = 1) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+  return `${(value * 100).toFixed(fractionDigits)}%`;
+}
+
+function formatNumberOrDash(value, fractionDigits = 1, suffix = '') {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+  return `${value.toFixed(fractionDigits)}${suffix}`;
+}
+
+function formatSignedCurrency(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+  if (value === 0) {
+    return formatCurrency(0);
+  }
+  const absolute = Math.abs(value);
+  const prefix = value >= 0 ? '+' : '−';
+  return `${prefix}${formatCurrency(absolute)}`;
+}
+
 function normaliseCurrencyInput(value) {
   if (typeof value === 'number') {
     return value;
@@ -1251,6 +1354,554 @@ function normaliseCurrencyInput(value) {
   return Number.NaN;
 }
 
+
+function calculateMarketValueInsights({ result, inputs, profile, locationKey }) {
+  if (!result) {
+    return null;
+  }
+
+  const benchmarks = LOCATION_VALUATION_BENCHMARKS[locationKey] ?? LOCATION_VALUATION_BENCHMARKS.default;
+  const forecastValue = Math.max(Number(result?.headlinePrice ?? 0), 0);
+  const purchasePriceCandidate = Number.isFinite(result?.purchasePrice)
+    ? result.purchasePrice
+    : Number(inputs?.purchasePrice ?? 0) || 0;
+  const rentIndexValue = Number(
+    result?.externalData?.rentIndex?.latestIndex ?? profile?.rentIndex ?? STREET_PROFILES.default.rentIndex,
+  );
+  const rentIndexAdjustment = (rentIndexValue - 110) * 0.00035;
+  const propertyTypeAdjustment = (PROPERTY_TYPE_PREMIUM[inputs?.propertyType] ?? 0) * 0.15;
+  const amenityAdjustment = (AMENITY_LEVELS[inputs?.amenityLevel] ?? 0) * 0.25;
+  const schoolAdjustment = (SCHOOL_QUALITY_FACTORS[inputs?.schoolQuality] ?? 0) * 0.2;
+  const sentimentAdjustment = (SENTIMENT_LEVELS[inputs?.sentiment] ?? 0) * 0.2;
+  const bedroomAdjustment = ((inputs?.bedrooms ?? 2) - 2) * 0.0125;
+  const bathroomAdjustment = ((inputs?.bathrooms ?? 1) - 1) * 0.01;
+  const sizeFactor = clamp((inputs?.internalArea ?? 70) / 70, 0.8, 1.35);
+  const baseYield = 0.045;
+  let grossYield =
+    baseYield +
+    rentIndexAdjustment +
+    propertyTypeAdjustment +
+    amenityAdjustment +
+    schoolAdjustment +
+    sentimentAdjustment +
+    bedroomAdjustment +
+    bathroomAdjustment;
+
+  if (inputs?.isNewBuild) {
+    grossYield -= 0.004;
+  }
+  if (inputs?.plannedRetrofit) {
+    grossYield += 0.0035;
+  }
+
+  grossYield = clamp(grossYield, 0.035, 0.075);
+
+  const grossAnnualRent = Math.round(forecastValue * grossYield * sizeFactor);
+  const energyAdjustment = ENERGY_EXPENSE_ADJUSTMENTS[inputs?.energyRating] ?? 0;
+  const expenseBaseline = 0.35 - (inputs?.isNewBuild ? 0.04 : 0) - (inputs?.plannedRetrofit ? 0.02 : 0) + energyAdjustment;
+  const expenseRatio = clamp(expenseBaseline, 0.18, 0.45);
+  const operatingExpenses = grossAnnualRent * expenseRatio;
+  const noi = grossAnnualRent - operatingExpenses;
+  const capRate = forecastValue > 0 ? noi / forecastValue : null;
+  const purchaseCapRate = purchasePriceCandidate > 0 ? noi / purchasePriceCandidate : null;
+  const valueFromCapRate = benchmarks.capRate > 0 ? noi / benchmarks.capRate : null;
+  const capRateValueDelta =
+    typeof valueFromCapRate === 'number' && Number.isFinite(valueFromCapRate)
+      ? valueFromCapRate - purchasePriceCandidate
+      : null;
+  const grm = grossAnnualRent > 0 ? forecastValue / grossAnnualRent : null;
+  const valueFromGrm = benchmarks.grm > 0 ? grossAnnualRent * benchmarks.grm : null;
+  const grmDelta =
+    typeof valueFromGrm === 'number' && Number.isFinite(valueFromGrm) ? valueFromGrm - purchasePriceCandidate : null;
+  const growthRate = clamp(Number(result?.yoyRentGrowth ?? 0.02), -0.05, 0.08);
+  const discountRate = benchmarks.discountRate ?? 0.075;
+  const exitCapRate = benchmarks.exitCapRate ?? benchmarks.capRate + 0.01;
+  const horizonYears = 10;
+  let projectedNoi = noi;
+  let npv = 0;
+  const cashflowProjection = [];
+
+  for (let year = 1; year <= horizonYears; year += 1) {
+    projectedNoi *= 1 + growthRate;
+    const discounted = projectedNoi / Math.pow(1 + discountRate, year);
+    cashflowProjection.push({ year, cashFlow: Math.round(projectedNoi), discounted: Math.round(discounted) });
+    npv += discounted;
+  }
+
+  const stabilisedNoi = projectedNoi * (1 + growthRate);
+  const safeExitCap = Math.max(exitCapRate - growthRate * 0.5, exitCapRate * 0.65);
+  const terminalValue = stabilisedNoi / Math.max(safeExitCap, 0.03);
+  const discountedTerminal = terminalValue / Math.pow(1 + discountRate, horizonYears);
+  npv += discountedTerminal;
+
+  const dcfValue = Math.round(npv);
+
+  let arvPremium = 0;
+  if (inputs?.plannedRetrofit) {
+    arvPremium += (benchmarks.arvPremium ?? 0.08) * 0.75;
+  }
+  if (inputs?.isNewBuild) {
+    arvPremium += 0.02;
+  }
+  if (inputs?.energyRating === 'A' || inputs?.energyRating === 'B') {
+    arvPremium += 0.02;
+  }
+  if (inputs?.sentiment === 'positive') {
+    arvPremium += 0.01;
+  }
+  arvPremium = clamp(arvPremium, 0.02, 0.18);
+
+  const arv = Math.round(forecastValue * (1 + arvPremium));
+  const arvDelta = Number.isFinite(purchasePriceCandidate) ? arv - purchasePriceCandidate : null;
+
+  return {
+    benchmarks,
+    forecastValue,
+    purchasePrice: purchasePriceCandidate,
+    grossAnnualRent,
+    grossYield: forecastValue > 0 ? grossAnnualRent / forecastValue : null,
+    expenseRatio,
+    noi,
+    capRate,
+    purchaseCapRate,
+    valueFromCapRate: Number.isFinite(valueFromCapRate) ? Math.round(valueFromCapRate) : null,
+    capRateValueDelta: Number.isFinite(capRateValueDelta) ? Math.round(capRateValueDelta) : null,
+    grm,
+    valueFromGrm: Number.isFinite(valueFromGrm) ? Math.round(valueFromGrm) : null,
+    grmDelta: Number.isFinite(grmDelta) ? Math.round(grmDelta) : null,
+    discountRate,
+    growthRate,
+    dcfValue,
+    horizonYears,
+    terminalValue: Math.round(terminalValue),
+    cashflowProjection,
+    arv,
+    arvPremium,
+    arvDelta: Number.isFinite(arvDelta) ? Math.round(arvDelta) : null,
+  };
+}
+
+function calculateInvestmentProfileInsights({ result, inputs, profile, marketValueInsights, dealMetrics }) {
+  if (!result) {
+    return null;
+  }
+
+  const purchasePrice = Number.isFinite(result?.purchasePrice)
+    ? result.purchasePrice
+    : Number(inputs?.purchasePrice ?? 0) || 0;
+  const forecastValue = Number.isFinite(result?.headlinePrice) ? result.headlinePrice : 0;
+  const dataConfidence = typeof result?.dataConfidence === 'number' ? result.dataConfidence : null;
+  const streetOpportunityScore = Number.isFinite(result?.streetOpportunityScore) ? result.streetOpportunityScore : null;
+  const riskScores = result?.riskScores ?? {};
+  const riskLabels = {
+    momentum: 'Momentum',
+    supply: 'Supply',
+    environmental: 'Environmental',
+    community: 'Community',
+  };
+  const riskEntries = Object.entries(riskScores)
+    .map(([key, score]) => ({
+      key,
+      label: riskLabels[key] ?? key,
+      score: Math.round(Number(score) ?? 0),
+    }))
+    .sort((a, b) => a.score - b.score);
+  const weakest = riskEntries[0] ?? null;
+  const strongest = riskEntries[riskEntries.length - 1] ?? null;
+
+  const investorFit = (() => {
+    const areaLabel = profile?.streetName ? profile.streetName.split(',')[0] : 'the neighbourhood';
+    if (marketValueInsights?.capRate && marketValueInsights?.benchmarks?.capRate) {
+      if (marketValueInsights.capRate >= marketValueInsights.benchmarks.capRate) {
+        return `Yield-focused investors may appreciate the implied cap rate of ${formatPercentOrDash(
+          marketValueInsights.purchaseCapRate,
+        )} at the asking price in ${areaLabel}.`;
+      }
+      return `Growth-led investors comfortable with tighter yields should note the ${formatPercentOrDash(
+        marketValueInsights.capRate,
+      )} cap rate versus the ${formatPercentOrDash(marketValueInsights.benchmarks.capRate)} market benchmark.`;
+    }
+    return `Run the scenario with rent and expense inputs to position this property for the right investor profile.`;
+  })();
+
+  const strengths = [];
+  if (dealMetrics?.priceDeltaDisplay?.startsWith('+')) {
+    strengths.push(`Instant equity of ${dealMetrics.priceDeltaDisplay} versus purchase price.`);
+  }
+  if (streetOpportunityScore) {
+    strengths.push(
+      `Street opportunity score ${streetOpportunityScore}/100 with ${formatPercentOrDash(dataConfidence)} model confidence.`,
+    );
+  }
+  if (marketValueInsights?.capRateValueDelta && marketValueInsights.capRateValueDelta > 0) {
+    strengths.push(
+      `Cap rate benchmarking indicates ${formatSignedCurrency(marketValueInsights.capRateValueDelta)} upside at market yields.`,
+    );
+  }
+  if (marketValueInsights?.grmDelta && marketValueInsights.grmDelta > 0) {
+    strengths.push(
+      `GRM cross-check suggests ${formatSignedCurrency(marketValueInsights.grmDelta)} valuation headroom versus purchase.`,
+    );
+  }
+
+  const watchouts = [];
+  if (dealMetrics?.priceDeltaDisplay?.startsWith('−')) {
+    watchouts.push(`Model implies negative equity of ${dealMetrics.priceDeltaDisplay} on day one.`);
+  }
+  if (weakest) {
+    watchouts.push(
+      `${weakest.label} score ${weakest.score}/100 is the softest pillar—plan mitigation for local ${weakest.label.toLowerCase()}.`,
+    );
+  }
+  if (
+    marketValueInsights?.capRate &&
+    marketValueInsights?.benchmarks?.capRate &&
+    marketValueInsights.capRate < marketValueInsights.benchmarks.capRate
+  ) {
+    watchouts.push(
+      `Cap rate ${formatPercentOrDash(marketValueInsights.capRate)} trails the ${formatPercentOrDash(
+        marketValueInsights.benchmarks.capRate,
+      )} area benchmark—cashflow buffer is thinner.`,
+    );
+  }
+  if (dataConfidence !== null && dataConfidence < 0.65) {
+    watchouts.push(
+      `Data confidence is ${formatPercentOrDash(dataConfidence)}; overlay manual comparables before investment committee.`,
+    );
+  }
+
+  const orderedRiskEntries = riskEntries
+    .map((entry) => ({
+      ...entry,
+      comment: entry.score >= 70 ? 'Strong fundamentals' : entry.score >= 50 ? 'Balanced outlook' : 'Needs mitigation',
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  return {
+    investorFit,
+    strengths: [...new Set(strengths)].slice(0, 3),
+    watchouts: [...new Set(watchouts)].slice(0, 3),
+    riskEntries: orderedRiskEntries,
+    purchasePrice,
+    forecastValue,
+    dataConfidence,
+    streetOpportunityScore,
+    propertySummary: {
+      type: inputs?.propertyType ?? null,
+      bedrooms: inputs?.bedrooms ?? null,
+      bathrooms: inputs?.bathrooms ?? null,
+      area: inputs?.internalArea ?? null,
+      energyRating: inputs?.energyRating ?? null,
+      sentiment: inputs?.sentiment ?? null,
+    },
+    strongestRisk: strongest,
+  };
+}
+
+function MarketValueContent({ insights }) {
+  if (!insights) {
+    return <p className="text-sm text-slate-600">Run a forecast to generate valuation cross-checks.</p>;
+  }
+
+  const {
+    forecastValue,
+    purchasePrice,
+    grossAnnualRent,
+    grossYield,
+    expenseRatio,
+    noi,
+    capRate,
+    purchaseCapRate,
+    benchmarks,
+    valueFromCapRate,
+    capRateValueDelta,
+    grm,
+    valueFromGrm,
+    grmDelta,
+    discountRate,
+    growthRate,
+    dcfValue,
+    horizonYears,
+    cashflowProjection,
+    terminalValue,
+    arv,
+    arvPremium,
+    arvDelta,
+  } = insights;
+
+  const forecastDelta =
+    Number.isFinite(forecastValue) && Number.isFinite(purchasePrice) ? forecastValue - purchasePrice : null;
+  const cashflowPreview = cashflowProjection.slice(0, 3);
+
+  return (
+    <div className="space-y-6 text-sm text-slate-600">
+      <div className="rounded-xl bg-slate-50 p-4">
+        <p className="text-xs uppercase tracking-wider text-slate-500">Valuation snapshot</p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Modelled market value</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatCurrency(forecastValue)}</p>
+            <p className="text-xs text-slate-500">Blended comparables &amp; feature adjustments.</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Purchase price</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatCurrency(purchasePrice)}</p>
+            <p className="text-xs text-slate-500">User-entered deal cost.</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Model vs. purchase</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">
+              {forecastDelta !== null ? formatSignedCurrency(forecastDelta) : '—'}
+            </p>
+            <p className="text-xs text-slate-500">Positive = implied discount to market.</p>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h4 className="text-base font-semibold text-slate-900">Capitalization Rate (Cap Rate)</h4>
+        <p className="mt-1 text-sm text-slate-600">Cap Rate = NOI ÷ Market Value</p>
+        <p className="text-sm text-slate-600">Market Value = NOI ÷ Cap Rate</p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Net operating income</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatCurrency(noi)}</p>
+            <p className="text-xs text-slate-500">Expense ratio {formatPercentOrDash(expenseRatio)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Implied cap rate</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatPercentOrDash(capRate)}</p>
+            <p className="text-xs text-slate-500">{`vs. purchase ${formatPercentOrDash(purchaseCapRate)}`}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Value @ market cap rate</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{valueFromCapRate ? formatCurrency(valueFromCapRate) : '—'}</p>
+            <p className="text-xs text-slate-500">
+              Benchmark {formatPercentOrDash(benchmarks?.capRate)} · {capRateValueDelta !== null ? formatSignedCurrency(capRateValueDelta) : '—'} vs. purchase
+            </p>
+          </div>
+        </div>
+        <p className="mt-3 text-xs text-slate-500">
+          Purpose: Prices an asset based on income relative to comparable deals.
+        </p>
+        <p className="text-xs text-slate-400">Used by: Institutional landlords, valuers and lenders.</p>
+      </div>
+
+      <div>
+        <h4 className="text-base font-semibold text-slate-900">Gross Rent Multiplier (GRM)</h4>
+        <p className="mt-1 text-sm text-slate-600">Market Value = Gross Annual Rent × GRM</p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Gross annual rent</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatCurrency(grossAnnualRent)}</p>
+            <p className="text-xs text-slate-500">Gross yield {formatPercentOrDash(grossYield)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Implied GRM</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatNumberOrDash(grm, 1, '×')}</p>
+            <p className="text-xs text-slate-500">Benchmark {formatNumberOrDash(benchmarks?.grm, 1, '×')}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Value @ benchmark GRM</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{valueFromGrm ? formatCurrency(valueFromGrm) : '—'}</p>
+            <p className="text-xs text-slate-500">{grmDelta !== null ? formatSignedCurrency(grmDelta) : '—'} vs. purchase</p>
+          </div>
+        </div>
+        <p className="mt-3 text-xs text-slate-500">Purpose: Quick proxy when expense data is thin.</p>
+        <p className="text-xs text-slate-400">Used by: Residential investors and estate agents.</p>
+      </div>
+
+      <div>
+        <h4 className="text-base font-semibold text-slate-900">Discounted Cash Flow (DCF) / Net Present Value</h4>
+        <p className="mt-1 text-sm text-slate-600">Market Value = Σ CF<sub>t</sub> ÷ (1 + r)<sup>t</sup></p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">10-year NPV</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatCurrency(dcfValue)}</p>
+            <p className="text-xs text-slate-500">Includes terminal value {formatCurrency(terminalValue)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Discount rate</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatPercentOrDash(discountRate)}</p>
+            <p className="text-xs text-slate-500">Rent growth {formatPercentOrDash(growthRate)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Horizon</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{horizonYears} years</p>
+            <p className="text-xs text-slate-500">Terminal cap {formatPercentOrDash(benchmarks?.exitCapRate)}</p>
+          </div>
+        </div>
+        {cashflowPreview.length > 0 && (
+          <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-500">
+            <p className="font-semibold text-slate-700">Projected NOI (discounted)</p>
+            <ul className="mt-2 space-y-1">
+              {cashflowPreview.map((row) => (
+                <li key={row.year} className="flex justify-between">
+                  <span>Year {row.year}</span>
+                  <span>
+                    {formatCurrency(row.cashFlow)} · {formatCurrency(row.discounted)} PV
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <p className="mt-3 text-xs text-slate-500">
+          Purpose: Intrinsic valuation anchored on future cashflows.
+        </p>
+        <p className="text-xs text-slate-400">Used by: Commercial analysts and large asset allocators.</p>
+      </div>
+
+      <div>
+        <h4 className="text-base font-semibold text-slate-900">After-Repair Value (ARV)</h4>
+        <p className="mt-1 text-sm text-slate-600">Definition: Post-improvement value based on uplift comps.</p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">ARV</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatCurrency(arv)}</p>
+            <p className="text-xs text-slate-500">Premium {formatPercentOrDash(arvPremium)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Spread vs. purchase</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{arvDelta !== null ? formatSignedCurrency(arvDelta) : '—'}</p>
+            <p className="text-xs text-slate-500">Reflects retrofit / sentiment uplift.</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Sensitivity</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatPercentOrDash(arvPremium - (benchmarks?.arvPremium ?? 0))}</p>
+            <p className="text-xs text-slate-500">vs. local uplift {formatPercentOrDash(benchmarks?.arvPremium)}</p>
+          </div>
+        </div>
+        <p className="mt-3 text-xs text-slate-500">Purpose: Forecast exit value post renovation or BRR strategy.</p>
+        <p className="text-xs text-slate-400">Used by: BRR, flip and development investors.</p>
+      </div>
+    </div>
+  );
+}
+
+function InvestmentProfileContent({ insights }) {
+  if (!insights) {
+    return <p className="text-sm text-slate-600">Run a forecast to unlock the investment profile.</p>;
+  }
+
+  const {
+    investorFit,
+    strengths,
+    watchouts,
+    riskEntries,
+    purchasePrice,
+    forecastValue,
+    dataConfidence,
+    streetOpportunityScore,
+    propertySummary,
+  } = insights;
+
+  const toTitle = (value) =>
+    typeof value === 'string'
+      ? value
+          .split('_')
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join(' ')
+      : '—';
+
+  const propertyTypeLabel = propertySummary?.type ? PROPERTY_TYPE_LABELS[propertySummary.type] ?? toTitle(propertySummary.type) : '—';
+
+  return (
+    <div className="space-y-6 text-sm text-slate-600">
+      <div className="rounded-xl bg-slate-50 p-4">
+        <p className="text-xs uppercase tracking-wider text-slate-500">Investor fit</p>
+        <p className="mt-2 text-slate-700">{investorFit}</p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Purchase price</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatCurrency(purchasePrice)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Modelled value</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">{formatCurrency(forecastValue)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wider text-slate-500">Opportunity &amp; confidence</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900">
+              {streetOpportunityScore ? `${streetOpportunityScore}/100` : '—'}
+            </p>
+            <p className="text-xs text-slate-500">Data confidence {formatPercentOrDash(dataConfidence)}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-4">
+        <div>
+          <p className="text-xs uppercase tracking-wider text-slate-500">Property type</p>
+          <p className="mt-1 font-semibold text-slate-900">{propertyTypeLabel}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-wider text-slate-500">Bedrooms / Bathrooms</p>
+          <p className="mt-1 font-semibold text-slate-900">
+            {propertySummary?.bedrooms ?? '—'} / {propertySummary?.bathrooms ?? '—'}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-wider text-slate-500">Internal area</p>
+          <p className="mt-1 font-semibold text-slate-900">
+            {propertySummary?.area ? `${Math.round(propertySummary.area)} m²` : '—'}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-wider text-slate-500">Energy &amp; sentiment</p>
+          <p className="mt-1 font-semibold text-slate-900">
+            {propertySummary?.energyRating ?? '—'} · {toTitle(propertySummary?.sentiment)}
+          </p>
+        </div>
+      </div>
+
+      {strengths?.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-slate-800">Strengths</h4>
+          <ul className="mt-2 space-y-2">
+            {strengths.map((item) => (
+              <li key={item} className="flex gap-2">
+                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {watchouts?.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-slate-800">Watch-outs</h4>
+          <ul className="mt-2 space-y-2 text-slate-600">
+            {watchouts.map((item) => (
+              <li key={item} className="flex gap-2">
+                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-rose-400" aria-hidden />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div>
+        <p className="text-xs uppercase tracking-wider text-slate-500">Risk snapshot</p>
+        {riskEntries.length > 0 ? (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {riskEntries.map((entry) => (
+              <div key={entry.key} className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3">
+                <p className="text-xs uppercase tracking-wider text-slate-500">{entry.label}</p>
+                <p className="mt-1 text-xl font-semibold text-slate-900">{entry.score}</p>
+                <p className="text-xs text-slate-500">{entry.comment}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-slate-500">Risk metrics populate once live data is available.</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function buildForecast(inputs, property, locationKey = 'default', externalSignals = null) {
   const profile = STREET_PROFILES[locationKey] ?? STREET_PROFILES.default;
@@ -1716,6 +2367,7 @@ export default function App() {
   );
   const [activeScore, setActiveScore] = useState(null);
   const [isMapOpen, setIsMapOpen] = useState(false);
+  const [expandedReportSections, setExpandedReportSections] = useState(() => ({ investmentProfile: true }));
   const dealMetrics = useMemo(() => {
     const priceDelta = Number.isFinite(result?.priceDelta) ? result.priceDelta : 0;
     const horizonDelta = Number.isFinite(result?.forecastHorizonDelta) ? result.forecastHorizonDelta : 0;
@@ -1975,6 +2627,24 @@ export default function App() {
   const chartData = useMemo(() => result?.forecastSeries ?? [], [result]);
   const activeProfile = result?.profile ?? STREET_PROFILES[locationKey] ?? STREET_PROFILES.default;
   const dataSourceSections = useMemo(() => buildDataSourceSections(result, inputs), [result, inputs]);
+  const marketValueInsights = useMemo(
+    () => calculateMarketValueInsights({ result, inputs, profile: activeProfile, locationKey }),
+    [result, inputs, activeProfile, locationKey],
+  );
+  const investmentProfileInsights = useMemo(
+    () =>
+      calculateInvestmentProfileInsights({
+        result,
+        inputs,
+        profile: activeProfile,
+        marketValueInsights,
+        dealMetrics,
+      }),
+    [result, inputs, activeProfile, marketValueInsights, dealMetrics],
+  );
+  const toggleReportSection = useCallback((sectionId) => {
+    setExpandedReportSections((prev) => ({ ...prev, [sectionId]: !prev[sectionId] }));
+  }, []);
   const liveAddress = useMemo(() => {
     return (
       selectedProperty?.label ||
@@ -2590,6 +3260,51 @@ export default function App() {
               ))}
             </ul>
           </div>
+
+          {[
+            {
+              id: 'marketValue',
+              title: 'Market Value',
+              description: 'Cap rate, GRM, DCF and ARV checks benchmarking the deal price.',
+              content: <MarketValueContent insights={marketValueInsights} />,
+            },
+            {
+              id: 'investmentProfile',
+              title: 'Investment profile',
+              description: 'Investor fit, strengths and watch-outs for this opportunity.',
+              content: <InvestmentProfileContent insights={investmentProfileInsights} />,
+            },
+          ].map((section) => {
+            const isOpen = Boolean(expandedReportSections[section.id]);
+            return (
+              <div key={section.id} className="overflow-hidden rounded-2xl bg-white shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => toggleReportSection(section.id)}
+                  className="flex w-full items-center justify-between gap-3 px-6 py-4 text-left transition hover:bg-slate-50"
+                  aria-expanded={isOpen}
+                >
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-900">{section.title}</h3>
+                    <p className="text-sm text-slate-500">{section.description}</p>
+                  </div>
+                  <span
+                    className={`inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-base font-semibold text-slate-500 transition-transform ${
+                      isOpen ? 'rotate-45 border-emerald-200 bg-emerald-50 text-emerald-600' : 'bg-white'
+                    }`}
+                    aria-hidden="true"
+                  >
+                    +
+                  </span>
+                </button>
+                {isOpen ? (
+                  <div className="border-t border-slate-200 px-6 py-5">
+                    {section.content}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </section>
       </main>
 
