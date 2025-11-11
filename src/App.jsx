@@ -354,6 +354,22 @@ const toFiniteNumber = (value, fallback = 0) => {
   return Number.isFinite(number) ? number : fallback;
 };
 
+const pickFirstFinite = (...candidates) => {
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) {
+      continue;
+    }
+    if (typeof candidate === 'string' && candidate.trim() === '') {
+      continue;
+    }
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
+};
+
 const mergeLegendPayload = (payload, entries) => {
   const base = Array.isArray(payload) ? [...payload] : [];
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -4511,6 +4527,8 @@ const SECTION_DESCRIPTIONS = {
     'Summarises recent police-reported crime around the property and plots the incidents on an interactive map.',
   infrastructure:
     'Maps nearby planning applications and infrastructure projects so you can gauge future development activity around the property.',
+  marketValue:
+    'Compares cap rate, gross rent multiplier, discounted cash flow, and after-repair value signals to triangulate a fair market price.',
   investmentProfile:
     'Synthesises IRR, cash-on-cash return, and discounted net present value into a narrative on overall deal quality.',
 };
@@ -7812,6 +7830,7 @@ export default function App() {
     equityGrowth: true,
     interestSplit: true,
     leverage: true,
+    marketValue: true,
     investmentProfile: true,
   });
   const [showInvestmentProfileDetails, setShowInvestmentProfileDetails] = useState(false);
@@ -12214,6 +12233,284 @@ export default function App() {
     propertyNetAfterTaxLabel,
     rentalTaxLabel,
     rentalTaxCumulativeLabel,
+  ]);
+  const marketValueSummary = useMemo(() => {
+    if (!equity) {
+      return null;
+    }
+
+    const purchasePriceNumeric = Number(inputs.purchasePrice);
+    const purchasePrice = Number.isFinite(purchasePriceNumeric) ? purchasePriceNumeric : null;
+    const noiValue = Number.isFinite(equity.noiYear1) ? equity.noiYear1 : null;
+    const subjectCapRate = Number.isFinite(equity.cap) ? equity.cap : null;
+    const providedCapRateBenchmark = pickFirstFinite(
+      inputs.marketCapRate,
+      inputs.capRateBenchmark,
+      inputs.targetCapRate,
+      inputs.capRateAssumption,
+      inputs.capRateMarket,
+      inputs.marketCapRatePct,
+      inputs.capRate
+    );
+    const capRateFromSubject =
+      (!Number.isFinite(providedCapRateBenchmark) || providedCapRateBenchmark <= 0) &&
+      Number.isFinite(subjectCapRate) &&
+      subjectCapRate > 0;
+    const capRateAssumption =
+      Number.isFinite(providedCapRateBenchmark) && providedCapRateBenchmark > 0
+        ? providedCapRateBenchmark
+        : capRateFromSubject
+        ? subjectCapRate
+        : null;
+    const capMarketValue =
+      Number.isFinite(noiValue) && Number.isFinite(capRateAssumption) && capRateAssumption > 0
+        ? noiValue / capRateAssumption
+        : null;
+    const capDifference =
+      Number.isFinite(capMarketValue) && Number.isFinite(purchasePrice) ? capMarketValue - purchasePrice : null;
+    const capNote = !Number.isFinite(capRateAssumption)
+      ? 'Provide a market cap rate benchmark to price the income stream.'
+      : capRateFromSubject
+      ? 'Using the scenario cap rate because no market benchmark was provided.'
+      : '';
+
+    const monthlyRent = Number(inputs.monthlyRent);
+    const vacancy = Number(inputs.vacancyPct);
+    const vacancyRate = Number.isFinite(vacancy) ? clamp(vacancy, 0, 0.95) : 0;
+    const grossAnnualRent = Number.isFinite(monthlyRent)
+      ? monthlyRent * 12 * (1 - vacancyRate)
+      : Number.isFinite(equity.grossRentYear1)
+      ? equity.grossRentYear1
+      : null;
+    const subjectGrm =
+      Number.isFinite(grossAnnualRent) && grossAnnualRent > 0 && Number.isFinite(purchasePrice) && purchasePrice > 0
+        ? purchasePrice / grossAnnualRent
+        : null;
+    const providedGrmBenchmark = pickFirstFinite(
+      inputs.marketGrm,
+      inputs.grossRentMultiplier,
+      inputs.targetGrm,
+      inputs.marketGrossRentMultiplier,
+      inputs.grmBenchmark,
+      inputs.grmAssumption,
+      inputs.grossRentMultiple
+    );
+    const grmFromSubject =
+      (!Number.isFinite(providedGrmBenchmark) || providedGrmBenchmark <= 0) &&
+      Number.isFinite(subjectGrm) &&
+      subjectGrm > 0;
+    const grmAssumption =
+      Number.isFinite(providedGrmBenchmark) && providedGrmBenchmark > 0
+        ? providedGrmBenchmark
+        : grmFromSubject
+        ? subjectGrm
+        : null;
+    const grmMarketValue =
+      Number.isFinite(grossAnnualRent) && Number.isFinite(grmAssumption) && grmAssumption > 0
+        ? grossAnnualRent * grmAssumption
+        : null;
+    const grmDifference =
+      Number.isFinite(grmMarketValue) && Number.isFinite(purchasePrice) ? grmMarketValue - purchasePrice : null;
+    const grmNote = !Number.isFinite(grmAssumption)
+      ? 'Provide a market gross rent multiplier from comparable sales to use this view.'
+      : grmFromSubject
+      ? 'Using the scenario rent and price to infer the GRM because no market benchmark was provided.'
+      : '';
+
+    const npvValue = Number.isFinite(equity.npv) ? equity.npv : null;
+    const initialOutlay = pickFirstFinite(equity.initialCashOutlay, equity.cashIn);
+    const discountRateValue = Number.isFinite(inputs.discountRate) ? inputs.discountRate : null;
+    const dcfMarketValue =
+      Number.isFinite(npvValue) && Number.isFinite(initialOutlay) ? npvValue + initialOutlay : null;
+    const dcfDifference =
+      Number.isFinite(dcfMarketValue) && Number.isFinite(purchasePrice) ? dcfMarketValue - purchasePrice : null;
+    const dcfNote = !Number.isFinite(dcfMarketValue)
+      ? 'Model discounted cash flow by providing a discount rate and hold assumptions.'
+      : '';
+
+    const arvCandidate = pickFirstFinite(
+      inputs.afterRepairValue,
+      inputs.arv,
+      inputs.estimatedArv,
+      inputs.postRenovationValue,
+      inputs.projectedArv,
+      inputs.expectedArv,
+      inputs.arvEstimate,
+      inputs.afterRenovationValue,
+      inputs.futureSaleValue,
+      inputs.renovationArv,
+      inputs.brArv
+    );
+    let arvSource = 'assumption';
+    let arvValue = Number.isFinite(arvCandidate) ? arvCandidate : null;
+    if (!Number.isFinite(arvValue) && Number.isFinite(equity.futureValue)) {
+      arvValue = equity.futureValue;
+      arvSource = 'projection';
+    }
+    const arvDifference =
+      Number.isFinite(arvValue) && Number.isFinite(purchasePrice) ? arvValue - purchasePrice : null;
+    const arvNote = !Number.isFinite(arvValue)
+      ? 'Add an after-repair value assumption or comparable to benchmark uplift potential.'
+      : arvSource === 'projection'
+      ? `Using year ${Math.max(1, Number(inputs.exitYear) || 1)} exit projection because no ARV assumption was provided.`
+      : '';
+
+    const renovationBudget = Number.isFinite(inputs.renovationCost) ? inputs.renovationCost : null;
+
+    const factors = [
+      {
+        key: 'capRate',
+        label: 'Capitalization Rate (Cap Rate)',
+        formula: 'Market Value = NOI ÷ Cap Rate',
+        purpose:
+          'The most widely used income-based valuation metric. It prices a property based on how much income it generates relative to similar assets in the market.',
+        usedBy: 'Institutional and buy-to-let investors, valuers, lenders.',
+        impliedValue: capMarketValue,
+        difference: capDifference,
+        available: Number.isFinite(capMarketValue),
+        note: capNote,
+        details: [
+          Number.isFinite(noiValue)
+            ? { label: 'Year-one NOI', value: currency(noiValue) }
+            : null,
+          Number.isFinite(capRateAssumption)
+            ? { label: 'Benchmark cap rate', value: formatPercent(capRateAssumption) }
+            : null,
+          Number.isFinite(subjectCapRate)
+            ? { label: 'Scenario cap rate', value: formatPercent(subjectCapRate) }
+            : null,
+        ].filter(Boolean),
+      },
+      {
+        key: 'grm',
+        label: 'Gross Rent Multiplier (GRM)',
+        formula: 'Market Value = Gross Annual Rent × GRM',
+        purpose:
+          'A simpler proxy for market value when full expense data is unavailable. It reflects local investor sentiment on how much they will pay per pound of rent.',
+        usedBy: 'Residential investors, estate agents.',
+        impliedValue: grmMarketValue,
+        difference: grmDifference,
+        available: Number.isFinite(grmMarketValue),
+        note: grmNote,
+        details: [
+          Number.isFinite(grossAnnualRent)
+            ? { label: 'Gross annual rent (vacancy-adjusted)', value: currency(grossAnnualRent) }
+            : null,
+          Number.isFinite(grmAssumption)
+            ? { label: 'GRM benchmark', value: grmAssumption.toFixed(2) }
+            : null,
+          Number.isFinite(subjectGrm)
+            ? { label: 'Scenario GRM', value: subjectGrm.toFixed(2) }
+            : null,
+        ].filter(Boolean),
+      },
+      {
+        key: 'dcf',
+        label: 'Discounted Cash Flow (DCF) / Net Present Value (NPV)',
+        formula: 'Market Value = Σ CFₜ / (1 + r)ᵗ',
+        purpose:
+          'Determines intrinsic market value based on expected future cashflows discounted to today’s terms.',
+        usedBy: 'Commercial investors and analysts valuing large assets.',
+        impliedValue: dcfMarketValue,
+        difference: dcfDifference,
+        available: Number.isFinite(dcfMarketValue),
+        note: dcfNote,
+        details: [
+          Number.isFinite(discountRateValue)
+            ? { label: 'Discount rate', value: formatPercent(discountRateValue) }
+            : null,
+          Number.isFinite(npvValue) ? { label: 'Discounted NPV', value: currency(npvValue) } : null,
+          Number.isFinite(initialOutlay)
+            ? { label: 'Initial cash invested', value: currency(initialOutlay) }
+            : null,
+        ].filter(Boolean),
+      },
+      {
+        key: 'arv',
+        label: 'After-Repair Value (ARV)',
+        formula: 'Definition: Estimated market value post-renovation based on comparable upgraded sales.',
+        purpose:
+          'Used to forecast the market value after capital expenditure or BRR strategies.',
+        usedBy: 'BRR, flip, and development investors.',
+        impliedValue: Number.isFinite(arvValue) ? arvValue : null,
+        difference: arvDifference,
+        available: Number.isFinite(arvValue),
+        note: arvNote,
+        details: [
+          Number.isFinite(arvValue) ? { label: 'Estimated ARV', value: currency(arvValue) } : null,
+          Number.isFinite(renovationBudget)
+            ? { label: 'Renovation budget', value: currency(renovationBudget) }
+            : null,
+          Number.isFinite(arvValue)
+            ? {
+                label: 'Source',
+                value: arvSource === 'assumption' ? 'Scenario ARV assumption' : 'Exit projection',
+              }
+            : null,
+        ].filter(Boolean),
+      },
+    ];
+
+    const availableValues = factors
+      .map((factor) => (Number.isFinite(factor.impliedValue) && factor.impliedValue > 0 ? factor.impliedValue : null))
+      .filter((value) => Number.isFinite(value));
+    const valueCount = availableValues.length;
+    const minValue = valueCount > 0 ? Math.min(...availableValues) : null;
+    const maxValue = valueCount > 0 ? Math.max(...availableValues) : null;
+    const averageValue =
+      valueCount > 0 ? availableValues.reduce((total, value) => total + value, 0) / valueCount : null;
+    const averageDifference =
+      Number.isFinite(averageValue) && Number.isFinite(purchasePrice) ? averageValue - purchasePrice : null;
+
+    return {
+      purchasePrice,
+      factors,
+      minValue,
+      maxValue,
+      averageValue,
+      averageDifference,
+      valueCount,
+    };
+  }, [
+    equity,
+    equity.noiYear1,
+    equity.cap,
+    equity.grossRentYear1,
+    equity.npv,
+    equity.initialCashOutlay,
+    equity.cashIn,
+    equity.futureValue,
+    inputs.purchasePrice,
+    inputs.marketCapRate,
+    inputs.capRateBenchmark,
+    inputs.targetCapRate,
+    inputs.capRateAssumption,
+    inputs.capRateMarket,
+    inputs.marketCapRatePct,
+    inputs.capRate,
+    inputs.monthlyRent,
+    inputs.vacancyPct,
+    inputs.marketGrm,
+    inputs.grossRentMultiplier,
+    inputs.targetGrm,
+    inputs.marketGrossRentMultiplier,
+    inputs.grmBenchmark,
+    inputs.grmAssumption,
+    inputs.grossRentMultiple,
+    inputs.discountRate,
+    inputs.afterRepairValue,
+    inputs.arv,
+    inputs.estimatedArv,
+    inputs.postRenovationValue,
+    inputs.projectedArv,
+    inputs.expectedArv,
+    inputs.arvEstimate,
+    inputs.afterRenovationValue,
+    inputs.futureSaleValue,
+    inputs.renovationArv,
+    inputs.brArv,
+    inputs.exitYear,
+    inputs.renovationCost,
   ]);
   const investmentProfile = useMemo(() => {
     if (!equity) {
@@ -17766,6 +18063,138 @@ export default function App() {
                         emptyMessage="No rows match the current filters. Adjust the year range or cash flow view to see results."
                       />
                     )}
+                  </>
+                ) : null}
+              </div>
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.marketValue ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('marketValue')}
+                      aria-expanded={!collapsedSections.marketValue}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.marketValue ? 'Show market value summary' : 'Hide market value summary'}
+                    >
+                      {collapsedSections.marketValue ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Market value"
+                      tooltip={SECTION_DESCRIPTIONS.marketValue}
+                      className="text-sm font-semibold text-slate-700"
+                    />
+                  </div>
+                </div>
+                {!collapsedSections.marketValue ? (
+                  <>
+                    <p className="mb-3 text-[11px] text-slate-500">
+                      Triangulate a fair price by comparing income-driven, discounted cash flow, and refurbishment views of
+                      value against today&apos;s asking price.
+                    </p>
+                    {marketValueSummary && marketValueSummary.valueCount > 0 ? (
+                      <div className="mb-3 rounded-xl bg-slate-50 p-3 text-[11px] text-slate-600">
+                        {(() => {
+                          const { minValue, maxValue, averageValue, purchasePrice, averageDifference, valueCount } =
+                            marketValueSummary;
+                          const hasRange =
+                            Number.isFinite(minValue) &&
+                            Number.isFinite(maxValue) &&
+                            Math.abs(maxValue - minValue) > 1;
+                          const anchorValue = Number.isFinite(averageValue)
+                            ? averageValue
+                            : Number.isFinite(minValue)
+                            ? minValue
+                            : Number.isFinite(maxValue)
+                            ? maxValue
+                            : null;
+                          const segments = [];
+                          if (hasRange && Number.isFinite(minValue) && Number.isFinite(maxValue)) {
+                            segments.push(`Implied value range ${currency(minValue)} – ${currency(maxValue)}`);
+                          } else if (Number.isFinite(anchorValue)) {
+                            segments.push(`Implied value ${currency(anchorValue)}`);
+                          }
+                          if (Number.isFinite(purchasePrice) && Number.isFinite(averageDifference)) {
+                            segments.push(
+                              `vs purchase price ${currency(purchasePrice)} (${formatCurrencyDelta(averageDifference)})`
+                            );
+                          }
+                          const messages = [];
+                          if (segments.length > 0) {
+                            messages.push(`${segments.join('. ')}.`);
+                          }
+                          messages.push(
+                            valueCount === 1
+                              ? '1 method informed this estimate.'
+                              : `${valueCount} methods informed this estimate.`
+                          );
+                          return messages.join(' ');
+                        })()}
+                      </div>
+                    ) : (
+                      <div className="mb-3 rounded-xl border border-dashed border-slate-200 p-3 text-center text-[11px] text-slate-500">
+                        Provide income, expense, and valuation assumptions to generate market value estimates.
+                      </div>
+                    )}
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {(marketValueSummary?.factors ?? []).map((factor) => {
+                        const differenceText =
+                          Number.isFinite(factor.difference) && Number.isFinite(marketValueSummary?.purchasePrice)
+                            ? `Δ vs purchase price: ${formatCurrencyDelta(factor.difference)}`
+                            : '';
+                        return (
+                          <div
+                            key={factor.key}
+                            className="flex h-full flex-col rounded-xl border border-slate-200 bg-slate-50 p-3"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-xs font-semibold text-slate-700">{factor.label}</div>
+                                <div className="mt-1 text-[11px] text-slate-500">{factor.purpose}</div>
+                                <div className="mt-1 text-[11px] text-slate-500">
+                                  <span className="font-semibold text-slate-600">Used by:</span> {factor.usedBy}
+                                </div>
+                              </div>
+                              <div className="text-right text-sm font-semibold text-slate-800">
+                                {Number.isFinite(factor.impliedValue) ? currency(factor.impliedValue) : '—'}
+                              </div>
+                            </div>
+                            <div className="mt-3 rounded-lg bg-white p-2 text-[11px] text-slate-600">
+                              <div className="font-semibold uppercase tracking-wide text-slate-400">Formula</div>
+                              <div className="font-mono text-[11px] text-slate-700">{factor.formula}</div>
+                            </div>
+                            {factor.details.length > 0 ? (
+                              <dl className="mt-2 space-y-1 text-[11px] text-slate-600">
+                                {factor.details.map((detail) => (
+                                  <div
+                                    key={`${factor.key}-${detail.label}`}
+                                    className="flex items-center justify-between gap-2"
+                                  >
+                                    <dt className="text-slate-500">{detail.label}</dt>
+                                    <dd className="font-medium text-slate-700">{detail.value}</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            ) : null}
+                            {factor.available && differenceText ? (
+                              <div className="mt-2 text-[11px] font-semibold text-slate-700">{differenceText}</div>
+                            ) : null}
+                            {factor.available ? (
+                              factor.note ? (
+                                <div className="mt-1 text-[10px] text-slate-500">{factor.note}</div>
+                              ) : null
+                            ) : (
+                              <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white/60 p-2 text-[11px] text-slate-500">
+                                {factor.note || 'Provide the required inputs to calculate this valuation.'}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </>
                 ) : null}
               </div>
