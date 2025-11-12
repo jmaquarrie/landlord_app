@@ -759,6 +759,102 @@ const getAddressComponent = (address, keys) => {
   return '';
 };
 
+const normalizeBoundingBox = (value) => {
+  if (!value) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parts = value.split(',').map((part) => part.trim());
+    if (parts.length === 4) {
+      return parts;
+    }
+  }
+  if (typeof value === 'object') {
+    const south =
+      value.south ?? value.s ?? value.min_lat ?? value.minLat ?? value.minLatitude ?? null;
+    const north =
+      value.north ?? value.n ?? value.max_lat ?? value.maxLat ?? value.maxLatitude ?? null;
+    const west = value.west ?? value.w ?? value.min_lon ?? value.minLon ?? value.minLongitude ?? null;
+    const east = value.east ?? value.e ?? value.max_lon ?? value.maxLon ?? value.maxLongitude ?? null;
+    if (south != null && north != null && west != null && east != null) {
+      return [south, north, west, east].map((part) => `${part}`);
+    }
+  }
+  return null;
+};
+
+const normalizeGeocodeCandidate = (candidate, fallbackLabel) => {
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+  const lat = Number.parseFloat(candidate.lat ?? candidate.latitude);
+  const lon = Number.parseFloat(candidate.lon ?? candidate.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return null;
+  }
+  const displayNameRaw =
+    typeof candidate.display_name === 'string' && candidate.display_name.trim() !== ''
+      ? candidate.display_name
+      : typeof candidate.displayName === 'string' && candidate.displayName.trim() !== ''
+      ? candidate.displayName
+      : '';
+  const displayName = displayNameRaw.trim() !== '' ? displayNameRaw.trim() : fallbackLabel;
+  const addressDetails =
+    candidate.address && typeof candidate.address === 'object' && candidate.address !== null
+      ? candidate.address
+      : null;
+  const boundingBox = normalizeBoundingBox(
+    candidate.boundingbox ?? candidate.boundingBox ?? candidate.bbox ?? null
+  );
+  return {
+    lat,
+    lon,
+    displayName,
+    address: addressDetails,
+    boundingBox,
+  };
+};
+
+const GEOCODE_PROVIDERS = [
+  {
+    buildUrl: (query) => {
+      const params = new URLSearchParams({ q: query, limit: '1' });
+      return `https://geocode.maps.co/search?${params.toString()}`;
+    },
+    parse: (payload) => (Array.isArray(payload) ? payload : []),
+    headers: { Accept: 'application/json' },
+  },
+  {
+    buildUrl: (query) => {
+      const params = new URLSearchParams({
+        q: query,
+        format: 'jsonv2',
+        addressdetails: '1',
+        limit: '1',
+      });
+      return `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+    },
+    parse: (payload) => {
+      if (Array.isArray(payload)) {
+        return payload;
+      }
+      if (payload && typeof payload === 'object') {
+        if (Array.isArray(payload.results)) {
+          return payload.results;
+        }
+        if (Array.isArray(payload.places)) {
+          return payload.places;
+        }
+      }
+      return [];
+    },
+    headers: { Accept: 'application/json', 'Accept-Language': 'en' },
+  },
+];
+
 const parseBoundingBox = (boundingBox) => {
   if (!Array.isArray(boundingBox) || boundingBox.length !== 4) {
     return null;
@@ -8932,47 +9028,53 @@ export default function App() {
       const controller = new AbortController();
       geocodeAbortRef.current = controller;
       setGeocodeState((prev) => ({ status: 'loading', data: prev.data ?? null, error: '' }));
-      const params = new URLSearchParams({ q: rawAddress, limit: '1' });
-      fetch(`https://geocode.maps.co/search?${params.toString()}`, {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      })
-        .then((response) => {
-          if (!response.ok) {
-            throw new Error('Geocoding request failed');
+
+      const fetchGeocodeCandidate = async () => {
+        let lastError = null;
+        for (const provider of GEOCODE_PROVIDERS) {
+          const headers = { Accept: 'application/json', ...(provider.headers ?? {}) };
+          try {
+            const response = await fetch(provider.buildUrl(rawAddress), {
+              signal: controller.signal,
+              headers,
+            });
+            if (!response.ok) {
+              const error = new Error('Geocoding request failed');
+              error.status = response.status;
+              throw error;
+            }
+            const payload = await response.json();
+            const candidates = provider.parse(payload);
+            if (Array.isArray(candidates) && candidates.length > 0) {
+              const normalized = normalizeGeocodeCandidate(candidates[0], rawAddress);
+              if (normalized) {
+                return normalized;
+              }
+            }
+          } catch (error) {
+            if (error.name === 'AbortError') {
+              throw error;
+            }
+            lastError = error;
           }
-          return response.json();
-        })
-        .then((results) => {
-          if (!Array.isArray(results) || results.length === 0) {
+        }
+        if (lastError) {
+          throw lastError;
+        }
+        return null;
+      };
+
+      fetchGeocodeCandidate()
+        .then((result) => {
+          if (!result) {
             setGeocodeState({ status: 'error', data: null, error: 'No matching location found.' });
             lastGeocodeQueryRef.current = '';
             return;
           }
-          const result = results[0];
-          const lat = Number.parseFloat(result.lat);
-          const lon = Number.parseFloat(result.lon);
-          if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-            setGeocodeState({ status: 'error', data: null, error: 'Location lookup returned invalid coordinates.' });
-            lastGeocodeQueryRef.current = '';
-            return;
-          }
           lastGeocodeQueryRef.current = normalizedQuery;
-          const addressDetails =
-            result && typeof result.address === 'object' && result.address !== null ? result.address : null;
-          const boundingBox = Array.isArray(result?.boundingbox) ? result.boundingbox : null;
-
           setGeocodeState({
             status: 'success',
-            data: {
-              lat,
-              lon,
-              displayName: typeof result.display_name === 'string' && result.display_name.trim() !== ''
-                ? result.display_name
-                : rawAddress,
-              address: addressDetails,
-              boundingBox,
-            },
+            data: result,
             error: '',
           });
         })
