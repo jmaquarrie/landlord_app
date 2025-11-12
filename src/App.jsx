@@ -11604,11 +11604,13 @@ export default function App() {
       return [];
     }
     const irrHurdleBaseline = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
+    const bridgingActive = Boolean(inputs.useBridgingLoan);
     return LEVERAGE_LTV_OPTIONS.map((ltv) => {
       const depositPct = clamp(1 - ltv, 0, 1);
       const metrics = calculateEquity({
         ...inputs,
         depositPct,
+        ...(bridgingActive ? { bridgingLoanDepositPct: depositPct } : {}),
       });
       const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
       const irrValue = Number(metrics.irr) || 0;
