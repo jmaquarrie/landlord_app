@@ -1625,6 +1625,8 @@ const DEFAULT_INPUTS = {
   bridgingLoanDepositPct: 0.25,
   bridgingValueAdded: 0,
   bridgingInterestPaymentMode: 'monthly',
+  capRateBenchmark: 0,
+  grmBenchmark: 0,
   monthlyRent: 800,
   vacancyPct: 0.05,
   mgmtPct: 0.1,
@@ -1659,6 +1661,10 @@ const EXTRA_SETTINGS_DEFAULTS = {
   indexFundGrowth: Number.isFinite(DEFAULT_INPUTS.indexFundGrowth)
     ? Number(DEFAULT_INPUTS.indexFundGrowth)
     : DEFAULT_INDEX_GROWTH,
+  capRateBenchmark: Number.isFinite(DEFAULT_INPUTS.capRateBenchmark)
+    ? Number(DEFAULT_INPUTS.capRateBenchmark)
+    : 0,
+  grmBenchmark: Number.isFinite(DEFAULT_INPUTS.grmBenchmark) ? Number(DEFAULT_INPUTS.grmBenchmark) : 0,
   deductOperatingExpenses: true,
 };
 
@@ -6380,9 +6386,6 @@ function calculateEquity(rawInputs) {
         }
       }
       if (month === monthsToModel) {
-        annualDebtService[yearIndex] += bridgingAmount;
-        annualPrincipal[yearIndex] += bridgingAmount;
-        annualBridgingDebtService[yearIndex] += bridgingAmount;
         if (bridgingInterestPaymentMode === 'roll_up' && accruedInterest !== 0) {
           annualDebtService[yearIndex] += accruedInterest;
           annualInterest[yearIndex] += accruedInterest;
@@ -14203,6 +14206,25 @@ export default function App() {
     );
   };
 
+  const extraSettingNumberInput = (key, label, step = 0.1, decimals = 2) => {
+    const rawValue = pendingExtraSettings?.[key];
+    const value = Number.isFinite(rawValue) ? rawValue : null;
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-medium text-slate-600">{label}</label>
+        <input
+          type="number"
+          value={Number.isFinite(value) ? roundTo(value, decimals) : ''}
+          onChange={(event) =>
+            handlePendingExtraSettingChange(key, Number(event.target.value), decimals)
+          }
+          step={step}
+          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+        />
+      </div>
+    );
+  };
+
   const pctInput = (k, label, step = 0.005) => (
     <div className="flex flex-col gap-1">
       <label className="text-xs font-medium text-slate-600">{label}</label>
@@ -16019,7 +16041,7 @@ export default function App() {
                           {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
                           {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
                           {pctInput('bridgingLoanDepositPct', 'Bridge deposit %', 0.001)}
-                          {moneyInput('bridgingValueAdded', 'Value added after works (£)', 1000)}
+                          {moneyInput('bridgingValueAdded', 'Value added (£)', 1000)}
                         </div>
                         <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 sm:flex-row sm:items-center sm:justify-between">
                           <div className="font-semibold">Interest handling</div>
@@ -16036,7 +16058,7 @@ export default function App() {
                                   }))
                                 }
                               />
-                              <span>Pay interest monthly</span>
+                              <span>Monthly</span>
                             </label>
                             <label className="inline-flex items-center gap-2">
                               <input
@@ -16050,7 +16072,7 @@ export default function App() {
                                   }))
                                 }
                               />
-                              <span>Roll up and pay at exit</span>
+                              <span>Roll up</span>
                             </label>
                           </div>
                         </div>
@@ -16185,6 +16207,8 @@ export default function App() {
                     {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
                     {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
                     {extraSettingPctInput('indexFundGrowth', 'Index fund growth %')}
+                    {extraSettingPctInput('capRateBenchmark', 'Cap rate benchmark %', 0.001)}
+                    {extraSettingNumberInput('grmBenchmark', 'GRM benchmark')}
                     <div className="sm:col-span-2 rounded-xl border border-slate-200 p-3">
                       <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                         <input
@@ -18281,8 +18305,8 @@ export default function App() {
                                 <dt>Interest handling</dt>
                                 <dd className="font-medium text-slate-800">
                                   {bridgingLoanSummary.interestMode === 'roll_up'
-                                    ? 'Roll up and pay at exit'
-                                    : 'Pay interest monthly'}
+                                    ? 'Roll up'
+                                    : 'Monthly'}
                                 </dd>
                               </div>
                               {bridgingLoanSummary.interestDuringTerm !== 0 ? (
@@ -19179,6 +19203,8 @@ export default function App() {
                     {pctInput('sellingCostsPct', 'Selling costs %')}
                     {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
                     {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                    {extraSettingPctInput('capRateBenchmark', 'Cap rate benchmark %', 0.001)}
+                    {extraSettingNumberInput('grmBenchmark', 'GRM benchmark')}
                   </div>
                 </div>
                 <div>
@@ -23718,7 +23744,7 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
                 />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="font-medium text-slate-600">Value added after works (£)</span>
+                <span className="font-medium text-slate-600">Value added (£)</span>
                 <input
                   type="number"
                   min={0}
@@ -23739,7 +23765,7 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
                     checked={inputs.bridgingInterestPaymentMode !== 'roll_up'}
                     onChange={() => handleTextChange('bridgingInterestPaymentMode', 'monthly')}
                   />
-                  <span>Pay interest monthly</span>
+                  <span>Monthly</span>
                 </label>
                 <label className="inline-flex items-center gap-2">
                   <input
@@ -23748,7 +23774,7 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
                     checked={inputs.bridgingInterestPaymentMode === 'roll_up'}
                     onChange={() => handleTextChange('bridgingInterestPaymentMode', 'roll_up')}
                   />
-                  <span>Roll up and pay at exit</span>
+                  <span>Roll up</span>
                 </label>
               </div>
             </div>
