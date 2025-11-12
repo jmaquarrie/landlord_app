@@ -9365,7 +9365,7 @@ export default function App() {
           console.warn('Unable to fetch crime last-updated metadata:', error);
         }
 
-        const resolvedLatestMonth = clampCrimeMonthToLag(lastUpdatedMonth || lastUpdatedDate || '');
+        let resolvedLatestMonth = clampCrimeMonthToLag(lastUpdatedMonth || lastUpdatedDate || '');
 
         const createCrimeParams = (entries, options = {}) => {
           const params = new URLSearchParams();
@@ -9400,16 +9400,6 @@ export default function App() {
 
         const latParam = formatCoordinate(crimeLat);
         const lonParam = formatCoordinate(crimeLon);
-
-        const baseParams =
-          crimePostcodeQuery !== ''
-            ? createCrimeParams({ postcode: crimePostcodeQuery })
-            : createCrimeParams(
-                {
-                  lat: latParam,
-                  lng: lonParam,
-                }
-              );
 
         const fetchCrimesWithParams = async (searchParams) => {
           const url = `https://data.police.uk/api/crimes-street/all-crime?${searchParams.toString()}`;
@@ -9460,6 +9450,38 @@ export default function App() {
         let finalCrimeData = null;
         let finalError = null;
         let lastSuccessfulParams = null;
+        const boundingPolygon = geocodeBounds ? boundsToPolygon(geocodeBounds) : null;
+        const boundingPolygonParam = boundingPolygon ? polygonPointsToSearchParam(boundingPolygon) : '';
+        let cachedNeighbourhood = null;
+        let neighbourhoodAttempted = false;
+
+        const loadNeighbourhood = async () => {
+          if (neighbourhoodAttempted) {
+            return cachedNeighbourhood;
+          }
+          neighbourhoodAttempted = true;
+          try {
+            cachedNeighbourhood = await fetchNeighbourhoodBoundary({
+              lat: crimeLat,
+              lon: crimeLon,
+              postcode: geocodePostcode,
+              addressQuery: geocodeAddressQuery,
+              signal: controller.signal,
+            });
+          } catch (boundaryError) {
+            if (boundaryError?.name === 'AbortError') {
+              throw boundaryError;
+            }
+            if (!finalError) {
+              finalError =
+                boundaryError instanceof Error
+                  ? boundaryError
+                  : new Error('Unable to load local crime statistics.');
+            }
+            cachedNeighbourhood = null;
+          }
+          return cachedNeighbourhood;
+        };
 
         const attemptFetch = async (params, { boundsHint } = {}) => {
           try {
@@ -9484,57 +9506,98 @@ export default function App() {
           }
         };
 
-        finalCrimeData = await attemptFetch(baseParams, { boundsHint: geocodeBounds || null });
+        const tryCrimeStrategiesForMonth = async (monthValue) => {
+          const strategies = [];
+          const baseParams =
+            crimePostcodeQuery !== ''
+              ? createCrimeParams({ postcode: crimePostcodeQuery }, { date: monthValue })
+              : createCrimeParams({ lat: latParam, lng: lonParam }, { date: monthValue });
+          strategies.push({ params: baseParams, boundsHint: geocodeBounds || null });
 
-        if (!finalCrimeData && crimePostcodeQuery !== '' && hasUsableCoordinates(crimeLat, crimeLon)) {
-          const latLngParams = createCrimeParams({ lat: latParam, lng: lonParam });
-          finalCrimeData = await attemptFetch(latLngParams, { boundsHint: geocodeBounds || null });
-        }
+          if (crimePostcodeQuery !== '' && hasUsableCoordinates(crimeLat, crimeLon)) {
+            const latLngParams = createCrimeParams({ lat: latParam, lng: lonParam }, { date: monthValue });
+            strategies.push({ params: latLngParams, boundsHint: geocodeBounds || null });
+          }
 
-        if (!finalCrimeData && geocodeBounds) {
-          const boundingPolygon = boundsToPolygon(geocodeBounds);
-          if (boundingPolygon) {
-            const polyParams = createCrimeParams({ poly: boundingPolygon });
-            finalCrimeData = await attemptFetch(polyParams, { boundsHint: geocodeBounds });
+          if (boundingPolygonParam) {
+            const polygonParams = createCrimeParams({ poly: boundingPolygonParam }, { date: monthValue });
+            strategies.push({ params: polygonParams, boundsHint: geocodeBounds });
+          }
+
+          for (const strategy of strategies) {
+            const data = await attemptFetch(strategy.params, { boundsHint: strategy.boundsHint });
+            if (data) {
+              return data;
+            }
+          }
+
+          const neighbourhood = await loadNeighbourhood();
+          if (neighbourhood) {
+            const boundsHint = neighbourhood.bounds ?? geocodeBounds ?? null;
+            if (neighbourhood.locationId) {
+              const locationParams = createCrimeParams(
+                { location_id: neighbourhood.locationId },
+                { date: monthValue }
+              );
+              const locationData = await attemptFetch(locationParams, { boundsHint });
+              if (locationData) {
+                if (neighbourhood.bounds) {
+                  summaryBoundsHint = neighbourhood.bounds;
+                }
+                return locationData;
+              }
+            }
+            const neighbourhoodPolygon = polygonPointsToSearchParam(neighbourhood.points);
+            if (neighbourhoodPolygon) {
+              const neighbourhoodParams = createCrimeParams(
+                { poly: neighbourhoodPolygon },
+                { date: monthValue }
+              );
+              const polygonData = await attemptFetch(neighbourhoodParams, { boundsHint });
+              if (polygonData) {
+                if (neighbourhood.bounds) {
+                  summaryBoundsHint = neighbourhood.bounds;
+                }
+                return polygonData;
+              }
+            }
+          }
+
+          return null;
+        };
+
+        const normalizedBaseMonth = normalizeCrimeMonth(resolvedLatestMonth);
+        if (normalizedBaseMonth) {
+          resolvedLatestMonth = normalizedBaseMonth;
+        } else {
+          const fallbackMonth = normalizeCrimeMonth(computeCrimeLaggedMonth());
+          if (fallbackMonth) {
+            resolvedLatestMonth = fallbackMonth;
           }
         }
 
-        if (!finalCrimeData) {
-          try {
-            const neighbourhood = await fetchNeighbourhoodBoundary({
-              lat: crimeLat,
-              lon: crimeLon,
-              postcode: geocodePostcode,
-              addressQuery: geocodeAddressQuery,
-              signal: controller.signal,
-            });
-            if (neighbourhood) {
-              const boundsHint = neighbourhood.bounds ?? geocodeBounds ?? null;
-              if (!finalCrimeData && neighbourhood.locationId) {
-                const locationParams = createCrimeParams({ location_id: neighbourhood.locationId });
-                finalCrimeData = await attemptFetch(locationParams, { boundsHint });
-              }
-              if (!finalCrimeData) {
-                const polygonParam = polygonPointsToSearchParam(neighbourhood.points);
-                if (polygonParam) {
-                  const polyParams = createCrimeParams({ poly: polygonParam });
-                  finalCrimeData = await attemptFetch(polyParams, { boundsHint });
-                }
-              }
-              if (finalCrimeData && neighbourhood.bounds) {
-                summaryBoundsHint = neighbourhood.bounds;
-              }
+        const monthSearchOrderBase = normalizeCrimeMonth(resolvedLatestMonth);
+        const monthSearchOrder = monthSearchOrderBase
+          ? buildCrimeMonthRange(monthSearchOrderBase, CRIME_TREND_MAX_MONTHS)
+          : [];
+        if (monthSearchOrder.length === 0) {
+          monthSearchOrder.push('');
+        }
+
+        for (const monthValue of monthSearchOrder) {
+          const data = await tryCrimeStrategiesForMonth(monthValue);
+          if (controller.signal.aborted) {
+            return;
+          }
+          if (Array.isArray(data)) {
+            finalCrimeData = data;
+            const normalizedMonth = normalizeCrimeMonth(
+              monthValue || lastSuccessfulParams?.get('date') || resolvedLatestMonth
+            );
+            if (normalizedMonth) {
+              resolvedLatestMonth = normalizedMonth;
             }
-          } catch (boundaryError) {
-            if (boundaryError?.name === 'AbortError') {
-              throw boundaryError;
-            }
-            if (!finalError) {
-              finalError =
-                boundaryError instanceof Error
-                  ? boundaryError
-                  : new Error('Unable to load local crime statistics.');
-            }
+            break;
           }
         }
 
@@ -9601,7 +9664,14 @@ export default function App() {
 
         registerMonthSummary(defaultMonth || '', finalCrimeData, primarySummary);
 
-        const paramsTemplateString = (lastSuccessfulParams || baseParams).toString();
+        const paramsTemplateString =
+          lastSuccessfulParams?.toString() ||
+          createCrimeParams(
+            crimePostcodeQuery !== ''
+              ? { postcode: crimePostcodeQuery }
+              : { lat: latParam, lng: lonParam },
+            { date: defaultMonth || resolvedLatestMonth || '' }
+          ).toString();
 
         for (const monthValue of availableMonthValues) {
           if (!monthValue || monthValue === defaultMonth) {
@@ -9820,20 +9890,23 @@ export default function App() {
               if (!Number.isFinite(normalizedLat) || !Number.isFinite(normalizedLon)) {
                 throw new Error('Invalid property coordinates for planning lookup.');
               }
-              const params = new URLSearchParams({
-                dataset,
-                buffer: String(INFRASTRUCTURE_SEARCH_RADIUS_METERS),
-                limit: '50',
+              const wktPoint = `POINT (${normalizedLon.toFixed(6)} ${normalizedLat.toFixed(6)})`;
+              const queryString = [
+                ['dataset', dataset],
+                ['buffer', String(INFRASTRUCTURE_SEARCH_RADIUS_METERS)],
+                ['limit', '50'],
+                ['point', wktPoint],
+              ]
+                .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+                .join('&');
+              const url = `https://www.planning.data.gov.uk/entity.json?${queryString}`;
+              const response = await fetch(url, {
+                signal: controller.signal,
+                headers: { Accept: 'application/json' },
               });
-              params.set('point', `POINT(${normalizedLon.toFixed(6)} ${normalizedLat.toFixed(6)})`);
-              const queryString = params.toString().replace(/\+/g, '%20');
-              const response = await fetch(
-                `https://www.planning.data.gov.uk/entity.json?${queryString}`,
-                {
-                  signal: controller.signal,
-                  headers: { Accept: 'application/json' },
-                }
-              );
+              if (response.status === 422) {
+                return { key, items: [], error: '' };
+              }
               const rawBody = await response.text();
               if (!response.ok) {
                 let message = `Request failed with status ${response.status}`;
