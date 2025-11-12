@@ -627,6 +627,7 @@ const PROPERTY_APPRECIATION_WINDOWS = [1, 5, 10, 20];
 const DEFAULT_APPRECIATION_WINDOW = 5;
 const CRIME_SEARCH_RADIUS_KM = 1.60934;
 const CRIME_SEARCH_AREA_KM2 = Math.PI * CRIME_SEARCH_RADIUS_KM * CRIME_SEARCH_RADIUS_KM;
+const CRIME_DATA_PUBLICATION_LAG_MONTHS = 2;
 const CRIME_DENSITY_CLASSIFICATIONS = [
   { max: 0.25, label: 'minimal', multiplier: 1, tone: 'positive' },
   { max: 0.75, label: 'very low', multiplier: 0.9, tone: 'positive' },
@@ -821,14 +822,6 @@ const normalizeGeocodeCandidate = (candidate, fallbackLabel) => {
 const GEOCODE_PROVIDERS = [
   {
     buildUrl: (query) => {
-      const params = new URLSearchParams({ q: query, limit: '1' });
-      return `https://geocode.maps.co/search?${params.toString()}`;
-    },
-    parse: (payload) => (Array.isArray(payload) ? payload : []),
-    headers: { Accept: 'application/json' },
-  },
-  {
-    buildUrl: (query) => {
       const params = new URLSearchParams({
         q: query,
         format: 'jsonv2',
@@ -852,6 +845,15 @@ const GEOCODE_PROVIDERS = [
       return [];
     },
     headers: { Accept: 'application/json', 'Accept-Language': 'en' },
+  },
+  {
+    shouldUse: () => typeof window === 'undefined',
+    buildUrl: (query) => {
+      const params = new URLSearchParams({ q: query, limit: '1' });
+      return `https://geocode.maps.co/search?${params.toString()}`;
+    },
+    parse: (payload) => (Array.isArray(payload) ? payload : []),
+    headers: { Accept: 'application/json' },
   },
 ];
 
@@ -977,6 +979,58 @@ const normalizeCrimeMonth = (value) => {
     return '';
   }
   return `${monthMatch[1]}-${monthMatch[2]}`;
+};
+
+const formatCrimeMonthIso = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+
+const parseCrimeMonthToDate = (value) => {
+  const normalized = normalizeCrimeMonth(value);
+  if (!normalized) {
+    return null;
+  }
+  const [yearString, monthString] = normalized.split('-');
+  const year = Number(yearString);
+  const monthIndex = Number(monthString) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, monthIndex, 1));
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date;
+};
+
+const computeCrimeLaggedMonth = (lagMonths = CRIME_DATA_PUBLICATION_LAG_MONTHS) => {
+  const lag = Number.isFinite(lagMonths) ? Math.max(0, Math.floor(lagMonths)) : 0;
+  const now = new Date();
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  base.setUTCMonth(base.getUTCMonth() - lag);
+  return formatCrimeMonthIso(base);
+};
+
+const clampCrimeMonthToLag = (candidateMonth, lagMonths = CRIME_DATA_PUBLICATION_LAG_MONTHS) => {
+  const fallback = computeCrimeLaggedMonth(lagMonths);
+  const fallbackDate = parseCrimeMonthToDate(fallback);
+  const candidateDate = parseCrimeMonthToDate(candidateMonth);
+  if (!fallbackDate && !candidateDate) {
+    return '';
+  }
+  if (!candidateDate) {
+    return fallback;
+  }
+  if (!fallbackDate) {
+    return formatCrimeMonthIso(candidateDate);
+  }
+  if (candidateDate.getTime() > fallbackDate.getTime()) {
+    return formatCrimeMonthIso(fallbackDate);
+  }
+  return formatCrimeMonthIso(candidateDate);
 };
 
 const distanceSquared = (lat1, lon1, lat2, lon2) => {
@@ -9032,6 +9086,9 @@ export default function App() {
       const fetchGeocodeCandidate = async () => {
         let lastError = null;
         for (const provider of GEOCODE_PROVIDERS) {
+          if (provider.shouldUse && !provider.shouldUse()) {
+            continue;
+          }
           const headers = { Accept: 'application/json', ...(provider.headers ?? {}) };
           try {
             const response = await fetch(provider.buildUrl(rawAddress), {
@@ -9308,7 +9365,9 @@ export default function App() {
           console.warn('Unable to fetch crime last-updated metadata:', error);
         }
 
-        const createCrimeParams = (entries) => {
+        const resolvedLatestMonth = clampCrimeMonthToLag(lastUpdatedMonth || lastUpdatedDate || '');
+
+        const createCrimeParams = (entries, options = {}) => {
           const params = new URLSearchParams();
           if (entries && typeof entries === 'object') {
             Object.entries(entries).forEach(([key, value]) => {
@@ -9331,7 +9390,8 @@ export default function App() {
               }
             });
           }
-          const dateParam = normalizeCrimeMonth(lastUpdatedMonth || lastUpdatedDate);
+          const dateOverride = normalizeCrimeMonth(options.date);
+          const dateParam = dateOverride || resolvedLatestMonth;
           if (dateParam) {
             params.set('date', dateParam);
           }
@@ -9344,10 +9404,12 @@ export default function App() {
         const baseParams =
           crimePostcodeQuery !== ''
             ? createCrimeParams({ postcode: crimePostcodeQuery })
-            : createCrimeParams({
-                lat: latParam,
-                lng: lonParam,
-              });
+            : createCrimeParams(
+                {
+                  lat: latParam,
+                  lng: lonParam,
+                }
+              );
 
         const fetchCrimesWithParams = async (searchParams) => {
           const url = `https://data.police.uk/api/crimes-street/all-crime?${searchParams.toString()}`;
@@ -9415,7 +9477,7 @@ export default function App() {
               throw error;
             }
             finalError = error;
-            if (typeof error?.status === 'number' && error.status !== 404) {
+            if (typeof error?.status === 'number' && error.status !== 404 && error.status !== 400) {
               throw error;
             }
             return null;
@@ -9484,9 +9546,13 @@ export default function App() {
           throw new Error(fallbackErrorMessage);
         }
 
-        const defaultMonth = normalizeCrimeMonth(
-          lastUpdatedMonth || (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '')
-        );
+        const resolvedDefaultMonth =
+          normalizeCrimeMonth(
+            lastSuccessfulParams?.get('date') ||
+              (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '') ||
+              resolvedLatestMonth
+          ) || resolvedLatestMonth;
+        const defaultMonth = resolvedDefaultMonth;
         const fallbackLocationName = geocodeLocationSummary || geocodeDisplayName || propertyAddress;
         const normalizedLastUpdated = normalizeCrimeMonth(lastUpdatedDate) || lastUpdatedDate;
         const mapCenterOverride = hasUsableCoordinates(crimeLat, crimeLon)
@@ -9504,7 +9570,7 @@ export default function App() {
           mapCenterOverride,
         });
 
-        const monthCandidates = buildCrimeMonthRange(defaultMonth || lastUpdatedMonth || '');
+        const monthCandidates = buildCrimeMonthRange(defaultMonth || resolvedLatestMonth || '');
         if (defaultMonth && !monthCandidates.includes(defaultMonth)) {
           monthCandidates.unshift(defaultMonth);
         }
@@ -9756,12 +9822,13 @@ export default function App() {
               }
               const params = new URLSearchParams({
                 dataset,
-                point: `POINT(${normalizedLon.toFixed(6)} ${normalizedLat.toFixed(6)})`,
                 buffer: String(INFRASTRUCTURE_SEARCH_RADIUS_METERS),
                 limit: '50',
               });
+              params.set('point', `POINT(${normalizedLon.toFixed(6)} ${normalizedLat.toFixed(6)})`);
+              const queryString = params.toString().replace(/\+/g, '%20');
               const response = await fetch(
-                `https://www.planning.data.gov.uk/entity.json?${params.toString()}`,
+                `https://www.planning.data.gov.uk/entity.json?${queryString}`,
                 {
                   signal: controller.signal,
                   headers: { Accept: 'application/json' },
