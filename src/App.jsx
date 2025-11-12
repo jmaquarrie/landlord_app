@@ -17554,33 +17554,35 @@ export default function App() {
                         className="text-sm font-semibold text-slate-700"
                       />
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {crimeAvailableMonths.length > 0 ? (
-                        <label
-                          htmlFor="crime-month-select"
-                          className="flex items-center gap-2 text-[11px] text-slate-500"
-                        >
-                          <span>Reporting period</span>
-                          <select
-                            id="crime-month-select"
-                            value={crimeSelectValue}
-                            onChange={(event) => setCrimeSelectedMonth(event.target.value)}
-                            className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                    {!collapsedSections.crime ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {crimeAvailableMonths.length > 0 ? (
+                          <label
+                            htmlFor="crime-month-select"
+                            className="flex items-center gap-2 text-[11px] text-slate-500"
                           >
-                            {crimeAvailableMonths.map((option) => (
-                              <option key={`crime-month-${option.value}`} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null}
-                      {crimeLoading ? (
-                        <span className="text-[11px] text-slate-500">Loading…</span>
-                      ) : crimePeriodDescription ? (
-                        <span className="text-[11px] text-slate-500">Period: {crimePeriodDescription}</span>
-                      ) : null}
-                    </div>
+                            <span>Reporting period</span>
+                            <select
+                              id="crime-month-select"
+                              value={crimeSelectValue}
+                              onChange={(event) => setCrimeSelectedMonth(event.target.value)}
+                              className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                            >
+                              {crimeAvailableMonths.map((option) => (
+                                <option key={`crime-month-${option.value}`} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
+                        {crimeLoading ? (
+                          <span className="text-[11px] text-slate-500">Loading…</span>
+                        ) : crimePeriodDescription ? (
+                          <span className="text-[11px] text-slate-500">Period: {crimePeriodDescription}</span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   {!collapsedSections.crime ? (
                     <div className="space-y-4">
