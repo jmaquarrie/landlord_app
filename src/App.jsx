@@ -12638,32 +12638,13 @@ export default function App() {
       ? 'Model discounted cash flow by providing a discount rate and hold assumptions.'
       : '';
 
-    const arvCandidate = pickFirstFinite(
-      inputs.afterRepairValue,
-      inputs.arv,
-      inputs.estimatedArv,
-      inputs.postRenovationValue,
-      inputs.projectedArv,
-      inputs.expectedArv,
-      inputs.arvEstimate,
-      inputs.afterRenovationValue,
-      inputs.futureSaleValue,
-      inputs.renovationArv,
-      inputs.brArv
-    );
-    let arvSource = 'assumption';
-    let arvValue = Number.isFinite(arvCandidate) ? arvCandidate : null;
-    if (!Number.isFinite(arvValue) && Number.isFinite(equity.futureValue)) {
-      arvValue = equity.futureValue;
-      arvSource = 'projection';
-    }
+    const valueAdded = Number.isFinite(equity.bridgingValueAdded) ? equity.bridgingValueAdded : 0;
+    const arvValue = Number.isFinite(purchasePrice) ? purchasePrice + valueAdded : null;
     const arvDifference =
       Number.isFinite(arvValue) && Number.isFinite(purchasePrice) ? arvValue - purchasePrice : null;
-    const arvNote = !Number.isFinite(arvValue)
-      ? 'Add an after-repair value assumption or comparable to benchmark uplift potential.'
-      : arvSource === 'projection'
-      ? `Using year ${Math.max(1, Number(inputs.exitYear) || 1)} exit projection because no ARV assumption was provided.`
-      : '';
+    const arvNote = Number.isFinite(arvValue)
+      ? 'Calculated as purchase price plus value added.'
+      : 'Add a purchase price to estimate ARV.';
 
     const renovationBudget = Number.isFinite(inputs.renovationCost) ? inputs.renovationCost : null;
 
@@ -12747,15 +12728,13 @@ export default function App() {
         available: Number.isFinite(arvValue),
         note: arvNote,
         details: [
-          Number.isFinite(arvValue) ? { label: 'Estimated ARV', value: currency(arvValue) } : null,
+          Number.isFinite(purchasePrice) ? { label: 'Purchase price', value: currency(purchasePrice) } : null,
+          Number.isFinite(valueAdded) ? { label: 'Value added', value: currency(valueAdded) } : null,
+          Number.isFinite(arvValue)
+            ? { label: 'Estimated ARV', value: currency(arvValue) }
+            : null,
           Number.isFinite(renovationBudget)
             ? { label: 'Renovation budget', value: currency(renovationBudget) }
-            : null,
-          Number.isFinite(arvValue)
-            ? {
-                label: 'Source',
-                value: arvSource === 'assumption' ? 'Scenario ARV assumption' : 'Exit projection',
-              }
             : null,
         ].filter(Boolean),
       },
@@ -12808,18 +12787,6 @@ export default function App() {
     inputs.grmAssumption,
     inputs.grossRentMultiple,
     inputs.discountRate,
-    inputs.afterRepairValue,
-    inputs.arv,
-    inputs.estimatedArv,
-    inputs.postRenovationValue,
-    inputs.projectedArv,
-    inputs.expectedArv,
-    inputs.arvEstimate,
-    inputs.afterRenovationValue,
-    inputs.futureSaleValue,
-    inputs.renovationArv,
-    inputs.brArv,
-    inputs.exitYear,
     inputs.renovationCost,
   ]);
   const bridgingLoanSummary = useMemo(() => {
