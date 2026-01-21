@@ -1774,6 +1774,7 @@ const DEFAULT_INPUTS = {
   bridgingLoanInterestRate: 0.008,
   bridgingLoanDepositPct: 0.25,
   bridgingValueAdded: 0,
+  bridgingCost: 0,
   bridgingInterestPaymentMode: 'monthly',
   capRateBenchmark: 0,
   grmBenchmark: 0,
@@ -4697,7 +4698,7 @@ const SECTION_DESCRIPTIONS = {
 const KEY_RATIO_TOOLTIPS = {
   cap: 'First-year net operating income divided by the purchase price.',
   rentalYield: 'First-year rent collected after vacancy divided by the purchase price.',
-  yoc: 'First-year net operating income divided by total project cost (price + closing + renovation).',
+  yoc: 'First-year net operating income divided by total project cost (price + closing + renovation + any bridge-only costs).',
   coc: 'Year 1 after-debt cash flow divided by total cash invested.',
   dscr: 'Debt service coverage ratio: Year 1 NOI divided by annual debt service.',
   mortgage: 'Estimated monthly mortgage payment for the modeled loan.',
@@ -4715,6 +4716,7 @@ const KNOWLEDGE_GROUPS = {
       'stampDuty',
       'closingCosts',
       'mortgagePackageFee',
+      'bridgingCost',
       'renovationCost',
       'bridgingLoanAmount',
       'netCashIn',
@@ -4844,6 +4846,14 @@ const KNOWLEDGE_METRICS = {
     description: 'Upfront lender or broker fee charged to arrange the mortgage.',
     calculation: 'User-entered flat fee paid at completion.',
     importance: 'Needs to be budgeted alongside closing costs because it increases cash required to draw the loan.',
+    unit: 'currency',
+  },
+  bridgingCost: {
+    label: 'Cost of bridge',
+    groups: ['cashNeeded'],
+    description: 'Legal or auction fees tied to arranging the bridge facility.',
+    calculation: 'User-entered cost that only applies while bridging finance is enabled.',
+    importance: 'Adds to upfront cash alongside the bridge deposit because it must be funded before refinancing.',
     unit: 'currency',
   },
   renovationCost: {
@@ -6428,6 +6438,9 @@ function calculateEquity(rawInputs) {
   const postBridgeValue = bridgingEnabled
     ? Math.max(0, inputs.purchasePrice + bridgingValueAdded)
     : inputs.purchasePrice;
+  const propertyValueBasis = bridgingEnabled ? postBridgeValue : inputs.purchasePrice;
+  const rawBridgingCost = Number(inputs.bridgingCost ?? 0);
+  const bridgingCost = bridgingEnabled && Number.isFinite(rawBridgingCost) ? Math.max(0, rawBridgingCost) : 0;
   const permanentDepositAmount = Math.max(0, postBridgeValue * inputs.depositPct);
   const deposit = bridgingEnabled ? bridgingDepositAmount : baseDepositAmount;
 
@@ -6453,7 +6466,7 @@ function calculateEquity(rawInputs) {
   const bridgingInterestPaymentMode =
     bridgingEnabled && inputs.bridgingInterestPaymentMode === 'roll_up' ? 'roll_up' : 'monthly';
   const bridgingAmount = bridgingEnabled ? Math.max(0, inputs.purchasePrice - bridgingDepositAmount) : 0;
-  const totalCashRequired = deposit + closing + inputs.renovationCost;
+  const totalCashRequired = deposit + closing + inputs.renovationCost + bridgingCost;
   const initialCashOutlay = totalCashRequired;
   const indexInitialInvestment = totalCashRequired;
 
@@ -6566,8 +6579,9 @@ function calculateEquity(rawInputs) {
 
   const cap = noiYear1 / inputs.purchasePrice;
   const cashIn = totalCashRequired;
-  const projectCost = inputs.purchasePrice + closing + inputs.renovationCost;
+  const projectCost = inputs.purchasePrice + closing + inputs.renovationCost + bridgingCost;
   const coc = cashIn === 0 ? 0 : cashflowYear1 / cashIn;
+  const yoc = projectCost > 0 ? noiYear1 / projectCost : 0;
   const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
 
   const months = Math.min(inputs.exitYear * 12, inputs.mortgageYears * 12);
@@ -6576,7 +6590,7 @@ function calculateEquity(rawInputs) {
       ? loan
       : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: months });
 
-  const futureValue = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, inputs.exitYear);
+  const futureValue = propertyValueBasis * Math.pow(1 + inputs.annualAppreciation, inputs.exitYear);
   const sellingCosts = futureValue * inputs.sellingCostsPct;
 
   const cf = [];
@@ -6611,9 +6625,8 @@ function calculateEquity(rawInputs) {
   const annualNoiValues = [];
   const annualCashflowsPreTax = [];
   const annualCashflowsAfterTax = [];
-  const initialNetEquity =
-    inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
-  const initialSaleValue = inputs.purchasePrice;
+  const initialNetEquity = propertyValueBasis - propertyValueBasis * inputs.sellingCostsPct - loan;
+  const initialSaleValue = propertyValueBasis;
   const initialSaleCosts = initialSaleValue * inputs.sellingCostsPct;
   const initialNetSaleProceeds = initialSaleValue - initialSaleCosts - loan;
   chart.push({
@@ -6622,8 +6635,8 @@ function calculateEquity(rawInputs) {
     indexFund1_5x: indexVal * 1.5,
     indexFund2x: indexVal * 2,
     indexFund4x: indexVal * 4,
-    propertyValue: inputs.purchasePrice,
-    propertyGross: inputs.purchasePrice,
+    propertyValue: propertyValueBasis,
+    propertyGross: propertyValueBasis,
     propertyNet: initialNetEquity,
     propertyNetAfterTax: initialNetEquity,
     reinvestFund: 0,
@@ -6749,7 +6762,7 @@ function calculateEquity(rawInputs) {
         ? loan
         : Math.max(0, remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid }));
 
-    const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
+    const vt = propertyValueBasis * Math.pow(1 + inputs.annualAppreciation, y);
     const saleCostsEstimate = vt * inputs.sellingCostsPct;
     const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
     const saleProceedsBeforeLoan = vt - saleCostsEstimate;
@@ -6784,7 +6797,7 @@ function calculateEquity(rawInputs) {
     const cumulativeCashAfterTaxNet = shouldReinvest
       ? cumulativeCashAfterTax - cumulativeReinvested
       : cumulativeCashAfterTax;
-    const propertyGrossValue = vt + cumulativeCashPreTaxNet;
+  const propertyGrossValue = vt + cumulativeCashPreTaxNet;
     const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
     const propertyNetAfterTaxValue = netSaleIfSoldAfterTax + cumulativeCashAfterTaxNet + reinvestFundValue;
 
@@ -6792,7 +6805,7 @@ function calculateEquity(rawInputs) {
     let yearCashflowForNpv = afterTaxCash;
     let realizedSaleProceeds = 0;
     if (!inputs.neverExit && y === inputs.exitYear) {
-      const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
+      const fv = propertyValueBasis * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
       const rem =
         inputs.loanType === 'interest_only'
@@ -7135,6 +7148,7 @@ function calculateEquity(rawInputs) {
     cashIn,
     initialCashOutlay,
     totalCashRequired,
+    bridgingCost,
     bridgingLoanAmount: bridgingAmount,
     bridgingLoanTermMonths,
     bridgingLoanInterestRate: bridgingMonthlyRate,
@@ -7153,7 +7167,7 @@ function calculateEquity(rawInputs) {
     totalCashInvestedDuringBridge,
     netCashAfterRefinance,
     projectCost,
-    yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
+    yoc,
     indexValEnd: indexVal,
     exitCumCash,
     exitCumCashAfterTax,
@@ -12378,6 +12392,7 @@ export default function App() {
     const closingCostsValue = Number(equity.otherClosing) || 0;
     const packageFeeValue = Number(equity.packageFees) || 0;
     const renovationValue = Number(inputs.renovationCost) || 0;
+    const bridgingCostValue = Number(equity.bridgingCost) || 0;
     const bridgingAmountValue = Number(equity.bridgingLoanAmount) || 0;
     const totalCashRequiredValue = Number(equity.cashIn) || 0;
     const netCashInValue = Number.isFinite(equity.initialCashOutlay)
@@ -12439,6 +12454,7 @@ export default function App() {
       closingCosts: { value: closingCostsValue, formatted: currency(closingCostsValue) },
       mortgagePackageFee: { value: packageFeeValue, formatted: currency(packageFeeValue) },
       renovationCost: { value: renovationValue, formatted: currency(renovationValue) },
+      bridgingCost: { value: bridgingCostValue, formatted: currency(bridgingCostValue) },
       bridgingLoanAmount: { value: bridgingAmountValue, formatted: currency(bridgingAmountValue) },
       netCashIn: { value: netCashInValue, formatted: currency(netCashInValue) },
       totalCashRequired: { value: totalCashRequiredValue, formatted: currency(totalCashRequiredValue) },
@@ -12805,6 +12821,7 @@ export default function App() {
     const interestTotalValue = Number(equity.bridgingInterestTotal) || interestDuringTerm + interestAtExit;
     const bridgePayoff = Number(equity.bridgingExitPayoff) || bridgingLoanAmount + interestAtExit;
     const cashRequired = Number(equity.cashIn) || 0;
+    const bridgeCost = Number(equity.bridgingCost) || 0;
     const totalInvested = Number(equity.totalCashInvestedDuringBridge) || cashRequired + interestDuringTerm;
     const valueAdded = Number(equity.bridgingValueAdded) || 0;
     const postBridgeValue = Number(equity.postBridgeValue) || Number(inputs.purchasePrice) + valueAdded;
@@ -12826,6 +12843,7 @@ export default function App() {
       interestTotalValue,
       bridgePayoff,
       cashRequired,
+      bridgeCost,
       totalInvested,
       valueAdded,
       postBridgeValue,
@@ -16253,6 +16271,7 @@ export default function App() {
                           {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
                           {pctInput('bridgingLoanDepositPct', 'Bridge deposit %', 0.001)}
                           {moneyInput('bridgingValueAdded', 'Value added (£)', 1000)}
+                          {moneyInput('bridgingCost', 'Cost of bridge (£)', 100)}
                         </div>
                         <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 sm:flex-row sm:items-center sm:justify-between">
                           <div className="font-semibold">Interest handling</div>
@@ -16487,6 +16506,13 @@ export default function App() {
                   value={currency(equity.packageFees)}
                   knowledgeKey="mortgagePackageFee"
                 />
+                {inputs.useBridgingLoan ? (
+                  <Line
+                    label="Cost of bridge"
+                    value={currency(equity.bridgingCost)}
+                    knowledgeKey="bridgingCost"
+                  />
+                ) : null}
                 <Line
                   label="Renovation (upfront)"
                   value={currency(inputs.renovationCost)}
@@ -18508,6 +18534,14 @@ export default function App() {
                                   {currency(bridgingLoanSummary.cashRequired)}
                                 </dd>
                               </div>
+                              {bridgingLoanSummary.bridgeCost !== 0 ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <dt>Cost of bridge</dt>
+                                  <dd className="font-medium text-slate-800">
+                                    {currency(bridgingLoanSummary.bridgeCost)}
+                                  </dd>
+                                </div>
+                              ) : null}
                               <div className="flex items-center justify-between gap-2">
                                 <dt>Bridge loan amount</dt>
                                 <dd className="font-medium text-slate-800">
@@ -23964,6 +23998,17 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
                   step={1000}
                   value={numericValue('bridgingValueAdded')}
                   onChange={(event) => handleNumberChange('bridgingValueAdded', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Cost of bridge (£)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={numericValue('bridgingCost')}
+                  onChange={(event) => handleNumberChange('bridgingCost', event.target.value)}
                   className="rounded-lg border border-slate-300 px-3 py-1.5"
                 />
               </label>
