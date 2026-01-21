@@ -12654,7 +12654,8 @@ export default function App() {
       ? 'Model discounted cash flow by providing a discount rate and hold assumptions.'
       : '';
 
-    const valueAdded = Number.isFinite(equity.bridgingValueAdded) ? equity.bridgingValueAdded : 0;
+    const rawValueAdded = Number(inputs.bridgingValueAdded ?? 0);
+    const valueAdded = Number.isFinite(rawValueAdded) ? rawValueAdded : 0;
     const arvValue = Number.isFinite(purchasePrice) ? purchasePrice + valueAdded : null;
     const arvDifference =
       Number.isFinite(arvValue) && Number.isFinite(purchasePrice) ? arvValue - purchasePrice : null;
@@ -12804,6 +12805,7 @@ export default function App() {
     inputs.grossRentMultiple,
     inputs.discountRate,
     inputs.renovationCost,
+    inputs.bridgingValueAdded,
   ]);
   const bridgingLoanSummary = useMemo(() => {
     if (!inputs.useBridgingLoan || !equity) {
