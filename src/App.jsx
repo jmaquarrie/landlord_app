@@ -202,6 +202,7 @@ const useOverlayEscape = (open, onClose) => {
 };
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
+const DISCOVERY_LEADS_STORAGE_KEY = 'qc_discovery_leads_v1';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
 const FUTURE_PLAN_STORAGE_KEY = 'qc_future_plan_v1';
 const FUTURE_PLAN_VIEWS_STORAGE_KEY = 'qc_future_plan_views_v1';
@@ -1693,6 +1694,29 @@ const DEFAULT_SCENARIO_TABLE_COLUMN_KEYS = [
   'coc',
   'irr',
 ];
+const DISCOVERY_STATUS_OPTIONS = [
+  { value: 'new', label: 'New' },
+  { value: 'needs_comps', label: 'Needs comps' },
+  { value: 'watchlist', label: 'Watchlist' },
+  { value: 'offer_ready', label: 'Offer ready' },
+  { value: 'offered', label: 'Offered' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'purchased', label: 'Purchased' },
+];
+const DISCOVERY_STATUS_LABELS = Object.fromEntries(
+  DISCOVERY_STATUS_OPTIONS.map((option) => [option.value, option.label])
+);
+const DISCOVERY_REJECT_REASONS = [
+  'Too expensive',
+  'Rent too low',
+  'Weak comps',
+  'Poor area',
+  'Refurb too large',
+  'Legal issue',
+  'Does not meet cash-out target',
+];
+const DISCOVERY_IMPORT_PLACEHOLDER =
+  'Address, URL, Asking price, Beds, Rent estimate, Comparable value, Comparable rent, Notes';
 const sanitizeScenarioTableColumns = (keys, fallbackKeys = DEFAULT_SCENARIO_TABLE_COLUMN_KEYS) => {
   const output = [];
   if (Array.isArray(keys)) {
@@ -1813,6 +1837,119 @@ const normalizeScenarioList = (list) =>
           .filter(Boolean)
       : []
   );
+
+const parseMoneyLikeValue = (value) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const cleaned = value.replace(/[£,\s]/g, '').trim();
+  if (cleaned === '') {
+    return null;
+  }
+  const numeric = Number(cleaned);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const normalizeDiscoveryLead = (lead) => {
+  if (!lead || typeof lead !== 'object') {
+    return null;
+  }
+  const now = new Date().toISOString();
+  const address = typeof lead.address === 'string' ? lead.address.trim() : '';
+  const sourceUrl = typeof lead.sourceUrl === 'string' ? lead.sourceUrl.trim() : '';
+  const notes = typeof lead.notes === 'string' ? lead.notes.trim() : '';
+  const status = DISCOVERY_STATUS_LABELS[lead.status] ? lead.status : 'new';
+  const askingPrice = parseMoneyLikeValue(lead.askingPrice);
+  const rentEstimate = parseMoneyLikeValue(lead.rentEstimate);
+  const comparableValue = parseMoneyLikeValue(lead.comparableValue);
+  const comparableRent = parseMoneyLikeValue(lead.comparableRent);
+  const bedrooms = Number(lead.bedrooms);
+  const bathrooms = Number(lead.bathrooms);
+  if (!address && !sourceUrl) {
+    return null;
+  }
+  return {
+    id:
+      typeof lead.id === 'string' && lead.id.trim() !== ''
+        ? lead.id
+        : `lead-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    status,
+    address,
+    sourceUrl,
+    askingPrice: Number.isFinite(askingPrice) ? askingPrice : null,
+    rentEstimate: Number.isFinite(rentEstimate) ? rentEstimate : null,
+    comparableValue: Number.isFinite(comparableValue) ? comparableValue : null,
+    comparableRent: Number.isFinite(comparableRent) ? comparableRent : null,
+    bedrooms: Number.isFinite(bedrooms) && bedrooms > 0 ? bedrooms : null,
+    bathrooms: Number.isFinite(bathrooms) && bathrooms > 0 ? bathrooms : null,
+    propertyType:
+      typeof lead.propertyType === 'string' && lead.propertyType.trim() !== ''
+        ? lead.propertyType
+        : DEFAULT_INPUTS?.propertyType ?? 'detached',
+    notes,
+    rejectReason: typeof lead.rejectReason === 'string' ? lead.rejectReason.trim() : '',
+    linkedScenarioId: typeof lead.linkedScenarioId === 'string' ? lead.linkedScenarioId : '',
+    createdAt:
+      typeof lead.createdAt === 'string' && lead.createdAt.trim() !== '' ? lead.createdAt : now,
+    updatedAt:
+      typeof lead.updatedAt === 'string' && lead.updatedAt.trim() !== '' ? lead.updatedAt : now,
+  };
+};
+
+const normalizeDiscoveryLeads = (items) =>
+  Array.isArray(items)
+    ? items
+        .map((item) => normalizeDiscoveryLead(item))
+        .filter(Boolean)
+        .sort((a, b) => {
+          const aTime = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime() || 0;
+          const bTime = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() || 0;
+          return bTime - aTime;
+        })
+    : [];
+
+const parseDiscoveryImportRows = (text) => {
+  if (typeof text !== 'string' || text.trim() === '') {
+    return [];
+  }
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return [];
+  }
+  const headerWords = ['address', 'url', 'price', 'rent', 'comp', 'notes'];
+  const firstCells = lines[0].split(/\t|,/).map((cell) => cell.trim().toLowerCase());
+  const hasHeader = firstCells.some((cell) => headerWords.some((word) => cell.includes(word)));
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+  return dataLines
+    .map((line) => {
+      const cells = line.split(/\t|,/).map((cell) => cell.trim());
+      if (cells.length === 1) {
+        const only = cells[0];
+        const isUrl = /^https?:\/\//i.test(only);
+        return normalizeDiscoveryLead({
+          address: isUrl ? '' : only,
+          sourceUrl: isUrl ? only : '',
+        });
+      }
+      return normalizeDiscoveryLead({
+        address: cells[0] ?? '',
+        sourceUrl: cells[1] ?? '',
+        askingPrice: cells[2] ?? '',
+        bedrooms: cells[3] ?? '',
+        rentEstimate: cells[4] ?? '',
+        comparableValue: cells[5] ?? '',
+        comparableRent: cells[6] ?? '',
+        notes: cells.slice(7).join(' · '),
+      });
+    })
+    .filter(Boolean);
+};
 
 const DEFAULT_INPUTS = {
   propertyAddress: '',
@@ -8152,6 +8289,22 @@ export default function App() {
   const [propertyPriceState, setPropertyPriceState] = useState({ status: 'idle', data: null, error: '' });
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
+  const [discoveryLeads, setDiscoveryLeads] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = window.localStorage.getItem(DISCOVERY_LEADS_STORAGE_KEY);
+        if (stored) {
+          return normalizeDiscoveryLeads(JSON.parse(stored));
+        }
+      } catch (error) {
+        console.warn('Unable to read discovery leads from storage:', error);
+      }
+    }
+    return [];
+  });
+  const [showDiscoveryPanel, setShowDiscoveryPanel] = useState(false);
+  const [discoveryImportText, setDiscoveryImportText] = useState('');
+  const [discoveryStatusFilter, setDiscoveryStatusFilter] = useState('all');
   const [futurePlan, setFuturePlan] = useState(() => loadStoredFuturePlan());
   const [savedPlanViews, setSavedPlanViews] = useState(() => loadStoredPlanViews());
   const [showPlanViewLoader, setShowPlanViewLoader] = useState(false);
@@ -10330,6 +10483,18 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
+      window.localStorage.setItem(
+        DISCOVERY_LEADS_STORAGE_KEY,
+        JSON.stringify(normalizeDiscoveryLeads(discoveryLeads))
+      );
+    } catch (error) {
+      console.warn('Unable to persist discovery leads:', error);
+    }
+  }, [discoveryLeads]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
       const sanitized = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
       window.localStorage.setItem(FUTURE_PLAN_STORAGE_KEY, JSON.stringify(sanitized));
     } catch (error) {
@@ -10930,6 +11095,68 @@ export default function App() {
       })
       .filter(Boolean);
   }, [scenarioTableData, selectedScenarioId]);
+
+  const discoveryLeadRows = useMemo(() => {
+    const rows = normalizeDiscoveryLeads(discoveryLeads).map((lead) => {
+      const askingPrice = Number(lead.askingPrice);
+      const rentEstimate = Number(lead.rentEstimate);
+      const comparableValue = Number(lead.comparableValue);
+      const comparableRent = Number(lead.comparableRent);
+      const annualRent = Number.isFinite(rentEstimate) ? rentEstimate * 12 : null;
+      const yieldValue =
+        Number.isFinite(annualRent) && Number.isFinite(askingPrice) && askingPrice > 0
+          ? annualRent / askingPrice
+          : null;
+      const compDiscount =
+        Number.isFinite(comparableValue) && comparableValue > 0 && Number.isFinite(askingPrice)
+          ? (comparableValue - askingPrice) / comparableValue
+          : null;
+      const rentGap =
+        Number.isFinite(comparableRent) && comparableRent > 0 && Number.isFinite(rentEstimate)
+          ? (rentEstimate - comparableRent) / comparableRent
+          : null;
+      const missingComps = !Number.isFinite(comparableValue) || !Number.isFinite(comparableRent);
+      let quickScore = 0;
+      if (Number.isFinite(yieldValue)) {
+        quickScore += clamp((yieldValue - 0.05) / 0.07, 0, 1) * 40;
+      }
+      if (Number.isFinite(compDiscount)) {
+        quickScore += clamp((compDiscount + 0.05) / 0.25, 0, 1) * 35;
+      }
+      if (Number.isFinite(rentGap)) {
+        quickScore += clamp((rentGap + 0.1) / 0.25, 0, 1) * 15;
+      }
+      quickScore += missingComps ? 0 : 10;
+      return {
+        lead,
+        yieldValue,
+        compDiscount,
+        rentGap,
+        quickScore,
+        missingComps,
+      };
+    });
+    return rows.filter(({ lead }) =>
+      discoveryStatusFilter === 'all' ? true : lead.status === discoveryStatusFilter
+    );
+  }, [discoveryLeads, discoveryStatusFilter]);
+
+  const discoveryPipelineStats = useMemo(() => {
+    const leads = normalizeDiscoveryLeads(discoveryLeads);
+    const total = leads.length;
+    const offerReady = leads.filter((lead) => lead.status === 'offer_ready').length;
+    const needsComps = leads.filter((lead) => lead.status === 'needs_comps').length;
+    const withComps = leads.filter(
+      (lead) => Number.isFinite(Number(lead.comparableValue)) || Number.isFinite(Number(lead.comparableRent))
+    ).length;
+    return {
+      total,
+      offerReady,
+      needsComps,
+      withComps,
+      compCoverage: total > 0 ? withComps / total : null,
+    };
+  }, [discoveryLeads]);
 
   const exitYearCount = Math.max(1, Math.floor(Number(equity.exitYear) || 1));
 
@@ -14715,6 +14942,132 @@ export default function App() {
       targets,
     });
   }, [scenarioTableData, selectedScenarioId]);
+
+  const updateDiscoveryLead = useCallback((id, updates) => {
+    if (!id || !updates || typeof updates !== 'object') {
+      return;
+    }
+    setDiscoveryLeads((prev) =>
+      normalizeDiscoveryLeads(
+        prev.map((lead) =>
+          lead.id === id
+            ? {
+                ...lead,
+                ...updates,
+                updatedAt: new Date().toISOString(),
+              }
+            : lead
+        )
+      )
+    );
+  }, []);
+
+  const handleDiscoveryImport = useCallback(() => {
+    const parsed = parseDiscoveryImportRows(discoveryImportText);
+    if (parsed.length === 0) {
+      return;
+    }
+    setDiscoveryLeads((prev) => normalizeDiscoveryLeads([...parsed, ...prev]));
+    setDiscoveryImportText('');
+    setShowDiscoveryPanel(true);
+  }, [discoveryImportText]);
+
+  const handleAddCurrentToDiscovery = useCallback(() => {
+    const lead = normalizeDiscoveryLead({
+      address: inputs.propertyAddress || inputs.propertyDisplayName || '',
+      sourceUrl: inputs.propertyUrl || '',
+      askingPrice: inputs.purchasePrice,
+      bedrooms: inputs.bedrooms,
+      bathrooms: inputs.bathrooms,
+      propertyType: inputs.propertyType,
+      rentEstimate: inputs.monthlyRent,
+      comparableValue: Number.isFinite(marketValueSummary?.averageValue)
+        ? marketValueSummary.averageValue
+        : '',
+      comparableRent: '',
+      notes: 'Created from current underwriting inputs.',
+      status: 'new',
+    });
+    if (!lead) {
+      return;
+    }
+    setDiscoveryLeads((prev) => normalizeDiscoveryLeads([lead, ...prev]));
+    setShowDiscoveryPanel(true);
+  }, [
+    inputs.propertyAddress,
+    inputs.propertyDisplayName,
+    inputs.propertyUrl,
+    inputs.purchasePrice,
+    inputs.bedrooms,
+    inputs.bathrooms,
+    inputs.propertyType,
+    inputs.monthlyRent,
+    marketValueSummary?.averageValue,
+  ]);
+
+  const handleLoadDiscoveryLead = useCallback(
+    (lead) => {
+      if (!lead) {
+        return;
+      }
+      setInputs((prev) => ({
+        ...prev,
+        propertyAddress: lead.address || prev.propertyAddress,
+        propertyUrl: lead.sourceUrl || prev.propertyUrl,
+        purchasePrice: Number.isFinite(lead.askingPrice) ? lead.askingPrice : prev.purchasePrice,
+        bedrooms: Number.isFinite(lead.bedrooms) ? lead.bedrooms : prev.bedrooms,
+        bathrooms: Number.isFinite(lead.bathrooms) ? lead.bathrooms : prev.bathrooms,
+        propertyType: lead.propertyType || prev.propertyType,
+        monthlyRent: Number.isFinite(lead.rentEstimate) ? lead.rentEstimate : prev.monthlyRent,
+        capRateBenchmark:
+          Number.isFinite(lead.comparableValue) && lead.comparableValue > 0
+            ? prev.capRateBenchmark
+            : prev.capRateBenchmark,
+      }));
+      if (lead.sourceUrl) {
+        openPreviewForUrl(lead.sourceUrl, { force: true });
+      }
+    },
+    [openPreviewForUrl]
+  );
+
+  const handleCreateScenarioFromLead = useCallback(
+    (lead) => {
+      if (!lead) {
+        return;
+      }
+      const data = {
+        ...DEFAULT_INPUTS,
+        ...extraSettings,
+        propertyAddress: lead.address,
+        propertyUrl: lead.sourceUrl,
+        purchasePrice: Number.isFinite(lead.askingPrice) ? lead.askingPrice : DEFAULT_INPUTS.purchasePrice,
+        bedrooms: Number.isFinite(lead.bedrooms) ? lead.bedrooms : DEFAULT_INPUTS.bedrooms,
+        bathrooms: Number.isFinite(lead.bathrooms) ? lead.bathrooms : DEFAULT_INPUTS.bathrooms,
+        propertyType: lead.propertyType || DEFAULT_INPUTS.propertyType,
+        monthlyRent: Number.isFinite(lead.rentEstimate) ? lead.rentEstimate : DEFAULT_INPUTS.monthlyRent,
+      };
+      const scenario = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: lead.address || lead.sourceUrl || `Lead ${new Date().toLocaleString()}`,
+        savedAt: new Date().toISOString(),
+        data,
+        preview: { active: Boolean(data.propertyUrl) },
+        cashflowColumns: sanitizeCashflowColumns(cashflowColumnKeys),
+        uiState: captureUiState(),
+      };
+      integrateScenario(scenario, { select: true });
+      updateDiscoveryLead(lead.id, {
+        linkedScenarioId: scenario.id,
+        status: lead.status === 'new' ? 'needs_comps' : lead.status,
+      });
+    },
+    [cashflowColumnKeys, extraSettings, updateDiscoveryLead]
+  );
+
+  const handleDeleteDiscoveryLead = useCallback((id) => {
+    setDiscoveryLeads((prev) => prev.filter((lead) => lead.id !== id));
+  }, []);
 
   const renderScenarioHeader = (label, key, align = 'left') => {
     const active = scenarioSort.key === key;
@@ -19275,6 +19628,239 @@ export default function App() {
         </div>
       </section>
         </div>
+
+        <section className="mt-6">
+          <div className="p-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-800">Deal discovery</h3>
+                <p className="text-xs text-slate-600">
+                  Capture many leads quickly, compare asking prices against comparable values, and shortlist deals before full underwriting.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddCurrentToDiscovery}
+                  className="no-print inline-flex items-center gap-1 rounded-full border border-emerald-300 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                >
+                  Add current deal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDiscoveryPanel((prev) => !prev)}
+                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  aria-expanded={showDiscoveryPanel}
+                >
+                  {showDiscoveryPanel ? 'Hide pipeline' : 'Show pipeline'}
+                </button>
+              </div>
+            </div>
+            <div className="grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-slate-500">Leads tracked</div>
+                <div className="mt-1 text-base font-semibold text-slate-800">{discoveryPipelineStats.total}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-slate-500">Offer ready</div>
+                <div className="mt-1 text-base font-semibold text-emerald-700">{discoveryPipelineStats.offerReady}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-slate-500">Needs comps</div>
+                <div className="mt-1 text-base font-semibold text-amber-700">{discoveryPipelineStats.needsComps}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-slate-500">Comp coverage</div>
+                <div className="mt-1 text-base font-semibold text-slate-800">
+                  {Number.isFinite(discoveryPipelineStats.compCoverage)
+                    ? formatPercent(discoveryPipelineStats.compCoverage, 0)
+                    : '—'}
+                </div>
+              </div>
+            </div>
+            {showDiscoveryPanel ? (
+              <div className="mt-3 space-y-3">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <label className="text-xs font-semibold text-slate-700">Bulk import leads</label>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Paste CSV/tab-separated rows in this order: {DISCOVERY_IMPORT_PLACEHOLDER}.
+                  </p>
+                  <textarea
+                    value={discoveryImportText}
+                    onChange={(event) => setDiscoveryImportText(event.target.value)}
+                    rows={3}
+                    placeholder={DISCOVERY_IMPORT_PLACEHOLDER}
+                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-700"
+                  />
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDiscoveryImport}
+                      disabled={discoveryImportText.trim() === ''}
+                      className="inline-flex items-center rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      Import leads
+                    </button>
+                    <select
+                      value={discoveryStatusFilter}
+                      onChange={(event) => setDiscoveryStatusFilter(event.target.value)}
+                      className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                    >
+                      <option value="all">All statuses</option>
+                      {DISCOVERY_STATUS_OPTIONS.map((option) => (
+                        <option key={`discovery-filter-${option.value}`} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                {discoveryLeadRows.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-xs text-slate-500">
+                    Add a current deal or bulk import leads to start building a discovery pipeline.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="min-w-full divide-y divide-slate-200 text-xs">
+                      <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-semibold">Lead</th>
+                          <th className="px-3 py-2 text-left font-semibold">Status</th>
+                          <th className="px-3 py-2 text-right font-semibold">Asking</th>
+                          <th className="px-3 py-2 text-right font-semibold">Rent</th>
+                          <th className="px-3 py-2 text-right font-semibold">Yield</th>
+                          <th className="px-3 py-2 text-right font-semibold">Comp value</th>
+                          <th className="px-3 py-2 text-right font-semibold">BMV</th>
+                          <th className="px-3 py-2 text-right font-semibold">Score</th>
+                          <th className="px-3 py-2 text-right font-semibold">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white">
+                        {discoveryLeadRows.map(({ lead, yieldValue, compDiscount, quickScore, missingComps }) => (
+                          <tr key={lead.id} className="align-top odd:bg-white even:bg-slate-50">
+                            <td className="px-3 py-2">
+                              <div className="font-semibold text-slate-800">{lead.address || 'Untitled lead'}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {Number.isFinite(lead.bedrooms) ? `${lead.bedrooms} bed` : 'Beds n/a'}
+                                {lead.sourceUrl ? ' · ' : ''}
+                                {lead.sourceUrl ? (
+                                  <a href={lead.sourceUrl} target="_blank" rel="noreferrer" className="underline-offset-2 hover:underline">
+                                    Listing
+                                  </a>
+                                ) : null}
+                              </div>
+                              {lead.notes ? <div className="mt-1 text-[11px] text-slate-500">{lead.notes}</div> : null}
+                              {lead.rejectReason ? (
+                                <div className="mt-1 text-[11px] font-semibold text-rose-600">{lead.rejectReason}</div>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2">
+                              <select
+                                value={lead.status}
+                                onChange={(event) => updateDiscoveryLead(lead.id, { status: event.target.value })}
+                                className="w-32 rounded-lg border border-slate-300 px-2 py-1 text-[11px]"
+                              >
+                                {DISCOVERY_STATUS_OPTIONS.map((option) => (
+                                  <option key={`${lead.id}-${option.value}`} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                              {lead.status === 'rejected' ? (
+                                <select
+                                  value={lead.rejectReason}
+                                  onChange={(event) => updateDiscoveryLead(lead.id, { rejectReason: event.target.value })}
+                                  className="mt-1 w-32 rounded-lg border border-rose-200 px-2 py-1 text-[11px] text-rose-700"
+                                >
+                                  <option value="">Reason</option>
+                                  {DISCOVERY_REJECT_REASONS.map((reason) => (
+                                    <option key={`${lead.id}-${reason}`} value={reason}>
+                                      {reason}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              {Number.isFinite(lead.askingPrice) ? currency(lead.askingPrice) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              {Number.isFinite(lead.rentEstimate) ? currency(lead.rentEstimate) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              {Number.isFinite(yieldValue) ? formatPercent(yieldValue) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              <input
+                                type="number"
+                                value={Number.isFinite(lead.comparableValue) ? lead.comparableValue : ''}
+                                onChange={(event) =>
+                                  updateDiscoveryLead(lead.id, {
+                                    comparableValue: parseMoneyLikeValue(event.target.value),
+                                    status: lead.status === 'new' ? 'needs_comps' : lead.status,
+                                  })
+                                }
+                                className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-right text-[11px]"
+                                placeholder="£"
+                              />
+                            </td>
+                            <td className={`px-3 py-2 text-right font-semibold ${
+                              Number.isFinite(compDiscount) && compDiscount > 0
+                                ? 'text-emerald-700'
+                                : 'text-slate-700'
+                            }`}>
+                              {Number.isFinite(compDiscount) ? formatPercent(compDiscount) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <span
+                                className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                                  missingComps
+                                    ? 'bg-amber-100 text-amber-700'
+                                    : quickScore >= 70
+                                    ? 'bg-emerald-100 text-emerald-700'
+                                    : quickScore >= 45
+                                    ? 'bg-slate-100 text-slate-700'
+                                    : 'bg-rose-100 text-rose-700'
+                                }`}
+                              >
+                                {missingComps ? 'Needs comps' : Math.round(quickScore)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <div className="flex flex-wrap justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleLoadDiscoveryLead(lead)}
+                                  className="rounded-full border border-indigo-200 px-2 py-1 text-[11px] font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                                >
+                                  Load
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCreateScenarioFromLead(lead)}
+                                  className="rounded-full border border-emerald-200 px-2 py-1 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                                >
+                                  Scenario
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteDiscoveryLead(lead.id)}
+                                  className="rounded-full border border-rose-200 px-2 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </section>
 
         <section className="mt-6">
           <div className="p-3">
