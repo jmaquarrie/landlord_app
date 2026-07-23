@@ -202,6 +202,7 @@ const useOverlayEscape = (open, onClose) => {
 };
 const DEFAULT_INDEX_GROWTH = 0.07;
 const SCENARIO_STORAGE_KEY = 'qc_saved_scenarios';
+const DISCOVERY_LEADS_STORAGE_KEY = 'qc_discovery_leads_v1';
 const SCENARIO_AUTH_STORAGE_KEY = 'qc_saved_scenario_auth';
 const FUTURE_PLAN_STORAGE_KEY = 'qc_future_plan_v1';
 const FUTURE_PLAN_VIEWS_STORAGE_KEY = 'qc_future_plan_views_v1';
@@ -352,6 +353,22 @@ const applyAiFormatInstructions = (prompt) => {
 const toFiniteNumber = (value, fallback = 0) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+};
+
+const pickFirstFinite = (...candidates) => {
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) {
+      continue;
+    }
+    if (typeof candidate === 'string' && candidate.trim() === '') {
+      continue;
+    }
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
 };
 
 const mergeLegendPayload = (payload, entries) => {
@@ -611,6 +628,7 @@ const PROPERTY_APPRECIATION_WINDOWS = [1, 5, 10, 20];
 const DEFAULT_APPRECIATION_WINDOW = 5;
 const CRIME_SEARCH_RADIUS_KM = 1.60934;
 const CRIME_SEARCH_AREA_KM2 = Math.PI * CRIME_SEARCH_RADIUS_KM * CRIME_SEARCH_RADIUS_KM;
+const CRIME_DATA_PUBLICATION_LAG_MONTHS = 2;
 const CRIME_DENSITY_CLASSIFICATIONS = [
   { max: 0.25, label: 'minimal', multiplier: 1, tone: 'positive' },
   { max: 0.75, label: 'very low', multiplier: 0.9, tone: 'positive' },
@@ -743,6 +761,103 @@ const getAddressComponent = (address, keys) => {
   return '';
 };
 
+const normalizeBoundingBox = (value) => {
+  if (!value) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parts = value.split(',').map((part) => part.trim());
+    if (parts.length === 4) {
+      return parts;
+    }
+  }
+  if (typeof value === 'object') {
+    const south =
+      value.south ?? value.s ?? value.min_lat ?? value.minLat ?? value.minLatitude ?? null;
+    const north =
+      value.north ?? value.n ?? value.max_lat ?? value.maxLat ?? value.maxLatitude ?? null;
+    const west = value.west ?? value.w ?? value.min_lon ?? value.minLon ?? value.minLongitude ?? null;
+    const east = value.east ?? value.e ?? value.max_lon ?? value.maxLon ?? value.maxLongitude ?? null;
+    if (south != null && north != null && west != null && east != null) {
+      return [south, north, west, east].map((part) => `${part}`);
+    }
+  }
+  return null;
+};
+
+const normalizeGeocodeCandidate = (candidate, fallbackLabel) => {
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+  const lat = Number.parseFloat(candidate.lat ?? candidate.latitude);
+  const lon = Number.parseFloat(candidate.lon ?? candidate.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return null;
+  }
+  const displayNameRaw =
+    typeof candidate.display_name === 'string' && candidate.display_name.trim() !== ''
+      ? candidate.display_name
+      : typeof candidate.displayName === 'string' && candidate.displayName.trim() !== ''
+      ? candidate.displayName
+      : '';
+  const displayName = displayNameRaw.trim() !== '' ? displayNameRaw.trim() : fallbackLabel;
+  const addressDetails =
+    candidate.address && typeof candidate.address === 'object' && candidate.address !== null
+      ? candidate.address
+      : null;
+  const boundingBox = normalizeBoundingBox(
+    candidate.boundingbox ?? candidate.boundingBox ?? candidate.bbox ?? null
+  );
+  return {
+    lat,
+    lon,
+    displayName,
+    address: addressDetails,
+    boundingBox,
+  };
+};
+
+const GEOCODE_PROVIDERS = [
+  {
+    buildUrl: (query) => {
+      const params = new URLSearchParams({
+        q: query,
+        format: 'jsonv2',
+        addressdetails: '1',
+        limit: '1',
+      });
+      return `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+    },
+    parse: (payload) => {
+      if (Array.isArray(payload)) {
+        return payload;
+      }
+      if (payload && typeof payload === 'object') {
+        if (Array.isArray(payload.results)) {
+          return payload.results;
+        }
+        if (Array.isArray(payload.places)) {
+          return payload.places;
+        }
+      }
+      return [];
+    },
+    headers: { Accept: 'application/json', 'Accept-Language': 'en' },
+  },
+  {
+    shouldUse: () => typeof window === 'undefined',
+    buildUrl: (query) => {
+      const params = new URLSearchParams({ q: query, limit: '1' });
+      return `https://geocode.maps.co/search?${params.toString()}`;
+    },
+    parse: (payload) => (Array.isArray(payload) ? payload : []),
+    headers: { Accept: 'application/json' },
+  },
+];
+
 const parseBoundingBox = (boundingBox) => {
   if (!Array.isArray(boundingBox) || boundingBox.length !== 4) {
     return null;
@@ -865,6 +980,58 @@ const normalizeCrimeMonth = (value) => {
     return '';
   }
   return `${monthMatch[1]}-${monthMatch[2]}`;
+};
+
+const formatCrimeMonthIso = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+
+const parseCrimeMonthToDate = (value) => {
+  const normalized = normalizeCrimeMonth(value);
+  if (!normalized) {
+    return null;
+  }
+  const [yearString, monthString] = normalized.split('-');
+  const year = Number(yearString);
+  const monthIndex = Number(monthString) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, monthIndex, 1));
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date;
+};
+
+const computeCrimeLaggedMonth = (lagMonths = CRIME_DATA_PUBLICATION_LAG_MONTHS) => {
+  const lag = Number.isFinite(lagMonths) ? Math.max(0, Math.floor(lagMonths)) : 0;
+  const now = new Date();
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  base.setUTCMonth(base.getUTCMonth() - lag);
+  return formatCrimeMonthIso(base);
+};
+
+const clampCrimeMonthToLag = (candidateMonth, lagMonths = CRIME_DATA_PUBLICATION_LAG_MONTHS) => {
+  const fallback = computeCrimeLaggedMonth(lagMonths);
+  const fallbackDate = parseCrimeMonthToDate(fallback);
+  const candidateDate = parseCrimeMonthToDate(candidateMonth);
+  if (!fallbackDate && !candidateDate) {
+    return '';
+  }
+  if (!candidateDate) {
+    return fallback;
+  }
+  if (!fallbackDate) {
+    return formatCrimeMonthIso(candidateDate);
+  }
+  if (candidateDate.getTime() > fallbackDate.getTime()) {
+    return formatCrimeMonthIso(fallbackDate);
+  }
+  return formatCrimeMonthIso(candidateDate);
 };
 
 const distanceSquared = (lat1, lon1, lat2, lon2) => {
@@ -1489,6 +1656,91 @@ const SCENARIO_RATIO_PERCENT_COLUMNS = [
   { key: 'irr', label: 'IRR' },
 ];
 const SCENARIO_RATIO_KEY_SET = new Set(SCENARIO_RATIO_PERCENT_COLUMNS.map((option) => option.key));
+const SCENARIO_TABLE_COLUMN_DEFINITIONS = [
+  { key: 'propertyNetAfterTax', label: 'Property net after tax', format: currency, align: 'right' },
+  { key: 'cap', label: 'Cap rate', format: 'percent', align: 'right' },
+  { key: 'rentalYield', label: 'Rental yield', format: 'percent', align: 'right' },
+  { key: 'yoc', label: 'Yield on cost', format: 'percent', align: 'right' },
+  { key: 'coc', label: 'Cash-on-cash', format: 'percent', align: 'right' },
+  { key: 'irr', label: 'IRR', format: 'percent', align: 'right' },
+  { key: 'renovationCost', label: 'Renovation (upfront)', format: currency, align: 'right' },
+  { key: 'askingPrice', label: 'Asking price', format: currency, align: 'right' },
+  { key: 'capRateValue', label: 'Cap Rate Property Value', format: currency, align: 'right' },
+  { key: 'irr20Price', label: '20% IRR Price', format: currency, align: 'right' },
+  { key: 'purchasePrice', label: 'Purchase price', format: currency, align: 'right' },
+  { key: 'totalCashIn', label: 'Total Cash In', format: currency, align: 'right' },
+  {
+    key: 'cashOutRefi',
+    label: 'Total Cash Out after refinance @75% LTV',
+    format: currency,
+    align: 'right',
+  },
+  {
+    key: 'futureCash',
+    label: 'Total Cash for future investment (cash in - cash out after refinance)',
+    format: currency,
+    align: 'right',
+  },
+];
+const SCENARIO_TABLE_COLUMN_KEY_SET = new Set(
+  SCENARIO_TABLE_COLUMN_DEFINITIONS.map((column) => column.key)
+);
+const SCENARIO_TABLE_COLUMNS_STORAGE_KEY = 'qc_scenario_table_columns';
+const DEFAULT_SCENARIO_TABLE_COLUMN_KEYS = [
+  'propertyNetAfterTax',
+  'cap',
+  'rentalYield',
+  'yoc',
+  'coc',
+  'irr',
+];
+const DISCOVERY_STATUS_OPTIONS = [
+  { value: 'new', label: 'New' },
+  { value: 'needs_comps', label: 'Needs comps' },
+  { value: 'watchlist', label: 'Watchlist' },
+  { value: 'offer_ready', label: 'Offer ready' },
+  { value: 'offered', label: 'Offered' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'purchased', label: 'Purchased' },
+];
+const DISCOVERY_STATUS_LABELS = Object.fromEntries(
+  DISCOVERY_STATUS_OPTIONS.map((option) => [option.value, option.label])
+);
+const DISCOVERY_REJECT_REASONS = [
+  'Too expensive',
+  'Rent too low',
+  'Weak comps',
+  'Poor area',
+  'Refurb too large',
+  'Legal issue',
+  'Does not meet cash-out target',
+];
+const DISCOVERY_IMPORT_PLACEHOLDER =
+  'Address, URL, Asking price, Beds, Rent estimate, Comparable value, Comparable rent, Notes';
+const sanitizeScenarioTableColumns = (keys, fallbackKeys = DEFAULT_SCENARIO_TABLE_COLUMN_KEYS) => {
+  const output = [];
+  if (Array.isArray(keys)) {
+    keys.forEach((key) => {
+      if (SCENARIO_TABLE_COLUMN_KEY_SET.has(key) && !output.includes(key)) {
+        output.push(key);
+      }
+    });
+  }
+  if (output.length > 0) {
+    return output;
+  }
+  const fallback = Array.isArray(fallbackKeys) ? fallbackKeys : DEFAULT_SCENARIO_TABLE_COLUMN_KEYS;
+  const fallbackOutput = [];
+  fallback.forEach((key) => {
+    if (SCENARIO_TABLE_COLUMN_KEY_SET.has(key) && !fallbackOutput.includes(key)) {
+      fallbackOutput.push(key);
+    }
+  });
+  if (fallbackOutput.length > 0) {
+    return fallbackOutput;
+  }
+  return DEFAULT_SCENARIO_TABLE_COLUMN_KEYS;
+};
 const CASHFLOW_COLUMNS_STORAGE_KEY = 'qc_cashflow_columns';
 const DEFAULT_AUTH_CREDENTIALS = { username: SCENARIO_USERNAME, password: SCENARIO_PASSWORD };
 
@@ -1586,6 +1838,119 @@ const normalizeScenarioList = (list) =>
       : []
   );
 
+const parseMoneyLikeValue = (value) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const cleaned = value.replace(/[£,\s]/g, '').trim();
+  if (cleaned === '') {
+    return null;
+  }
+  const numeric = Number(cleaned);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const normalizeDiscoveryLead = (lead) => {
+  if (!lead || typeof lead !== 'object') {
+    return null;
+  }
+  const now = new Date().toISOString();
+  const address = typeof lead.address === 'string' ? lead.address.trim() : '';
+  const sourceUrl = typeof lead.sourceUrl === 'string' ? lead.sourceUrl.trim() : '';
+  const notes = typeof lead.notes === 'string' ? lead.notes.trim() : '';
+  const status = DISCOVERY_STATUS_LABELS[lead.status] ? lead.status : 'new';
+  const askingPrice = parseMoneyLikeValue(lead.askingPrice);
+  const rentEstimate = parseMoneyLikeValue(lead.rentEstimate);
+  const comparableValue = parseMoneyLikeValue(lead.comparableValue);
+  const comparableRent = parseMoneyLikeValue(lead.comparableRent);
+  const bedrooms = Number(lead.bedrooms);
+  const bathrooms = Number(lead.bathrooms);
+  if (!address && !sourceUrl) {
+    return null;
+  }
+  return {
+    id:
+      typeof lead.id === 'string' && lead.id.trim() !== ''
+        ? lead.id
+        : `lead-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    status,
+    address,
+    sourceUrl,
+    askingPrice: Number.isFinite(askingPrice) ? askingPrice : null,
+    rentEstimate: Number.isFinite(rentEstimate) ? rentEstimate : null,
+    comparableValue: Number.isFinite(comparableValue) ? comparableValue : null,
+    comparableRent: Number.isFinite(comparableRent) ? comparableRent : null,
+    bedrooms: Number.isFinite(bedrooms) && bedrooms > 0 ? bedrooms : null,
+    bathrooms: Number.isFinite(bathrooms) && bathrooms > 0 ? bathrooms : null,
+    propertyType:
+      typeof lead.propertyType === 'string' && lead.propertyType.trim() !== ''
+        ? lead.propertyType
+        : DEFAULT_INPUTS?.propertyType ?? 'detached',
+    notes,
+    rejectReason: typeof lead.rejectReason === 'string' ? lead.rejectReason.trim() : '',
+    linkedScenarioId: typeof lead.linkedScenarioId === 'string' ? lead.linkedScenarioId : '',
+    createdAt:
+      typeof lead.createdAt === 'string' && lead.createdAt.trim() !== '' ? lead.createdAt : now,
+    updatedAt:
+      typeof lead.updatedAt === 'string' && lead.updatedAt.trim() !== '' ? lead.updatedAt : now,
+  };
+};
+
+const normalizeDiscoveryLeads = (items) =>
+  Array.isArray(items)
+    ? items
+        .map((item) => normalizeDiscoveryLead(item))
+        .filter(Boolean)
+        .sort((a, b) => {
+          const aTime = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime() || 0;
+          const bTime = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() || 0;
+          return bTime - aTime;
+        })
+    : [];
+
+const parseDiscoveryImportRows = (text) => {
+  if (typeof text !== 'string' || text.trim() === '') {
+    return [];
+  }
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return [];
+  }
+  const headerWords = ['address', 'url', 'price', 'rent', 'comp', 'notes'];
+  const firstCells = lines[0].split(/\t|,/).map((cell) => cell.trim().toLowerCase());
+  const hasHeader = firstCells.some((cell) => headerWords.some((word) => cell.includes(word)));
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+  return dataLines
+    .map((line) => {
+      const cells = line.split(/\t|,/).map((cell) => cell.trim());
+      if (cells.length === 1) {
+        const only = cells[0];
+        const isUrl = /^https?:\/\//i.test(only);
+        return normalizeDiscoveryLead({
+          address: isUrl ? '' : only,
+          sourceUrl: isUrl ? only : '',
+        });
+      }
+      return normalizeDiscoveryLead({
+        address: cells[0] ?? '',
+        sourceUrl: cells[1] ?? '',
+        askingPrice: cells[2] ?? '',
+        bedrooms: cells[3] ?? '',
+        rentEstimate: cells[4] ?? '',
+        comparableValue: cells[5] ?? '',
+        comparableRent: cells[6] ?? '',
+        notes: cells.slice(7).join(' · '),
+      });
+    })
+    .filter(Boolean);
+};
+
 const DEFAULT_INPUTS = {
   propertyAddress: '',
   propertyUrl: '',
@@ -1606,6 +1971,12 @@ const DEFAULT_INPUTS = {
   useBridgingLoan: false,
   bridgingLoanTermMonths: 12,
   bridgingLoanInterestRate: 0.008,
+  bridgingLoanDepositPct: 0.25,
+  bridgingValueAdded: 0,
+  bridgingCost: 0,
+  bridgingInterestPaymentMode: 'monthly',
+  capRateBenchmark: 0,
+  grmBenchmark: 0,
   monthlyRent: 800,
   vacancyPct: 0.05,
   mgmtPct: 0.1,
@@ -1640,6 +2011,10 @@ const EXTRA_SETTINGS_DEFAULTS = {
   indexFundGrowth: Number.isFinite(DEFAULT_INPUTS.indexFundGrowth)
     ? Number(DEFAULT_INPUTS.indexFundGrowth)
     : DEFAULT_INDEX_GROWTH,
+  capRateBenchmark: Number.isFinite(DEFAULT_INPUTS.capRateBenchmark)
+    ? Number(DEFAULT_INPUTS.capRateBenchmark)
+    : 0,
+  grmBenchmark: Number.isFinite(DEFAULT_INPUTS.grmBenchmark) ? Number(DEFAULT_INPUTS.grmBenchmark) : 0,
   deductOperatingExpenses: true,
 };
 
@@ -4511,6 +4886,10 @@ const SECTION_DESCRIPTIONS = {
     'Summarises recent police-reported crime around the property and plots the incidents on an interactive map.',
   infrastructure:
     'Maps nearby planning applications and infrastructure projects so you can gauge future development activity around the property.',
+  bridgingSummary:
+    'Breaks down bridge funding assumptions, interest handling, post-refurbishment value, and refinance cash extracted once the bridge exits.',
+  marketValue:
+    'Compares cap rate, gross rent multiplier, discounted cash flow, and after-repair value signals to triangulate a fair market price.',
   investmentProfile:
     'Synthesises IRR, cash-on-cash return, and discounted net present value into a narrative on overall deal quality.',
 };
@@ -4518,7 +4897,7 @@ const SECTION_DESCRIPTIONS = {
 const KEY_RATIO_TOOLTIPS = {
   cap: 'First-year net operating income divided by the purchase price.',
   rentalYield: 'First-year rent collected after vacancy divided by the purchase price.',
-  yoc: 'First-year net operating income divided by total project cost (price + closing + renovation).',
+  yoc: 'First-year net operating income divided by total project cost (price + closing + renovation + any bridge-only costs).',
   coc: 'Year 1 after-debt cash flow divided by total cash invested.',
   dscr: 'Debt service coverage ratio: Year 1 NOI divided by annual debt service.',
   mortgage: 'Estimated monthly mortgage payment for the modeled loan.',
@@ -4536,6 +4915,7 @@ const KNOWLEDGE_GROUPS = {
       'stampDuty',
       'closingCosts',
       'mortgagePackageFee',
+      'bridgingCost',
       'renovationCost',
       'bridgingLoanAmount',
       'netCashIn',
@@ -4665,6 +5045,14 @@ const KNOWLEDGE_METRICS = {
     description: 'Upfront lender or broker fee charged to arrange the mortgage.',
     calculation: 'User-entered flat fee paid at completion.',
     importance: 'Needs to be budgeted alongside closing costs because it increases cash required to draw the loan.',
+    unit: 'currency',
+  },
+  bridgingCost: {
+    label: 'Cost of bridge',
+    groups: ['cashNeeded'],
+    description: 'Legal or auction fees tied to arranging the bridge facility.',
+    calculation: 'User-entered cost that only applies while bridging finance is enabled.',
+    importance: 'Adds to upfront cash alongside the bridge deposit because it must be funded before refinancing.',
     unit: 'currency',
   },
   renovationCost: {
@@ -6230,19 +6618,38 @@ function calculateEquity(rawInputs) {
   );
 
   const isCompanyBuyer = inputs.buyerType === 'company';
-  const deposit = inputs.purchasePrice * inputs.depositPct;
+  const baseDepositAmount = Math.max(0, inputs.purchasePrice * inputs.depositPct);
   const otherClosing = inputs.purchasePrice * inputs.closingCostsPct;
   const packageFees = Number(inputs.mortgagePackageFee ?? 0) || 0;
   const closing = otherClosing + packageFees + stampDuty;
 
-  const loan = inputs.purchasePrice - deposit;
+  const bridgingEnabled = Boolean(inputs.useBridgingLoan);
+  const rawBridgingDepositPct = Number(inputs.bridgingLoanDepositPct ?? inputs.depositPct ?? 0);
+  const bridgingDepositShare = bridgingEnabled
+    ? clamp(Number.isFinite(rawBridgingDepositPct) ? rawBridgingDepositPct : inputs.depositPct || 0, 0, 0.95)
+    : inputs.depositPct;
+  const bridgingDepositAmount = bridgingEnabled
+    ? Math.min(inputs.purchasePrice, Math.max(0, inputs.purchasePrice * bridgingDepositShare))
+    : baseDepositAmount;
+  const bridgingValueAddedRaw = Number(inputs.bridgingValueAdded ?? 0);
+  const bridgingValueAdded =
+    bridgingEnabled && Number.isFinite(bridgingValueAddedRaw) ? bridgingValueAddedRaw : 0;
+  const postBridgeValue = bridgingEnabled
+    ? Math.max(0, inputs.purchasePrice + bridgingValueAdded)
+    : inputs.purchasePrice;
+  const propertyValueBasis = bridgingEnabled ? postBridgeValue : inputs.purchasePrice;
+  const rawBridgingCost = Number(inputs.bridgingCost ?? 0);
+  const bridgingCost = bridgingEnabled && Number.isFinite(rawBridgingCost) ? Math.max(0, rawBridgingCost) : 0;
+  const permanentDepositAmount = Math.max(0, postBridgeValue * inputs.depositPct);
+  const deposit = bridgingEnabled ? bridgingDepositAmount : baseDepositAmount;
+
+  const loan = Math.max(0, postBridgeValue - permanentDepositAmount);
   const irrHurdleValue = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
   const mortgageMonthly =
     inputs.loanType === 'interest_only'
       ? (loan * inputs.interestRate) / 12
       : monthlyMortgagePayment({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears });
 
-  const bridgingEnabled = Boolean(inputs.useBridgingLoan);
   const rawBridgingTerm = Number(inputs.bridgingLoanTermMonths ?? 0);
   const bridgingLoanTermMonths =
     bridgingEnabled && Number.isFinite(rawBridgingTerm)
@@ -6255,10 +6662,12 @@ function calculateEquity(rawInputs) {
     bridgingEnabled && Number.isFinite(rawBridgingRate)
       ? Math.max(0, rawBridgingRate)
       : 0;
-  const bridgingAmount = bridgingEnabled ? deposit : 0;
-  const totalCashRequired = deposit + closing + inputs.renovationCost;
-  const initialCashOutlay = Math.max(totalCashRequired - bridgingAmount, 0);
-  const indexInitialInvestment = bridgingEnabled ? deposit : initialCashOutlay;
+  const bridgingInterestPaymentMode =
+    bridgingEnabled && inputs.bridgingInterestPaymentMode === 'roll_up' ? 'roll_up' : 'monthly';
+  const bridgingAmount = bridgingEnabled ? Math.max(0, inputs.purchasePrice - bridgingDepositAmount) : 0;
+  const totalCashRequired = deposit + closing + inputs.renovationCost + bridgingCost;
+  const initialCashOutlay = totalCashRequired;
+  const indexInitialInvestment = totalCashRequired;
 
   const baseIncome1 = isCompanyBuyer ? 0 : (inputs.incomePerson1 ?? 0);
   const baseIncome2 = isCompanyBuyer ? 0 : (inputs.incomePerson2 ?? 0);
@@ -6273,6 +6682,8 @@ function calculateEquity(rawInputs) {
   const annualInterest = Array.from({ length: inputs.exitYear }, () => 0);
   const annualPrincipal = Array.from({ length: inputs.exitYear }, () => 0);
   const annualBridgingDebtService = Array.from({ length: inputs.exitYear }, () => 0);
+  let bridgingInterestPaidDuringTerm = 0;
+  let bridgingInterestPaidAtExit = 0;
   const monthlyRate = inputs.interestRate / 12;
   let balance = loan;
   const totalMonths = inputs.exitYear * 12;
@@ -6320,22 +6731,42 @@ function calculateEquity(rawInputs) {
     const monthsToModel = Math.min(bridgingLoanTermMonths, inputs.exitYear * 12);
     const monthlyInterest =
       bridgingMonthlyRate > 0 ? bridgingAmount * bridgingMonthlyRate : 0;
+    let accruedInterest = 0;
     for (let month = 1; month <= monthsToModel; month++) {
       const yearIndex = Math.ceil(month / 12) - 1;
       if (yearIndex < 0 || yearIndex >= annualDebtService.length) {
         continue;
       }
       if (monthlyInterest !== 0) {
-        annualDebtService[yearIndex] += monthlyInterest;
-        annualInterest[yearIndex] += monthlyInterest;
-        annualBridgingDebtService[yearIndex] += monthlyInterest;
+        if (bridgingInterestPaymentMode === 'monthly') {
+          annualDebtService[yearIndex] += monthlyInterest;
+          annualInterest[yearIndex] += monthlyInterest;
+          annualBridgingDebtService[yearIndex] += monthlyInterest;
+          bridgingInterestPaidDuringTerm += monthlyInterest;
+        } else {
+          accruedInterest += monthlyInterest;
+        }
       }
       if (month === monthsToModel) {
-        annualDebtService[yearIndex] += bridgingAmount;
-        annualPrincipal[yearIndex] += bridgingAmount;
+        if (bridgingInterestPaymentMode === 'roll_up' && accruedInterest !== 0) {
+          annualDebtService[yearIndex] += accruedInterest;
+          annualInterest[yearIndex] += accruedInterest;
+          annualBridgingDebtService[yearIndex] += accruedInterest;
+          bridgingInterestPaidAtExit += accruedInterest;
+        }
       }
     }
   }
+
+  const bridgingInterestTotal = bridgingInterestPaidDuringTerm + bridgingInterestPaidAtExit;
+  const bridgingExitPayoff = bridgingAmount + bridgingInterestPaidAtExit;
+  const totalCashInvestedDuringBridge = bridgingEnabled
+    ? totalCashRequired + bridgingInterestPaidDuringTerm
+    : 0;
+  const refinanceCashAvailable = bridgingEnabled ? loan - bridgingExitPayoff : 0;
+  const netCashAfterRefinance = bridgingEnabled
+    ? refinanceCashAvailable - totalCashInvestedDuringBridge
+    : 0;
 
   const grossRentYear1 = inputs.monthlyRent * 12 * (1 - inputs.vacancyPct);
   const variableOpex = inputs.monthlyRent * 12 * (inputs.mgmtPct + inputs.repairsPct);
@@ -6347,8 +6778,9 @@ function calculateEquity(rawInputs) {
 
   const cap = noiYear1 / inputs.purchasePrice;
   const cashIn = totalCashRequired;
-  const projectCost = inputs.purchasePrice + closing + inputs.renovationCost;
+  const projectCost = inputs.purchasePrice + closing + inputs.renovationCost + bridgingCost;
   const coc = cashIn === 0 ? 0 : cashflowYear1 / cashIn;
+  const yoc = projectCost > 0 ? noiYear1 / projectCost : 0;
   const dscr = debtServiceYear1 === 0 ? 0 : noiYear1 / debtServiceYear1;
 
   const months = Math.min(inputs.exitYear * 12, inputs.mortgageYears * 12);
@@ -6357,7 +6789,7 @@ function calculateEquity(rawInputs) {
       ? loan
       : remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid: months });
 
-  const futureValue = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, inputs.exitYear);
+  const futureValue = propertyValueBasis * Math.pow(1 + inputs.annualAppreciation, inputs.exitYear);
   const sellingCosts = futureValue * inputs.sellingCostsPct;
 
   const cf = [];
@@ -6392,9 +6824,8 @@ function calculateEquity(rawInputs) {
   const annualNoiValues = [];
   const annualCashflowsPreTax = [];
   const annualCashflowsAfterTax = [];
-  const initialNetEquity =
-    inputs.purchasePrice - inputs.purchasePrice * inputs.sellingCostsPct - loan;
-  const initialSaleValue = inputs.purchasePrice;
+  const initialNetEquity = propertyValueBasis - propertyValueBasis * inputs.sellingCostsPct - loan;
+  const initialSaleValue = propertyValueBasis;
   const initialSaleCosts = initialSaleValue * inputs.sellingCostsPct;
   const initialNetSaleProceeds = initialSaleValue - initialSaleCosts - loan;
   chart.push({
@@ -6403,8 +6834,8 @@ function calculateEquity(rawInputs) {
     indexFund1_5x: indexVal * 1.5,
     indexFund2x: indexVal * 2,
     indexFund4x: indexVal * 4,
-    propertyValue: inputs.purchasePrice,
-    propertyGross: inputs.purchasePrice,
+    propertyValue: propertyValueBasis,
+    propertyGross: propertyValueBasis,
     propertyNet: initialNetEquity,
     propertyNetAfterTax: initialNetEquity,
     reinvestFund: 0,
@@ -6530,7 +6961,7 @@ function calculateEquity(rawInputs) {
         ? loan
         : Math.max(0, remainingBalance({ principal: loan, annualRate: inputs.interestRate, years: inputs.mortgageYears, monthsPaid }));
 
-    const vt = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
+    const vt = propertyValueBasis * Math.pow(1 + inputs.annualAppreciation, y);
     const saleCostsEstimate = vt * inputs.sellingCostsPct;
     const netSaleIfSold = vt - saleCostsEstimate - remainingLoanYear;
     const saleProceedsBeforeLoan = vt - saleCostsEstimate;
@@ -6565,7 +6996,7 @@ function calculateEquity(rawInputs) {
     const cumulativeCashAfterTaxNet = shouldReinvest
       ? cumulativeCashAfterTax - cumulativeReinvested
       : cumulativeCashAfterTax;
-    const propertyGrossValue = vt + cumulativeCashPreTaxNet;
+  const propertyGrossValue = vt + cumulativeCashPreTaxNet;
     const propertyNetValue = netSaleIfSold + cumulativeCashPreTaxNet + reinvestFundValue;
     const propertyNetAfterTaxValue = netSaleIfSoldAfterTax + cumulativeCashAfterTaxNet + reinvestFundValue;
 
@@ -6573,7 +7004,7 @@ function calculateEquity(rawInputs) {
     let yearCashflowForNpv = afterTaxCash;
     let realizedSaleProceeds = 0;
     if (!inputs.neverExit && y === inputs.exitYear) {
-      const fv = inputs.purchasePrice * Math.pow(1 + inputs.annualAppreciation, y);
+      const fv = propertyValueBasis * Math.pow(1 + inputs.annualAppreciation, y);
       const sell = fv * inputs.sellingCostsPct;
       const rem =
         inputs.loanType === 'interest_only'
@@ -6916,11 +7347,26 @@ function calculateEquity(rawInputs) {
     cashIn,
     initialCashOutlay,
     totalCashRequired,
+    bridgingCost,
     bridgingLoanAmount: bridgingAmount,
     bridgingLoanTermMonths,
     bridgingLoanInterestRate: bridgingMonthlyRate,
+    bridgingLoanDepositPct: bridgingEnabled ? bridgingDepositShare : inputs.depositPct,
+    bridgingDepositAmount: bridgingEnabled ? deposit : 0,
+    bridgingInterestPaymentMode,
+    bridgingInterestPaidDuringTerm,
+    bridgingInterestPaidAtExit,
+    bridgingInterestTotal,
+    bridgingExitPayoff,
+    bridgingValueAdded: bridgingEnabled ? bridgingValueAdded : 0,
+    postBridgeValue,
+    permanentDepositAmount,
+    permanentLoanAmount: loan,
+    refinanceCashAvailable,
+    totalCashInvestedDuringBridge,
+    netCashAfterRefinance,
     projectCost,
-    yoc: noiYear1 / (inputs.purchasePrice + closing + inputs.renovationCost),
+    yoc,
     indexValEnd: indexVal,
     exitCumCash,
     exitCumCashAfterTax,
@@ -6976,6 +7422,140 @@ function calculateEquity(rawInputs) {
       : null,
   };
 }
+
+const computeRefinanceCashOut = (metrics, ltv = 0.75) => {
+  if (!metrics || typeof metrics !== 'object') {
+    return null;
+  }
+  const postBridgeValue = Number(metrics.postBridgeValue ?? metrics.purchasePrice);
+  if (!Number.isFinite(postBridgeValue) || postBridgeValue <= 0) {
+    return null;
+  }
+  const refiLoan = postBridgeValue * ltv;
+  const payoff = Number(
+    metrics.bridgingLoanAmount > 0 ? metrics.bridgingExitPayoff : metrics.loan
+  );
+  if (!Number.isFinite(payoff)) {
+    return null;
+  }
+  const cashOut = refiLoan - payoff;
+  return Number.isFinite(cashOut) ? cashOut : null;
+};
+
+const computeTotalCashIn = (metrics) => {
+  if (!metrics || typeof metrics !== 'object') {
+    return null;
+  }
+  const value = metrics.bridgingLoanAmount > 0 ? metrics.totalCashInvestedDuringBridge : metrics.totalCashRequired;
+  return Number.isFinite(value) ? value : null;
+};
+
+const estimatePriceForTargetIrr = (baseInputs, targetIrr) => {
+  const basePrice = Number(baseInputs?.purchasePrice);
+  if (!Number.isFinite(basePrice) || basePrice <= 0 || !Number.isFinite(targetIrr)) {
+    return null;
+  }
+  const computeDelta = (price) => {
+    if (!Number.isFinite(price) || price <= 0) {
+      return null;
+    }
+    const metrics = calculateEquity({ ...baseInputs, purchasePrice: price });
+    const irrValue = Number(metrics.irr);
+    if (!Number.isFinite(irrValue)) {
+      return null;
+    }
+    return irrValue - targetIrr;
+  };
+  let low = Math.max(1, basePrice * 0.4);
+  let high = basePrice * 1.6;
+  let lowDelta = computeDelta(low);
+  let highDelta = computeDelta(high);
+  for (let attempt = 0; attempt < 12 && (lowDelta === null || highDelta === null || lowDelta * highDelta > 0); attempt += 1) {
+    if (lowDelta !== null && lowDelta > 0) {
+      high *= 1.35;
+      highDelta = computeDelta(high);
+    } else {
+      low = Math.max(1, low * 0.7);
+      lowDelta = computeDelta(low);
+    }
+  }
+  if (lowDelta === null || highDelta === null || lowDelta * highDelta > 0) {
+    return null;
+  }
+  let left = low;
+  let right = high;
+  let mid = (left + right) / 2;
+  for (let i = 0; i < 28; i += 1) {
+    mid = (left + right) / 2;
+    const delta = computeDelta(mid);
+    if (delta === null) {
+      break;
+    }
+    if (Math.abs(delta) < 0.0005) {
+      break;
+    }
+    if (delta > 0) {
+      left = mid;
+    } else {
+      right = mid;
+    }
+  }
+  return mid;
+};
+
+const estimatePriceForCashOutPct = (baseInputs, targetPct, ltv = 0.75) => {
+  const basePrice = Number(baseInputs?.purchasePrice);
+  if (!Number.isFinite(basePrice) || basePrice <= 0 || !Number.isFinite(targetPct)) {
+    return null;
+  }
+  const computeDelta = (price) => {
+    if (!Number.isFinite(price) || price <= 0) {
+      return null;
+    }
+    const metrics = calculateEquity({ ...baseInputs, purchasePrice: price });
+    const cashOut = computeRefinanceCashOut(metrics, ltv);
+    const cashIn = computeTotalCashIn(metrics);
+    if (!Number.isFinite(cashOut) || !Number.isFinite(cashIn)) {
+      return null;
+    }
+    return cashOut - cashIn * targetPct;
+  };
+  let low = Math.max(1, basePrice * 0.4);
+  let high = basePrice * 1.6;
+  let lowDelta = computeDelta(low);
+  let highDelta = computeDelta(high);
+  for (let attempt = 0; attempt < 12 && (lowDelta === null || highDelta === null || lowDelta * highDelta > 0); attempt += 1) {
+    if (lowDelta !== null && lowDelta > 0) {
+      high *= 1.35;
+      highDelta = computeDelta(high);
+    } else {
+      low = Math.max(1, low * 0.7);
+      lowDelta = computeDelta(low);
+    }
+  }
+  if (lowDelta === null || highDelta === null || lowDelta * highDelta > 0) {
+    return null;
+  }
+  let left = low;
+  let right = high;
+  let mid = (left + right) / 2;
+  for (let i = 0; i < 28; i += 1) {
+    mid = (left + right) / 2;
+    const delta = computeDelta(mid);
+    if (delta === null) {
+      break;
+    }
+    if (Math.abs(delta) < 1) {
+      break;
+    }
+    if (delta > 0) {
+      left = mid;
+    } else {
+      right = mid;
+    }
+  }
+  return mid;
+};
 
 function buildIncomeCandidates(base) {
   const monthlyRent = Number(base.monthlyRent) || 0;
@@ -7709,6 +8289,22 @@ export default function App() {
   const [propertyPriceState, setPropertyPriceState] = useState({ status: 'idle', data: null, error: '' });
   const [inputs, setInputs] = useState(() => ({ ...DEFAULT_INPUTS, ...loadStoredExtraSettings() }));
   const [savedScenarios, setSavedScenarios] = useState([]);
+  const [discoveryLeads, setDiscoveryLeads] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = window.localStorage.getItem(DISCOVERY_LEADS_STORAGE_KEY);
+        if (stored) {
+          return normalizeDiscoveryLeads(JSON.parse(stored));
+        }
+      } catch (error) {
+        console.warn('Unable to read discovery leads from storage:', error);
+      }
+    }
+    return [];
+  });
+  const [showDiscoveryPanel, setShowDiscoveryPanel] = useState(false);
+  const [discoveryImportText, setDiscoveryImportText] = useState('');
+  const [discoveryStatusFilter, setDiscoveryStatusFilter] = useState('all');
   const [futurePlan, setFuturePlan] = useState(() => loadStoredFuturePlan());
   const [savedPlanViews, setSavedPlanViews] = useState(() => loadStoredPlanViews());
   const [showPlanViewLoader, setShowPlanViewLoader] = useState(false);
@@ -7765,11 +8361,32 @@ export default function App() {
   const [scenarioAlignInputs, setScenarioAlignInputs] = useState(false);
   const [scenarioOverviewMode, setScenarioOverviewMode] = useState('scatter');
   const [scenarioSort, setScenarioSort] = useState({ key: 'savedAt', direction: 'desc' });
+  const [scenarioTableColumnKeys, setScenarioTableColumnKeys] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = window.localStorage.getItem(SCENARIO_TABLE_COLUMNS_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          const sanitized = sanitizeScenarioTableColumns(parsed);
+          if (sanitized.length) {
+            return sanitized;
+          }
+        }
+      } catch (error) {
+        console.warn('Unable to read scenario table columns from storage:', error);
+      }
+    }
+    return DEFAULT_SCENARIO_TABLE_COLUMN_KEYS;
+  });
+  const [comparisonOptimization, setComparisonOptimization] = useState(null);
   const [previewActive, setPreviewActive] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewStatus, setPreviewStatus] = useState('idle');
   const [previewError, setPreviewError] = useState('');
   const [previewKey, setPreviewKey] = useState(0);
+  const [listingExtractionStatus, setListingExtractionStatus] = useState('idle');
+  const [listingExtractionError, setListingExtractionError] = useState('');
+  const [extractedListing, setExtractedListing] = useState(null);
   const [isMapModalOpen, setIsMapModalOpen] = useState(false);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [authCredentials, setAuthCredentials] = useState(() => {
@@ -7812,6 +8429,8 @@ export default function App() {
     equityGrowth: true,
     interestSplit: true,
     leverage: true,
+    bridgingSummary: false,
+    marketValue: true,
     investmentProfile: true,
   });
   const [showInvestmentProfileDetails, setShowInvestmentProfileDetails] = useState(false);
@@ -8847,47 +9466,56 @@ export default function App() {
       const controller = new AbortController();
       geocodeAbortRef.current = controller;
       setGeocodeState((prev) => ({ status: 'loading', data: prev.data ?? null, error: '' }));
-      const params = new URLSearchParams({ q: rawAddress, limit: '1' });
-      fetch(`https://geocode.maps.co/search?${params.toString()}`, {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      })
-        .then((response) => {
-          if (!response.ok) {
-            throw new Error('Geocoding request failed');
+
+      const fetchGeocodeCandidate = async () => {
+        let lastError = null;
+        for (const provider of GEOCODE_PROVIDERS) {
+          if (provider.shouldUse && !provider.shouldUse()) {
+            continue;
           }
-          return response.json();
-        })
-        .then((results) => {
-          if (!Array.isArray(results) || results.length === 0) {
+          const headers = { Accept: 'application/json', ...(provider.headers ?? {}) };
+          try {
+            const response = await fetch(provider.buildUrl(rawAddress), {
+              signal: controller.signal,
+              headers,
+            });
+            if (!response.ok) {
+              const error = new Error('Geocoding request failed');
+              error.status = response.status;
+              throw error;
+            }
+            const payload = await response.json();
+            const candidates = provider.parse(payload);
+            if (Array.isArray(candidates) && candidates.length > 0) {
+              const normalized = normalizeGeocodeCandidate(candidates[0], rawAddress);
+              if (normalized) {
+                return normalized;
+              }
+            }
+          } catch (error) {
+            if (error.name === 'AbortError') {
+              throw error;
+            }
+            lastError = error;
+          }
+        }
+        if (lastError) {
+          throw lastError;
+        }
+        return null;
+      };
+
+      fetchGeocodeCandidate()
+        .then((result) => {
+          if (!result) {
             setGeocodeState({ status: 'error', data: null, error: 'No matching location found.' });
             lastGeocodeQueryRef.current = '';
             return;
           }
-          const result = results[0];
-          const lat = Number.parseFloat(result.lat);
-          const lon = Number.parseFloat(result.lon);
-          if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-            setGeocodeState({ status: 'error', data: null, error: 'Location lookup returned invalid coordinates.' });
-            lastGeocodeQueryRef.current = '';
-            return;
-          }
           lastGeocodeQueryRef.current = normalizedQuery;
-          const addressDetails =
-            result && typeof result.address === 'object' && result.address !== null ? result.address : null;
-          const boundingBox = Array.isArray(result?.boundingbox) ? result.boundingbox : null;
-
           setGeocodeState({
             status: 'success',
-            data: {
-              lat,
-              lon,
-              displayName: typeof result.display_name === 'string' && result.display_name.trim() !== ''
-                ? result.display_name
-                : rawAddress,
-              address: addressDetails,
-              boundingBox,
-            },
+            data: result,
             error: '',
           });
         })
@@ -9121,7 +9749,9 @@ export default function App() {
           console.warn('Unable to fetch crime last-updated metadata:', error);
         }
 
-        const createCrimeParams = (entries) => {
+        let resolvedLatestMonth = clampCrimeMonthToLag(lastUpdatedMonth || lastUpdatedDate || '');
+
+        const createCrimeParams = (entries, options = {}) => {
           const params = new URLSearchParams();
           if (entries && typeof entries === 'object') {
             Object.entries(entries).forEach(([key, value]) => {
@@ -9144,7 +9774,8 @@ export default function App() {
               }
             });
           }
-          const dateParam = normalizeCrimeMonth(lastUpdatedMonth || lastUpdatedDate);
+          const dateOverride = normalizeCrimeMonth(options.date);
+          const dateParam = dateOverride || resolvedLatestMonth;
           if (dateParam) {
             params.set('date', dateParam);
           }
@@ -9153,14 +9784,6 @@ export default function App() {
 
         const latParam = formatCoordinate(crimeLat);
         const lonParam = formatCoordinate(crimeLon);
-
-        const baseParams =
-          crimePostcodeQuery !== ''
-            ? createCrimeParams({ postcode: crimePostcodeQuery })
-            : createCrimeParams({
-                lat: latParam,
-                lng: lonParam,
-              });
 
         const fetchCrimesWithParams = async (searchParams) => {
           const url = `https://data.police.uk/api/crimes-street/all-crime?${searchParams.toString()}`;
@@ -9211,6 +9834,38 @@ export default function App() {
         let finalCrimeData = null;
         let finalError = null;
         let lastSuccessfulParams = null;
+        const boundingPolygon = geocodeBounds ? boundsToPolygon(geocodeBounds) : null;
+        const boundingPolygonParam = boundingPolygon ? polygonPointsToSearchParam(boundingPolygon) : '';
+        let cachedNeighbourhood = null;
+        let neighbourhoodAttempted = false;
+
+        const loadNeighbourhood = async () => {
+          if (neighbourhoodAttempted) {
+            return cachedNeighbourhood;
+          }
+          neighbourhoodAttempted = true;
+          try {
+            cachedNeighbourhood = await fetchNeighbourhoodBoundary({
+              lat: crimeLat,
+              lon: crimeLon,
+              postcode: geocodePostcode,
+              addressQuery: geocodeAddressQuery,
+              signal: controller.signal,
+            });
+          } catch (boundaryError) {
+            if (boundaryError?.name === 'AbortError') {
+              throw boundaryError;
+            }
+            if (!finalError) {
+              finalError =
+                boundaryError instanceof Error
+                  ? boundaryError
+                  : new Error('Unable to load local crime statistics.');
+            }
+            cachedNeighbourhood = null;
+          }
+          return cachedNeighbourhood;
+        };
 
         const attemptFetch = async (params, { boundsHint } = {}) => {
           try {
@@ -9228,64 +9883,105 @@ export default function App() {
               throw error;
             }
             finalError = error;
-            if (typeof error?.status === 'number' && error.status !== 404) {
+            if (typeof error?.status === 'number' && error.status !== 404 && error.status !== 400) {
               throw error;
             }
             return null;
           }
         };
 
-        finalCrimeData = await attemptFetch(baseParams, { boundsHint: geocodeBounds || null });
+        const tryCrimeStrategiesForMonth = async (monthValue) => {
+          const strategies = [];
+          const baseParams =
+            crimePostcodeQuery !== ''
+              ? createCrimeParams({ postcode: crimePostcodeQuery }, { date: monthValue })
+              : createCrimeParams({ lat: latParam, lng: lonParam }, { date: monthValue });
+          strategies.push({ params: baseParams, boundsHint: geocodeBounds || null });
 
-        if (!finalCrimeData && crimePostcodeQuery !== '' && hasUsableCoordinates(crimeLat, crimeLon)) {
-          const latLngParams = createCrimeParams({ lat: latParam, lng: lonParam });
-          finalCrimeData = await attemptFetch(latLngParams, { boundsHint: geocodeBounds || null });
-        }
+          if (crimePostcodeQuery !== '' && hasUsableCoordinates(crimeLat, crimeLon)) {
+            const latLngParams = createCrimeParams({ lat: latParam, lng: lonParam }, { date: monthValue });
+            strategies.push({ params: latLngParams, boundsHint: geocodeBounds || null });
+          }
 
-        if (!finalCrimeData && geocodeBounds) {
-          const boundingPolygon = boundsToPolygon(geocodeBounds);
-          if (boundingPolygon) {
-            const polyParams = createCrimeParams({ poly: boundingPolygon });
-            finalCrimeData = await attemptFetch(polyParams, { boundsHint: geocodeBounds });
+          if (boundingPolygonParam) {
+            const polygonParams = createCrimeParams({ poly: boundingPolygonParam }, { date: monthValue });
+            strategies.push({ params: polygonParams, boundsHint: geocodeBounds });
+          }
+
+          for (const strategy of strategies) {
+            const data = await attemptFetch(strategy.params, { boundsHint: strategy.boundsHint });
+            if (data) {
+              return data;
+            }
+          }
+
+          const neighbourhood = await loadNeighbourhood();
+          if (neighbourhood) {
+            const boundsHint = neighbourhood.bounds ?? geocodeBounds ?? null;
+            if (neighbourhood.locationId) {
+              const locationParams = createCrimeParams(
+                { location_id: neighbourhood.locationId },
+                { date: monthValue }
+              );
+              const locationData = await attemptFetch(locationParams, { boundsHint });
+              if (locationData) {
+                if (neighbourhood.bounds) {
+                  summaryBoundsHint = neighbourhood.bounds;
+                }
+                return locationData;
+              }
+            }
+            const neighbourhoodPolygon = polygonPointsToSearchParam(neighbourhood.points);
+            if (neighbourhoodPolygon) {
+              const neighbourhoodParams = createCrimeParams(
+                { poly: neighbourhoodPolygon },
+                { date: monthValue }
+              );
+              const polygonData = await attemptFetch(neighbourhoodParams, { boundsHint });
+              if (polygonData) {
+                if (neighbourhood.bounds) {
+                  summaryBoundsHint = neighbourhood.bounds;
+                }
+                return polygonData;
+              }
+            }
+          }
+
+          return null;
+        };
+
+        const normalizedBaseMonth = normalizeCrimeMonth(resolvedLatestMonth);
+        if (normalizedBaseMonth) {
+          resolvedLatestMonth = normalizedBaseMonth;
+        } else {
+          const fallbackMonth = normalizeCrimeMonth(computeCrimeLaggedMonth());
+          if (fallbackMonth) {
+            resolvedLatestMonth = fallbackMonth;
           }
         }
 
-        if (!finalCrimeData) {
-          try {
-            const neighbourhood = await fetchNeighbourhoodBoundary({
-              lat: crimeLat,
-              lon: crimeLon,
-              postcode: geocodePostcode,
-              addressQuery: geocodeAddressQuery,
-              signal: controller.signal,
-            });
-            if (neighbourhood) {
-              const boundsHint = neighbourhood.bounds ?? geocodeBounds ?? null;
-              if (!finalCrimeData && neighbourhood.locationId) {
-                const locationParams = createCrimeParams({ location_id: neighbourhood.locationId });
-                finalCrimeData = await attemptFetch(locationParams, { boundsHint });
-              }
-              if (!finalCrimeData) {
-                const polygonParam = polygonPointsToSearchParam(neighbourhood.points);
-                if (polygonParam) {
-                  const polyParams = createCrimeParams({ poly: polygonParam });
-                  finalCrimeData = await attemptFetch(polyParams, { boundsHint });
-                }
-              }
-              if (finalCrimeData && neighbourhood.bounds) {
-                summaryBoundsHint = neighbourhood.bounds;
-              }
+        const monthSearchOrderBase = normalizeCrimeMonth(resolvedLatestMonth);
+        const monthSearchOrder = monthSearchOrderBase
+          ? buildCrimeMonthRange(monthSearchOrderBase, CRIME_TREND_MAX_MONTHS)
+          : [];
+        if (monthSearchOrder.length === 0) {
+          monthSearchOrder.push('');
+        }
+
+        for (const monthValue of monthSearchOrder) {
+          const data = await tryCrimeStrategiesForMonth(monthValue);
+          if (controller.signal.aborted) {
+            return;
+          }
+          if (Array.isArray(data)) {
+            finalCrimeData = data;
+            const normalizedMonth = normalizeCrimeMonth(
+              monthValue || lastSuccessfulParams?.get('date') || resolvedLatestMonth
+            );
+            if (normalizedMonth) {
+              resolvedLatestMonth = normalizedMonth;
             }
-          } catch (boundaryError) {
-            if (boundaryError?.name === 'AbortError') {
-              throw boundaryError;
-            }
-            if (!finalError) {
-              finalError =
-                boundaryError instanceof Error
-                  ? boundaryError
-                  : new Error('Unable to load local crime statistics.');
-            }
+            break;
           }
         }
 
@@ -9297,9 +9993,13 @@ export default function App() {
           throw new Error(fallbackErrorMessage);
         }
 
-        const defaultMonth = normalizeCrimeMonth(
-          lastUpdatedMonth || (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '')
-        );
+        const resolvedDefaultMonth =
+          normalizeCrimeMonth(
+            lastSuccessfulParams?.get('date') ||
+              (typeof finalCrimeData[0]?.month === 'string' ? finalCrimeData[0].month : '') ||
+              resolvedLatestMonth
+          ) || resolvedLatestMonth;
+        const defaultMonth = resolvedDefaultMonth;
         const fallbackLocationName = geocodeLocationSummary || geocodeDisplayName || propertyAddress;
         const normalizedLastUpdated = normalizeCrimeMonth(lastUpdatedDate) || lastUpdatedDate;
         const mapCenterOverride = hasUsableCoordinates(crimeLat, crimeLon)
@@ -9317,7 +10017,7 @@ export default function App() {
           mapCenterOverride,
         });
 
-        const monthCandidates = buildCrimeMonthRange(defaultMonth || lastUpdatedMonth || '');
+        const monthCandidates = buildCrimeMonthRange(defaultMonth || resolvedLatestMonth || '');
         if (defaultMonth && !monthCandidates.includes(defaultMonth)) {
           monthCandidates.unshift(defaultMonth);
         }
@@ -9348,7 +10048,14 @@ export default function App() {
 
         registerMonthSummary(defaultMonth || '', finalCrimeData, primarySummary);
 
-        const paramsTemplateString = (lastSuccessfulParams || baseParams).toString();
+        const paramsTemplateString =
+          lastSuccessfulParams?.toString() ||
+          createCrimeParams(
+            crimePostcodeQuery !== ''
+              ? { postcode: crimePostcodeQuery }
+              : { lat: latParam, lng: lonParam },
+            { date: defaultMonth || resolvedLatestMonth || '' }
+          ).toString();
 
         for (const monthValue of availableMonthValues) {
           if (!monthValue || monthValue === defaultMonth) {
@@ -9567,19 +10274,23 @@ export default function App() {
               if (!Number.isFinite(normalizedLat) || !Number.isFinite(normalizedLon)) {
                 throw new Error('Invalid property coordinates for planning lookup.');
               }
-              const params = new URLSearchParams({
-                dataset,
-                point: `POINT(${normalizedLon.toFixed(6)} ${normalizedLat.toFixed(6)})`,
-                buffer: String(INFRASTRUCTURE_SEARCH_RADIUS_METERS),
-                limit: '50',
+              const wktPoint = `POINT (${normalizedLon.toFixed(6)} ${normalizedLat.toFixed(6)})`;
+              const queryString = [
+                ['dataset', dataset],
+                ['buffer', String(INFRASTRUCTURE_SEARCH_RADIUS_METERS)],
+                ['limit', '50'],
+                ['point', wktPoint],
+              ]
+                .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+                .join('&');
+              const url = `https://www.planning.data.gov.uk/entity.json?${queryString}`;
+              const response = await fetch(url, {
+                signal: controller.signal,
+                headers: { Accept: 'application/json' },
               });
-              const response = await fetch(
-                `https://www.planning.data.gov.uk/entity.json?${params.toString()}`,
-                {
-                  signal: controller.signal,
-                  headers: { Accept: 'application/json' },
-                }
-              );
+              if (response.status === 422) {
+                return { key, items: [], error: '' };
+              }
               const rawBody = await response.text();
               if (!response.ok) {
                 let message = `Request failed with status ${response.status}`;
@@ -9775,6 +10486,18 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
+      window.localStorage.setItem(
+        DISCOVERY_LEADS_STORAGE_KEY,
+        JSON.stringify(normalizeDiscoveryLeads(discoveryLeads))
+      );
+    } catch (error) {
+      console.warn('Unable to persist discovery leads:', error);
+    }
+  }, [discoveryLeads]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
       const sanitized = futurePlan.map((item) => sanitizePlanItem(item)).filter(Boolean);
       window.localStorage.setItem(FUTURE_PLAN_STORAGE_KEY, JSON.stringify(sanitized));
     } catch (error) {
@@ -9806,6 +10529,16 @@ export default function App() {
   }, [cashflowColumnKeys]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const sanitized = sanitizeScenarioTableColumns(scenarioTableColumnKeys);
+      window.localStorage.setItem(SCENARIO_TABLE_COLUMNS_STORAGE_KEY, JSON.stringify(sanitized));
+    } catch (error) {
+      console.warn('Unable to persist scenario table columns:', error);
+    }
+  }, [scenarioTableColumnKeys]);
+
+  useEffect(() => {
     if (!shareNotice || typeof window === 'undefined') return;
     const timeout = window.setTimeout(() => setShareNotice(''), 3000);
     return () => window.clearTimeout(timeout);
@@ -9816,6 +10549,12 @@ export default function App() {
     const timeout = window.setTimeout(() => setPlanNotice(''), 3000);
     return () => window.clearTimeout(timeout);
   }, [planNotice]);
+
+  useEffect(() => {
+    if (!showTableModal) {
+      setComparisonOptimization(null);
+    }
+  }, [showTableModal]);
 
   const equityInputs = useMemo(() => {
     const derivedRate = Number.isFinite(derivedHistoricalRate) ? derivedHistoricalRate : null;
@@ -10124,6 +10863,9 @@ export default function App() {
         const grossRentYear1 = Number(metrics.grossRentYear1) || 0;
         const purchasePrice = Number(evaluationInputs.purchasePrice ?? basePurchasePrice) || 0;
         const monthlyRent = Number(evaluationInputs.monthlyRent ?? baseMonthlyRent) || 0;
+        const askingPrice = Number(
+          scenarioDefaults.purchasePrice ?? evaluationInputs.purchasePrice ?? basePurchasePrice
+        );
         const bedroomsValue = Number(
           evaluationInputs.bedrooms ?? scenarioDefaults.bedrooms ?? DEFAULT_INPUTS.bedrooms
         );
@@ -10142,9 +10884,32 @@ export default function App() {
             : '';
         const propertyAddressLabel = (scenarioDefaults.propertyAddress ?? '').trim();
         const rentalYieldValue = purchasePrice > 0 ? grossRentYear1 / purchasePrice : 0;
+        const capRateBenchmark = pickFirstFinite(
+          evaluationInputs.marketCapRate,
+          evaluationInputs.capRateBenchmark,
+          evaluationInputs.targetCapRate,
+          evaluationInputs.capRateAssumption,
+          evaluationInputs.capRateMarket,
+          evaluationInputs.marketCapRatePct,
+          evaluationInputs.capRate
+        );
+        const capRateValue =
+          Number.isFinite(metrics.noiYear1) &&
+          Number.isFinite(capRateBenchmark) &&
+          capRateBenchmark > 0
+            ? metrics.noiYear1 / capRateBenchmark
+            : null;
+        const totalCashIn = computeTotalCashIn(metrics);
+        const cashOutRefi = computeRefinanceCashOut(metrics, 0.75);
+        const futureCash =
+          Number.isFinite(totalCashIn) && Number.isFinite(cashOutRefi)
+            ? totalCashIn - cashOutRefi
+            : null;
+        const irr20Price = estimatePriceForTargetIrr(evaluationInputs, 0.2);
         return {
           scenario,
           metrics,
+          scenarioInputs: evaluationInputs,
           purchasePrice,
           monthlyRent,
           bedrooms: Number.isFinite(bedroomsValue) ? bedroomsValue : null,
@@ -10162,10 +10927,43 @@ export default function App() {
             coc: Number.isFinite(metrics.coc) ? metrics.coc : 0,
             irr: Number.isFinite(metrics.irr) ? metrics.irr : 0,
           },
+          tableValues: {
+            propertyNetAfterTax: Number(metrics.propertyNetWealthAfterTax) || 0,
+            cap: Number.isFinite(metrics.cap) ? metrics.cap : null,
+            rentalYield: Number.isFinite(rentalYieldValue) ? rentalYieldValue : null,
+            yoc: Number.isFinite(metrics.yoc) ? metrics.yoc : null,
+            coc: Number.isFinite(metrics.coc) ? metrics.coc : null,
+            irr: Number.isFinite(metrics.irr) ? metrics.irr : null,
+            renovationCost: Number.isFinite(evaluationInputs.renovationCost)
+              ? evaluationInputs.renovationCost
+              : null,
+            askingPrice: Number.isFinite(askingPrice) ? askingPrice : null,
+            capRateValue: Number.isFinite(capRateValue) ? capRateValue : null,
+            irr20Price: Number.isFinite(irr20Price) ? irr20Price : null,
+            purchasePrice: Number.isFinite(purchasePrice) ? purchasePrice : null,
+            totalCashIn: Number.isFinite(totalCashIn) ? totalCashIn : null,
+            cashOutRefi: Number.isFinite(cashOutRefi) ? cashOutRefi : null,
+            futureCash: Number.isFinite(futureCash) ? futureCash : null,
+          },
         };
       }),
     [inputs, savedScenarios, scenarioAlignInputs]
   );
+  const scenarioTableColumns = useMemo(() => {
+    const sanitized = sanitizeScenarioTableColumns(scenarioTableColumnKeys);
+    const definitionMap = new Map(
+      SCENARIO_TABLE_COLUMN_DEFINITIONS.map((column) => [column.key, column])
+    );
+    return sanitized
+      .map((key) => definitionMap.get(key))
+      .filter(Boolean);
+  }, [scenarioTableColumnKeys]);
+  const toggleScenarioTableColumn = useCallback((key) => {
+    setScenarioTableColumnKeys((prev) => {
+      const next = prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key];
+      return next.length > 0 ? next : prev;
+    });
+  }, []);
   const scenarioTableSorted = useMemo(() => {
     if (scenarioTableData.length === 0) {
       return [];
@@ -10200,16 +10998,16 @@ export default function App() {
         return diff * multiplier;
       }
       if (key === 'propertyNetAfterTax') {
-        const aValue = Number(a?.metrics?.propertyNetWealthAfterTax) || 0;
-        const bValue = Number(b?.metrics?.propertyNetWealthAfterTax) || 0;
+        const aValue = Number(a?.tableValues?.propertyNetAfterTax) || 0;
+        const bValue = Number(b?.tableValues?.propertyNetAfterTax) || 0;
         const diff = aValue - bValue;
         if (diff === 0) {
           return getTimestamp(b) - getTimestamp(a);
         }
         return diff * multiplier;
       }
-      const aValue = Number(a?.ratios?.[key]) || 0;
-      const bValue = Number(b?.ratios?.[key]) || 0;
+      const aValue = Number(a?.tableValues?.[key]) || 0;
+      const bValue = Number(b?.tableValues?.[key]) || 0;
       const diff = aValue - bValue;
       if (diff === 0) {
         return getTimestamp(b) - getTimestamp(a);
@@ -10300,6 +11098,68 @@ export default function App() {
       })
       .filter(Boolean);
   }, [scenarioTableData, selectedScenarioId]);
+
+  const discoveryLeadRows = useMemo(() => {
+    const rows = normalizeDiscoveryLeads(discoveryLeads).map((lead) => {
+      const askingPrice = Number(lead.askingPrice);
+      const rentEstimate = Number(lead.rentEstimate);
+      const comparableValue = Number(lead.comparableValue);
+      const comparableRent = Number(lead.comparableRent);
+      const annualRent = Number.isFinite(rentEstimate) ? rentEstimate * 12 : null;
+      const yieldValue =
+        Number.isFinite(annualRent) && Number.isFinite(askingPrice) && askingPrice > 0
+          ? annualRent / askingPrice
+          : null;
+      const compDiscount =
+        Number.isFinite(comparableValue) && comparableValue > 0 && Number.isFinite(askingPrice)
+          ? (comparableValue - askingPrice) / comparableValue
+          : null;
+      const rentGap =
+        Number.isFinite(comparableRent) && comparableRent > 0 && Number.isFinite(rentEstimate)
+          ? (rentEstimate - comparableRent) / comparableRent
+          : null;
+      const missingComps = !Number.isFinite(comparableValue) || !Number.isFinite(comparableRent);
+      let quickScore = 0;
+      if (Number.isFinite(yieldValue)) {
+        quickScore += clamp((yieldValue - 0.05) / 0.07, 0, 1) * 40;
+      }
+      if (Number.isFinite(compDiscount)) {
+        quickScore += clamp((compDiscount + 0.05) / 0.25, 0, 1) * 35;
+      }
+      if (Number.isFinite(rentGap)) {
+        quickScore += clamp((rentGap + 0.1) / 0.25, 0, 1) * 15;
+      }
+      quickScore += missingComps ? 0 : 10;
+      return {
+        lead,
+        yieldValue,
+        compDiscount,
+        rentGap,
+        quickScore,
+        missingComps,
+      };
+    });
+    return rows.filter(({ lead }) =>
+      discoveryStatusFilter === 'all' ? true : lead.status === discoveryStatusFilter
+    );
+  }, [discoveryLeads, discoveryStatusFilter]);
+
+  const discoveryPipelineStats = useMemo(() => {
+    const leads = normalizeDiscoveryLeads(discoveryLeads);
+    const total = leads.length;
+    const offerReady = leads.filter((lead) => lead.status === 'offer_ready').length;
+    const needsComps = leads.filter((lead) => lead.status === 'needs_comps').length;
+    const withComps = leads.filter(
+      (lead) => Number.isFinite(Number(lead.comparableValue)) || Number.isFinite(Number(lead.comparableRent))
+    ).length;
+    return {
+      total,
+      offerReady,
+      needsComps,
+      withComps,
+      compCoverage: total > 0 ? withComps / total : null,
+    };
+  }, [discoveryLeads]);
 
   const exitYearCount = Math.max(1, Math.floor(Number(equity.exitYear) || 1));
 
@@ -11277,11 +12137,13 @@ export default function App() {
       return [];
     }
     const irrHurdleBaseline = Number.isFinite(inputs.irrHurdle) ? inputs.irrHurdle : 0;
+    const bridgingActive = Boolean(inputs.useBridgingLoan);
     return LEVERAGE_LTV_OPTIONS.map((ltv) => {
       const depositPct = clamp(1 - ltv, 0, 1);
       const metrics = calculateEquity({
         ...inputs,
         depositPct,
+        ...(bridgingActive ? { bridgingLoanDepositPct: depositPct } : {}),
       });
       const roiValue = metrics.cashIn > 0 ? metrics.propertyNetWealthAtExit / metrics.cashIn - 1 : 0;
       const irrValue = Number(metrics.irr) || 0;
@@ -12049,6 +12911,7 @@ export default function App() {
     const closingCostsValue = Number(equity.otherClosing) || 0;
     const packageFeeValue = Number(equity.packageFees) || 0;
     const renovationValue = Number(inputs.renovationCost) || 0;
+    const bridgingCostValue = Number(equity.bridgingCost) || 0;
     const bridgingAmountValue = Number(equity.bridgingLoanAmount) || 0;
     const totalCashRequiredValue = Number(equity.cashIn) || 0;
     const netCashInValue = Number.isFinite(equity.initialCashOutlay)
@@ -12110,6 +12973,7 @@ export default function App() {
       closingCosts: { value: closingCostsValue, formatted: currency(closingCostsValue) },
       mortgagePackageFee: { value: packageFeeValue, formatted: currency(packageFeeValue) },
       renovationCost: { value: renovationValue, formatted: currency(renovationValue) },
+      bridgingCost: { value: bridgingCostValue, formatted: currency(bridgingCostValue) },
       bridgingLoanAmount: { value: bridgingAmountValue, formatted: currency(bridgingAmountValue) },
       netCashIn: { value: netCashInValue, formatted: currency(netCashInValue) },
       totalCashRequired: { value: totalCashRequiredValue, formatted: currency(totalCashRequiredValue) },
@@ -12214,6 +13078,315 @@ export default function App() {
     propertyNetAfterTaxLabel,
     rentalTaxLabel,
     rentalTaxCumulativeLabel,
+  ]);
+  const marketValueSummary = useMemo(() => {
+    if (!equity) {
+      return null;
+    }
+
+    const purchasePriceNumeric = Number(inputs.purchasePrice);
+    const purchasePrice = Number.isFinite(purchasePriceNumeric) ? purchasePriceNumeric : null;
+    const noiValue = Number.isFinite(equity.noiYear1) ? equity.noiYear1 : null;
+    const subjectCapRate = Number.isFinite(equity.cap) ? equity.cap : null;
+    const providedCapRateBenchmark = pickFirstFinite(
+      inputs.marketCapRate,
+      inputs.capRateBenchmark,
+      inputs.targetCapRate,
+      inputs.capRateAssumption,
+      inputs.capRateMarket,
+      inputs.marketCapRatePct,
+      inputs.capRate
+    );
+    const capRateFromSubject =
+      (!Number.isFinite(providedCapRateBenchmark) || providedCapRateBenchmark <= 0) &&
+      Number.isFinite(subjectCapRate) &&
+      subjectCapRate > 0;
+    const capRateAssumption =
+      Number.isFinite(providedCapRateBenchmark) && providedCapRateBenchmark > 0
+        ? providedCapRateBenchmark
+        : capRateFromSubject
+        ? subjectCapRate
+        : null;
+    const capMarketValue =
+      Number.isFinite(noiValue) && Number.isFinite(capRateAssumption) && capRateAssumption > 0
+        ? noiValue / capRateAssumption
+        : null;
+    const capDifference =
+      Number.isFinite(capMarketValue) && Number.isFinite(purchasePrice) ? capMarketValue - purchasePrice : null;
+    const capNote = !Number.isFinite(capRateAssumption)
+      ? 'Provide a market cap rate benchmark to price the income stream.'
+      : capRateFromSubject
+      ? 'Using the scenario cap rate because no market benchmark was provided.'
+      : '';
+
+    const monthlyRent = Number(inputs.monthlyRent);
+    const vacancy = Number(inputs.vacancyPct);
+    const vacancyRate = Number.isFinite(vacancy) ? clamp(vacancy, 0, 0.95) : 0;
+    const grossAnnualRent = Number.isFinite(monthlyRent)
+      ? monthlyRent * 12 * (1 - vacancyRate)
+      : Number.isFinite(equity.grossRentYear1)
+      ? equity.grossRentYear1
+      : null;
+    const subjectGrm =
+      Number.isFinite(grossAnnualRent) && grossAnnualRent > 0 && Number.isFinite(purchasePrice) && purchasePrice > 0
+        ? purchasePrice / grossAnnualRent
+        : null;
+    const providedGrmBenchmark = pickFirstFinite(
+      inputs.marketGrm,
+      inputs.grossRentMultiplier,
+      inputs.targetGrm,
+      inputs.marketGrossRentMultiplier,
+      inputs.grmBenchmark,
+      inputs.grmAssumption,
+      inputs.grossRentMultiple
+    );
+    const grmFromSubject =
+      (!Number.isFinite(providedGrmBenchmark) || providedGrmBenchmark <= 0) &&
+      Number.isFinite(subjectGrm) &&
+      subjectGrm > 0;
+    const grmAssumption =
+      Number.isFinite(providedGrmBenchmark) && providedGrmBenchmark > 0
+        ? providedGrmBenchmark
+        : grmFromSubject
+        ? subjectGrm
+        : null;
+    const grmMarketValue =
+      Number.isFinite(grossAnnualRent) && Number.isFinite(grmAssumption) && grmAssumption > 0
+        ? grossAnnualRent * grmAssumption
+        : null;
+    const grmDifference =
+      Number.isFinite(grmMarketValue) && Number.isFinite(purchasePrice) ? grmMarketValue - purchasePrice : null;
+    const grmNote = !Number.isFinite(grmAssumption)
+      ? 'Provide a market gross rent multiplier from comparable sales to use this view.'
+      : grmFromSubject
+      ? 'Using the scenario rent and price to infer the GRM because no market benchmark was provided.'
+      : '';
+
+    const npvValue = Number.isFinite(equity.npv) ? equity.npv : null;
+    const initialOutlay = pickFirstFinite(equity.initialCashOutlay, equity.cashIn);
+    const discountRateValue = Number.isFinite(inputs.discountRate) ? inputs.discountRate : null;
+    const dcfMarketValue =
+      Number.isFinite(npvValue) && Number.isFinite(initialOutlay) ? npvValue + initialOutlay : null;
+    const dcfDifference =
+      Number.isFinite(dcfMarketValue) && Number.isFinite(purchasePrice) ? dcfMarketValue - purchasePrice : null;
+    const dcfNote = !Number.isFinite(dcfMarketValue)
+      ? 'Model discounted cash flow by providing a discount rate and hold assumptions.'
+      : '';
+
+    const rawValueAdded = Number(inputs.bridgingValueAdded ?? 0);
+    const valueAdded = Number.isFinite(rawValueAdded) ? rawValueAdded : 0;
+    const currentPropertyValue =
+      Number.isFinite(capMarketValue) && capMarketValue > 0 ? capMarketValue : null;
+    const arvValue =
+      Number.isFinite(currentPropertyValue) && Number.isFinite(valueAdded)
+        ? currentPropertyValue + valueAdded
+        : null;
+    const arvDifference =
+      Number.isFinite(arvValue) && Number.isFinite(purchasePrice) ? arvValue - purchasePrice : null;
+    const arvNote = Number.isFinite(arvValue)
+      ? 'Calculated as current cap rate value plus renovation uplift.'
+      : 'Provide a cap rate benchmark and NOI to estimate ARV.';
+
+    const renovationBudget = Number.isFinite(inputs.renovationCost) ? inputs.renovationCost : null;
+
+    const factors = [
+      {
+        key: 'capRate',
+        label: 'Capitalization Rate (Cap Rate)',
+        formula: 'Market Value = NOI ÷ Cap Rate',
+        purpose:
+          'The most widely used income-based valuation metric. It prices a property based on how much income it generates relative to similar assets in the market.',
+        usedBy: 'Institutional and buy-to-let investors, valuers, lenders.',
+        impliedValue: capMarketValue,
+        difference: capDifference,
+        available: Number.isFinite(capMarketValue),
+        note: capNote,
+        details: [
+          Number.isFinite(noiValue)
+            ? { label: 'Year-one NOI', value: currency(noiValue) }
+            : null,
+          Number.isFinite(capRateAssumption)
+            ? { label: 'Benchmark cap rate', value: formatPercent(capRateAssumption) }
+            : null,
+          Number.isFinite(subjectCapRate)
+            ? { label: 'Scenario cap rate', value: formatPercent(subjectCapRate) }
+            : null,
+        ].filter(Boolean),
+      },
+      {
+        key: 'grm',
+        label: 'Gross Rent Multiplier (GRM)',
+        formula: 'Market Value = Gross Annual Rent × GRM',
+        purpose:
+          'A simpler proxy for market value when full expense data is unavailable. It reflects local investor sentiment on how much they will pay per pound of rent.',
+        usedBy: 'Residential investors, estate agents.',
+        impliedValue: grmMarketValue,
+        difference: grmDifference,
+        available: Number.isFinite(grmMarketValue),
+        note: grmNote,
+        details: [
+          Number.isFinite(grossAnnualRent)
+            ? { label: 'Gross annual rent (vacancy-adjusted)', value: currency(grossAnnualRent) }
+            : null,
+          Number.isFinite(grmAssumption)
+            ? { label: 'GRM benchmark', value: grmAssumption.toFixed(2) }
+            : null,
+          Number.isFinite(subjectGrm)
+            ? { label: 'Scenario GRM', value: subjectGrm.toFixed(2) }
+            : null,
+        ].filter(Boolean),
+      },
+      {
+        key: 'dcf',
+        label: 'Discounted Cash Flow (DCF) / Net Present Value (NPV)',
+        formula: 'Market Value = Σ CFₜ / (1 + r)ᵗ',
+        purpose:
+          'Determines intrinsic market value based on expected future cashflows discounted to today’s terms.',
+        usedBy: 'Commercial investors and analysts valuing large assets.',
+        impliedValue: dcfMarketValue,
+        difference: dcfDifference,
+        available: Number.isFinite(dcfMarketValue),
+        note: dcfNote,
+        details: [
+          Number.isFinite(discountRateValue)
+            ? { label: 'Discount rate', value: formatPercent(discountRateValue) }
+            : null,
+          Number.isFinite(npvValue) ? { label: 'Discounted NPV', value: currency(npvValue) } : null,
+          Number.isFinite(initialOutlay)
+            ? { label: 'Initial cash invested', value: currency(initialOutlay) }
+            : null,
+        ].filter(Boolean),
+      },
+      {
+        key: 'arv',
+        label: 'After-Repair Value (ARV)',
+        formula: 'Current Property Value + Value of Renovations = ARV',
+        purpose:
+          'Used to forecast the market value after capital expenditure or BRR strategies.',
+        usedBy: 'BRR, flip, and development investors.',
+        impliedValue: Number.isFinite(arvValue) ? arvValue : null,
+        difference: arvDifference,
+        available: Number.isFinite(arvValue),
+        note: arvNote,
+        details: [
+          Number.isFinite(currentPropertyValue)
+            ? { label: 'Current property value (cap rate)', value: currency(currentPropertyValue) }
+            : null,
+          Number.isFinite(valueAdded) ? { label: 'Value of renovations', value: currency(valueAdded) } : null,
+          Number.isFinite(arvValue)
+            ? { label: 'Estimated ARV', value: currency(arvValue) }
+            : null,
+          Number.isFinite(renovationBudget)
+            ? { label: 'Renovation budget', value: currency(renovationBudget) }
+            : null,
+        ].filter(Boolean),
+      },
+    ];
+
+    const availableValues = factors
+      .map((factor) => (Number.isFinite(factor.impliedValue) && factor.impliedValue > 0 ? factor.impliedValue : null))
+      .filter((value) => Number.isFinite(value));
+    const valueCount = availableValues.length;
+    const minValue = valueCount > 0 ? Math.min(...availableValues) : null;
+    const maxValue = valueCount > 0 ? Math.max(...availableValues) : null;
+    const averageValue =
+      valueCount > 0 ? availableValues.reduce((total, value) => total + value, 0) / valueCount : null;
+    const averageDifference =
+      Number.isFinite(averageValue) && Number.isFinite(purchasePrice) ? averageValue - purchasePrice : null;
+
+    return {
+      purchasePrice,
+      factors,
+      minValue,
+      maxValue,
+      averageValue,
+      averageDifference,
+      valueCount,
+    };
+  }, [
+    equity,
+    equity.noiYear1,
+    equity.cap,
+    equity.grossRentYear1,
+    equity.npv,
+    equity.initialCashOutlay,
+    equity.cashIn,
+    equity.futureValue,
+    inputs.purchasePrice,
+    inputs.marketCapRate,
+    inputs.capRateBenchmark,
+    inputs.targetCapRate,
+    inputs.capRateAssumption,
+    inputs.capRateMarket,
+    inputs.marketCapRatePct,
+    inputs.capRate,
+    inputs.monthlyRent,
+    inputs.vacancyPct,
+    inputs.marketGrm,
+    inputs.grossRentMultiplier,
+    inputs.targetGrm,
+    inputs.marketGrossRentMultiplier,
+    inputs.grmBenchmark,
+    inputs.grmAssumption,
+    inputs.grossRentMultiple,
+    inputs.discountRate,
+    inputs.renovationCost,
+    inputs.bridgingValueAdded,
+  ]);
+  const bridgingLoanSummary = useMemo(() => {
+    if (!inputs.useBridgingLoan || !equity) {
+      return null;
+    }
+
+    const depositAmount = Number(equity.deposit) || 0;
+    const bridgeDepositPct = Number.isFinite(equity.bridgingLoanDepositPct)
+      ? equity.bridgingLoanDepositPct
+      : Number(inputs.bridgingLoanDepositPct ?? inputs.depositPct ?? 0) || 0;
+    const bridgingLoanAmount = Number(equity.bridgingLoanAmount) || 0;
+    const interestMode = equity.bridgingInterestPaymentMode === 'roll_up' ? 'roll_up' : 'monthly';
+    const interestDuringTerm = Number(equity.bridgingInterestPaidDuringTerm) || 0;
+    const interestAtExit = Number(equity.bridgingInterestPaidAtExit) || 0;
+    const interestTotalValue = Number(equity.bridgingInterestTotal) || interestDuringTerm + interestAtExit;
+    const bridgePayoff = Number(equity.bridgingExitPayoff) || bridgingLoanAmount + interestAtExit;
+    const cashRequired = Number(equity.cashIn) || 0;
+    const bridgeCost = Number(equity.bridgingCost) || 0;
+    const totalInvested = Number(equity.totalCashInvestedDuringBridge) || cashRequired + interestDuringTerm;
+    const valueAdded = Number(equity.bridgingValueAdded) || 0;
+    const postBridgeValue = Number(equity.postBridgeValue) || Number(inputs.purchasePrice) + valueAdded;
+    const permanentDeposit = Number(equity.permanentDepositAmount) || 0;
+    const permanentLoan = Number(equity.permanentLoanAmount ?? equity.loan) || 0;
+    const refinanceCash = Number(equity.refinanceCashAvailable);
+    const refinanceCashAvailable = Number.isFinite(refinanceCash) ? refinanceCash : permanentLoan - bridgePayoff;
+    const netCash = Number(equity.netCashAfterRefinance);
+    const netCashAfterRefinance = Number.isFinite(netCash) ? netCash : refinanceCashAvailable - totalInvested;
+    const normalizedBridgePct = clamp(bridgeDepositPct, 0, 1);
+    const refinanceLtv = postBridgeValue > 0 ? permanentLoan / postBridgeValue : null;
+    return {
+      depositAmount,
+      bridgeDepositPct: normalizedBridgePct,
+      bridgingLoanAmount,
+      interestMode,
+      interestDuringTerm,
+      interestAtExit,
+      interestTotalValue,
+      bridgePayoff,
+      cashRequired,
+      bridgeCost,
+      totalInvested,
+      valueAdded,
+      postBridgeValue,
+      permanentDeposit,
+      permanentLoan,
+      refinanceCashAvailable,
+      netCashAfterRefinance,
+      refinanceLtv,
+    };
+  }, [
+    inputs.useBridgingLoan,
+    inputs.bridgingLoanDepositPct,
+    inputs.depositPct,
+    inputs.purchasePrice,
+    equity,
   ]);
   const investmentProfile = useMemo(() => {
     if (!equity) {
@@ -13436,6 +14609,9 @@ export default function App() {
     setInputs((prev) => ({ ...prev, [key]: value }));
     if (key === 'propertyUrl') {
       clearPreview();
+      setExtractedListing(null);
+      setListingExtractionStatus('idle');
+      setListingExtractionError('');
     }
   };
   const onBuyerType = (value) =>
@@ -13751,6 +14927,154 @@ export default function App() {
     });
   };
 
+  const handleComparisonOptimise = useCallback(() => {
+    if (scenarioTableData.length === 0) {
+      return;
+    }
+    const selectedScenario =
+      scenarioTableData.find((item) => item.scenario.id === selectedScenarioId) ??
+      scenarioTableData[0];
+    if (!selectedScenario) {
+      return;
+    }
+    const scenarioInputs = selectedScenario.scenarioInputs ?? {};
+    const targets = [1, 0.75, 0.5].map((targetPct) => ({
+      targetPct,
+      price: estimatePriceForCashOutPct(scenarioInputs, targetPct, 0.75),
+    }));
+    setComparisonOptimization({
+      scenarioId: selectedScenario.scenario.id,
+      scenarioName: selectedScenario.scenario.name,
+      targets,
+    });
+  }, [scenarioTableData, selectedScenarioId]);
+
+  const updateDiscoveryLead = useCallback((id, updates) => {
+    if (!id || !updates || typeof updates !== 'object') {
+      return;
+    }
+    setDiscoveryLeads((prev) =>
+      normalizeDiscoveryLeads(
+        prev.map((lead) =>
+          lead.id === id
+            ? {
+                ...lead,
+                ...updates,
+                updatedAt: new Date().toISOString(),
+              }
+            : lead
+        )
+      )
+    );
+  }, []);
+
+  const handleDiscoveryImport = useCallback(() => {
+    const parsed = parseDiscoveryImportRows(discoveryImportText);
+    if (parsed.length === 0) {
+      return;
+    }
+    setDiscoveryLeads((prev) => normalizeDiscoveryLeads([...parsed, ...prev]));
+    setDiscoveryImportText('');
+    setShowDiscoveryPanel(true);
+  }, [discoveryImportText]);
+
+  const handleAddCurrentToDiscovery = useCallback(() => {
+    const lead = normalizeDiscoveryLead({
+      address: inputs.propertyAddress || inputs.propertyDisplayName || '',
+      sourceUrl: inputs.propertyUrl || '',
+      askingPrice: inputs.purchasePrice,
+      bedrooms: inputs.bedrooms,
+      bathrooms: inputs.bathrooms,
+      propertyType: inputs.propertyType,
+      rentEstimate: inputs.monthlyRent,
+      comparableValue: Number.isFinite(marketValueSummary?.averageValue)
+        ? marketValueSummary.averageValue
+        : '',
+      comparableRent: '',
+      notes: 'Created from current underwriting inputs.',
+      status: 'new',
+    });
+    if (!lead) {
+      return;
+    }
+    setDiscoveryLeads((prev) => normalizeDiscoveryLeads([lead, ...prev]));
+    setShowDiscoveryPanel(true);
+  }, [
+    inputs.propertyAddress,
+    inputs.propertyDisplayName,
+    inputs.propertyUrl,
+    inputs.purchasePrice,
+    inputs.bedrooms,
+    inputs.bathrooms,
+    inputs.propertyType,
+    inputs.monthlyRent,
+    marketValueSummary?.averageValue,
+  ]);
+
+  const handleLoadDiscoveryLead = useCallback(
+    (lead) => {
+      if (!lead) {
+        return;
+      }
+      setInputs((prev) => ({
+        ...prev,
+        propertyAddress: lead.address || prev.propertyAddress,
+        propertyUrl: lead.sourceUrl || prev.propertyUrl,
+        purchasePrice: Number.isFinite(lead.askingPrice) ? lead.askingPrice : prev.purchasePrice,
+        bedrooms: Number.isFinite(lead.bedrooms) ? lead.bedrooms : prev.bedrooms,
+        bathrooms: Number.isFinite(lead.bathrooms) ? lead.bathrooms : prev.bathrooms,
+        propertyType: lead.propertyType || prev.propertyType,
+        monthlyRent: Number.isFinite(lead.rentEstimate) ? lead.rentEstimate : prev.monthlyRent,
+        capRateBenchmark:
+          Number.isFinite(lead.comparableValue) && lead.comparableValue > 0
+            ? prev.capRateBenchmark
+            : prev.capRateBenchmark,
+      }));
+      if (lead.sourceUrl) {
+        openPreviewForUrl(lead.sourceUrl, { force: true });
+      }
+    },
+    [openPreviewForUrl]
+  );
+
+  const handleCreateScenarioFromLead = useCallback(
+    (lead) => {
+      if (!lead) {
+        return;
+      }
+      const data = {
+        ...DEFAULT_INPUTS,
+        ...extraSettings,
+        propertyAddress: lead.address,
+        propertyUrl: lead.sourceUrl,
+        purchasePrice: Number.isFinite(lead.askingPrice) ? lead.askingPrice : DEFAULT_INPUTS.purchasePrice,
+        bedrooms: Number.isFinite(lead.bedrooms) ? lead.bedrooms : DEFAULT_INPUTS.bedrooms,
+        bathrooms: Number.isFinite(lead.bathrooms) ? lead.bathrooms : DEFAULT_INPUTS.bathrooms,
+        propertyType: lead.propertyType || DEFAULT_INPUTS.propertyType,
+        monthlyRent: Number.isFinite(lead.rentEstimate) ? lead.rentEstimate : DEFAULT_INPUTS.monthlyRent,
+      };
+      const scenario = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: lead.address || lead.sourceUrl || `Lead ${new Date().toLocaleString()}`,
+        savedAt: new Date().toISOString(),
+        data,
+        preview: { active: Boolean(data.propertyUrl) },
+        cashflowColumns: sanitizeCashflowColumns(cashflowColumnKeys),
+        uiState: captureUiState(),
+      };
+      integrateScenario(scenario, { select: true });
+      updateDiscoveryLead(lead.id, {
+        linkedScenarioId: scenario.id,
+        status: lead.status === 'new' ? 'needs_comps' : lead.status,
+      });
+    },
+    [cashflowColumnKeys, extraSettings, updateDiscoveryLead]
+  );
+
+  const handleDeleteDiscoveryLead = useCallback((id) => {
+    setDiscoveryLeads((prev) => prev.filter((lead) => lead.id !== id));
+  }, []);
+
   const renderScenarioHeader = (label, key, align = 'left') => {
     const active = scenarioSort.key === key;
     const direction = active ? scenarioSort.direction : 'desc';
@@ -13784,6 +15108,25 @@ export default function App() {
             handlePendingExtraSettingChange(key, Number(event.target.value) / 100, 4)
           }
           step={step * 100}
+          className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
+        />
+      </div>
+    );
+  };
+
+  const extraSettingNumberInput = (key, label, step = 0.1, decimals = 2) => {
+    const rawValue = pendingExtraSettings?.[key];
+    const value = Number.isFinite(rawValue) ? rawValue : null;
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-medium text-slate-600">{label}</label>
+        <input
+          type="number"
+          value={Number.isFinite(value) ? roundTo(value, decimals) : ''}
+          onChange={(event) =>
+            handlePendingExtraSettingChange(key, Number(event.target.value), decimals)
+          }
+          step={step}
           className="w-full rounded-xl border border-slate-300 px-3 py-1.5 text-sm"
         />
       </div>
@@ -15006,6 +16349,118 @@ export default function App() {
     openPreviewForUrl(inputs.propertyUrl, { force: true });
   };
 
+  const applyExtractedListingToInputs = useCallback(
+    (listing) => {
+      if (!listing || typeof listing !== 'object') {
+        return;
+      }
+      setInputs((prev) => ({
+        ...prev,
+        propertyAddress: listing.address || prev.propertyAddress,
+        propertyDisplayName: listing.displayName || listing.address || prev.propertyDisplayName,
+        propertyUrl: listing.sourceUrl || prev.propertyUrl,
+        propertyLatitude: Number.isFinite(listing.latitude) ? listing.latitude : prev.propertyLatitude,
+        propertyLongitude: Number.isFinite(listing.longitude) ? listing.longitude : prev.propertyLongitude,
+        purchasePrice: Number.isFinite(listing.askingPrice) ? listing.askingPrice : prev.purchasePrice,
+        bedrooms: Number.isFinite(listing.bedrooms) ? listing.bedrooms : prev.bedrooms,
+        bathrooms: Number.isFinite(listing.bathrooms) ? listing.bathrooms : prev.bathrooms,
+        propertyType: PROPERTY_TYPE_OPTIONS.some((option) => option.value === listing.propertyType)
+          ? listing.propertyType
+          : prev.propertyType,
+      }));
+      if (listing.sourceUrl) {
+        openPreviewForUrl(listing.sourceUrl, { force: true });
+      }
+    },
+    [openPreviewForUrl]
+  );
+
+  const handleExtractListingDetails = useCallback(async () => {
+    const normalizedUrl = ensureAbsoluteUrl(inputs.propertyUrl ?? '');
+    if (!normalizedUrl) {
+      setListingExtractionStatus('error');
+      setListingExtractionError('Enter a Rightmove property URL first.');
+      return;
+    }
+    setListingExtractionStatus('loading');
+    setListingExtractionError('');
+    setExtractedListing(null);
+    try {
+      const requestOptions = {
+        method: 'POST',
+        body: JSON.stringify({ url: normalizedUrl }),
+      };
+      const response = remoteEnabled
+        ? await apiFetch('/listing/extract', requestOptions, authCredentials)
+        : await fetch('/api/listing/extract', {
+            ...requestOptions,
+            headers: { 'Content-Type': 'application/json' },
+          });
+      if (!response.ok) {
+        let detail = null;
+        try {
+          detail = await response.json();
+        } catch {
+          detail = null;
+        }
+        const failure = new Error(detail?.error || `Request failed with status ${response.status}`);
+        failure.status = response.status;
+        failure.detail = detail;
+        throw failure;
+      }
+      const listing = await response.json();
+      setExtractedListing(listing);
+      applyExtractedListingToInputs(listing);
+      setListingExtractionStatus('ready');
+    } catch (error) {
+      if (error?.status === 401) {
+        setAuthStatus('unauthorized');
+        setAuthError('Session expired. Sign in again to pull listing details.');
+      }
+      const detailMessage =
+        typeof error?.detail?.error === 'string'
+          ? error.detail.error
+          : error instanceof Error
+          ? error.message
+          : 'Unable to pull listing details.';
+      setListingExtractionStatus('error');
+      setListingExtractionError(detailMessage);
+    }
+  }, [
+    apiFetch,
+    applyExtractedListingToInputs,
+    authCredentials,
+    inputs.propertyUrl,
+    remoteEnabled,
+  ]);
+
+  const handleAddExtractedListingToDiscovery = useCallback(() => {
+    if (!extractedListing) {
+      return;
+    }
+    const lead = normalizeDiscoveryLead({
+      address: extractedListing.address || extractedListing.displayName || '',
+      sourceUrl: extractedListing.sourceUrl || inputs.propertyUrl || '',
+      askingPrice: extractedListing.askingPrice,
+      bedrooms: extractedListing.bedrooms,
+      bathrooms: extractedListing.bathrooms,
+      propertyType: extractedListing.propertyType || inputs.propertyType,
+      notes: [
+        extractedListing.agentName ? `Agent: ${extractedListing.agentName}` : '',
+        extractedListing.listingId ? `Rightmove ID: ${extractedListing.listingId}` : '',
+        extractedListing.description || '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      status: 'new',
+    });
+    if (!lead) {
+      return;
+    }
+    setDiscoveryLeads((prev) => normalizeDiscoveryLeads([lead, ...prev]));
+    setShowDiscoveryPanel(true);
+  }, [extractedListing, inputs.propertyType, inputs.propertyUrl]);
+
   const handleRenameScenario = async (id) => {
     if (typeof window === 'undefined') return;
     const scenario = savedScenarios.find((item) => item.id === id);
@@ -15390,17 +16845,57 @@ export default function App() {
                           </svg>
                         </a>
                       ) : null}
-                      <button
-                        type="button"
-                        onClick={handleLoadPreview}
-                        className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                        disabled={!hasPropertyUrl || previewLoading}
-                      >
-                        {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
+	                      <button
+	                        type="button"
+	                        onClick={handleLoadPreview}
+	                        className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
+	                        disabled={!hasPropertyUrl || previewLoading}
+	                      >
+	                        {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
+	                      </button>
+	                      <button
+	                        type="button"
+	                        onClick={handleExtractListingDetails}
+	                        className="inline-flex items-center rounded-full border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-50"
+	                        disabled={!hasPropertyUrl || listingExtractionStatus === 'loading'}
+	                      >
+	                        {listingExtractionStatus === 'loading' ? 'Pulling…' : 'Pull details'}
+	                      </button>
+	                    </div>
+	                    {listingExtractionError ? (
+	                      <p className="text-[11px] text-rose-600">{listingExtractionError}</p>
+	                    ) : null}
+	                    {extractedListing ? (
+	                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-[11px] text-emerald-900">
+	                        <div className="flex flex-wrap items-center justify-between gap-2">
+	                          <p className="font-semibold">Pulled from Rightmove</p>
+	                          <button
+	                            type="button"
+	                            onClick={handleAddExtractedListingToDiscovery}
+	                            className="rounded-full border border-emerald-300 bg-white px-2.5 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-100"
+	                          >
+	                            Add to discovery
+	                          </button>
+	                        </div>
+	                        <p className="mt-1">
+	                          {(extractedListing.displayName || extractedListing.address || 'Listing details')}
+	                          {Number.isFinite(extractedListing.askingPrice)
+	                            ? ` · Asking ${currency(extractedListing.askingPrice)}`
+	                            : ''}
+	                          {Number.isFinite(extractedListing.bedrooms)
+	                            ? ` · ${extractedListing.bedrooms} bed`
+	                            : ''}
+	                          {Number.isFinite(extractedListing.bathrooms)
+	                            ? ` · ${extractedListing.bathrooms} bath`
+	                            : ''}
+	                        </p>
+	                        {Array.isArray(extractedListing.warnings) && extractedListing.warnings.length > 0 ? (
+	                          <p className="mt-1 text-amber-700">{extractedListing.warnings.join(' ')}</p>
+	                        ) : null}
+	                      </div>
+	                    ) : null}
+	                  </div>
+	                </div>
                 <div className="mt-2 space-y-1 text-[11px] leading-snug text-slate-500">
                   <div>
                     {previewActive
@@ -15598,18 +17093,55 @@ export default function App() {
                           }))
                         }
                       />
-                      <span>Use bridging loan for deposit</span>
+                      <span>Use bridging loan to complete purchase</span>
                     </label>
                     {inputs.useBridgingLoan ? (
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
-                        {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {smallInput('bridgingLoanTermMonths', 'Bridging term (months)')}
+                          {pctInput('bridgingLoanInterestRate', 'Bridging rate %', 0.001)}
+                          {pctInput('bridgingLoanDepositPct', 'Bridge deposit %', 0.001)}
+                          {moneyInput('bridgingValueAdded', 'Value added (£)', 1000)}
+                          {moneyInput('bridgingCost', 'Cost of bridge (£)', 100)}
+                        </div>
+                        <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="font-semibold">Interest handling</div>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                            <label className="inline-flex items-center gap-2">
+                              <input
+                                type="radio"
+                                name="bridgingInterestMode"
+                                checked={inputs.bridgingInterestPaymentMode !== 'roll_up'}
+                                onChange={() =>
+                                  setInputs((prev) => ({
+                                    ...prev,
+                                    bridgingInterestPaymentMode: 'monthly',
+                                  }))
+                                }
+                              />
+                              <span>Monthly</span>
+                            </label>
+                            <label className="inline-flex items-center gap-2">
+                              <input
+                                type="radio"
+                                name="bridgingInterestMode"
+                                checked={inputs.bridgingInterestPaymentMode === 'roll_up'}
+                                onChange={() =>
+                                  setInputs((prev) => ({
+                                    ...prev,
+                                    bridgingInterestPaymentMode: 'roll_up',
+                                  }))
+                                }
+                              />
+                              <span>Roll up</span>
+                            </label>
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          The bridge funds the purchase price minus your bridge deposit for the term selected before switching to
+                          the standard mortgage. Any value added is applied to the refinance valuation once the bridge ends.
+                        </p>
                       </div>
-                    ) : null}
-                    {inputs.useBridgingLoan ? (
-                      <p className="text-[11px] text-slate-500">
-                        Deposit funds are covered by the bridge during the selected term before reverting to the standard mortgage.
-                      </p>
                     ) : null}
                   </div>
                 </div>
@@ -15736,6 +17268,8 @@ export default function App() {
                     {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
                     {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
                     {extraSettingPctInput('indexFundGrowth', 'Index fund growth %')}
+                    {extraSettingPctInput('capRateBenchmark', 'Cap rate benchmark %', 0.001)}
+                    {extraSettingNumberInput('grmBenchmark', 'GRM benchmark')}
                     <div className="sm:col-span-2 rounded-xl border border-slate-200 p-3">
                       <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                         <input
@@ -15803,6 +17337,13 @@ export default function App() {
                   value={currency(equity.packageFees)}
                   knowledgeKey="mortgagePackageFee"
                 />
+                {inputs.useBridgingLoan ? (
+                  <Line
+                    label="Cost of bridge"
+                    value={currency(equity.bridgingCost)}
+                    knowledgeKey="bridgingCost"
+                  />
+                ) : null}
                 <Line
                   label="Renovation (upfront)"
                   value={currency(inputs.renovationCost)}
@@ -16837,33 +18378,35 @@ export default function App() {
                         className="text-sm font-semibold text-slate-700"
                       />
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {crimeAvailableMonths.length > 0 ? (
-                        <label
-                          htmlFor="crime-month-select"
-                          className="flex items-center gap-2 text-[11px] text-slate-500"
-                        >
-                          <span>Reporting period</span>
-                          <select
-                            id="crime-month-select"
-                            value={crimeSelectValue}
-                            onChange={(event) => setCrimeSelectedMonth(event.target.value)}
-                            className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                    {!collapsedSections.crime ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {crimeAvailableMonths.length > 0 ? (
+                          <label
+                            htmlFor="crime-month-select"
+                            className="flex items-center gap-2 text-[11px] text-slate-500"
                           >
-                            {crimeAvailableMonths.map((option) => (
-                              <option key={`crime-month-${option.value}`} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null}
-                      {crimeLoading ? (
-                        <span className="text-[11px] text-slate-500">Loading…</span>
-                      ) : crimePeriodDescription ? (
-                        <span className="text-[11px] text-slate-500">Period: {crimePeriodDescription}</span>
-                      ) : null}
-                    </div>
+                            <span>Reporting period</span>
+                            <select
+                              id="crime-month-select"
+                              value={crimeSelectValue}
+                              onChange={(event) => setCrimeSelectedMonth(event.target.value)}
+                              className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-700"
+                            >
+                              {crimeAvailableMonths.map((option) => (
+                                <option key={`crime-month-${option.value}`} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
+                        {crimeLoading ? (
+                          <span className="text-[11px] text-slate-500">Loading…</span>
+                        ) : crimePeriodDescription ? (
+                          <span className="text-[11px] text-slate-500">Period: {crimePeriodDescription}</span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   {!collapsedSections.crime ? (
                     <div className="space-y-4">
@@ -17769,6 +19312,303 @@ export default function App() {
                   </>
                 ) : null}
               </div>
+              {inputs.useBridgingLoan ? (
+                <div
+                  className={`rounded-2xl bg-white p-3 shadow-sm ${
+                    collapsedSections.bridgingSummary ? 'md:col-span-1' : 'md:col-span-2'
+                  }`}
+                >
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleSection('bridgingSummary')}
+                        aria-expanded={!collapsedSections.bridgingSummary}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                        aria-label={
+                          collapsedSections.bridgingSummary
+                            ? 'Show bridging finance summary'
+                            : 'Hide bridging finance summary'
+                        }
+                      >
+                        {collapsedSections.bridgingSummary ? '+' : '−'}
+                      </button>
+                      <SectionTitle
+                        label="Bridging finance"
+                        tooltip={SECTION_DESCRIPTIONS.bridgingSummary}
+                        className="text-sm font-semibold text-slate-700"
+                      />
+                    </div>
+                  </div>
+                  {!collapsedSections.bridgingSummary ? (
+                    <>
+                      <p className="mb-3 text-[11px] text-slate-500">
+                        Track the bridge set-up, interest handling, and refinance outcome to understand total bridge cost and
+                        how much equity you can recycle when the loan converts to standard financing.
+                      </p>
+                      {bridgingLoanSummary ? (
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="h-full rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Bridge facility</h4>
+                            <dl className="mt-2 space-y-1 text-[11px] text-slate-600">
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Bridge deposit</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.depositAmount)} ({formatPercent(
+                                    bridgingLoanSummary.bridgeDepositPct
+                                  )})
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Cash required upfront</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.cashRequired)}
+                                </dd>
+                              </div>
+                              {bridgingLoanSummary.bridgeCost !== 0 ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <dt>Cost of bridge</dt>
+                                  <dd className="font-medium text-slate-800">
+                                    {currency(bridgingLoanSummary.bridgeCost)}
+                                  </dd>
+                                </div>
+                              ) : null}
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Bridge loan amount</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.bridgingLoanAmount)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Interest handling</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {bridgingLoanSummary.interestMode === 'roll_up'
+                                    ? 'Roll up'
+                                    : 'Monthly'}
+                                </dd>
+                              </div>
+                              {bridgingLoanSummary.interestDuringTerm !== 0 ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <dt>Interest paid during term</dt>
+                                  <dd className="font-medium text-slate-800">
+                                    {currency(bridgingLoanSummary.interestDuringTerm)}
+                                  </dd>
+                                </div>
+                              ) : null}
+                              {bridgingLoanSummary.interestAtExit !== 0 ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <dt>Interest paid at exit</dt>
+                                  <dd className="font-medium text-slate-800">
+                                    {currency(bridgingLoanSummary.interestAtExit)}
+                                  </dd>
+                                </div>
+                              ) : null}
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Total interest cost</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.interestTotalValue)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Bridge payoff at refinance</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.bridgePayoff)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Total cash invested (bridge stage)</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.totalInvested)}
+                                </dd>
+                              </div>
+                            </dl>
+                          </div>
+                          <div className="h-full rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Refinance outlook</h4>
+                            <dl className="mt-2 space-y-1 text-[11px] text-slate-600">
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Value added before refinance</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.valueAdded)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Post-bridge valuation</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.postBridgeValue)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Permanent deposit requirement</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.permanentDeposit)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Permanent loan after refinance</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.permanentLoan)}
+                                  {Number.isFinite(bridgingLoanSummary.refinanceLtv)
+                                    ? ` (${formatPercent(bridgingLoanSummary.refinanceLtv)} LTV)`
+                                    : ''}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Cash after repaying bridge</dt>
+                                <dd className="font-medium text-slate-800">
+                                  {currency(bridgingLoanSummary.refinanceCashAvailable)}
+                                </dd>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <dt>Net cash after reimbursing costs</dt>
+                                <dd className={`font-medium ${bridgingLoanSummary.netCashAfterRefinance >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                  {currency(bridgingLoanSummary.netCashAfterRefinance)}
+                                </dd>
+                              </div>
+                            </dl>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-3 text-center text-[11px] text-slate-500">
+                          Provide bridge term, rate, deposit, and value-add assumptions to model the refinance.
+                        </div>
+                      )}
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+              <div
+                className={`rounded-2xl bg-white p-3 shadow-sm ${
+                  collapsedSections.marketValue ? 'md:col-span-1' : 'md:col-span-2'
+                }`}
+              >
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('marketValue')}
+                      aria-expanded={!collapsedSections.marketValue}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-700 transition hover:bg-slate-100"
+                      aria-label={collapsedSections.marketValue ? 'Show market value summary' : 'Hide market value summary'}
+                    >
+                      {collapsedSections.marketValue ? '+' : '−'}
+                    </button>
+                    <SectionTitle
+                      label="Market value"
+                      tooltip={SECTION_DESCRIPTIONS.marketValue}
+                      className="text-sm font-semibold text-slate-700"
+                    />
+                  </div>
+                </div>
+                {!collapsedSections.marketValue ? (
+                  <>
+                    <p className="mb-3 text-[11px] text-slate-500">
+                      Triangulate a fair price by comparing income-driven, discounted cash flow, and refurbishment views of
+                      value against today&apos;s asking price.
+                    </p>
+                    {marketValueSummary && marketValueSummary.valueCount > 0 ? (
+                      <div className="mb-3 rounded-xl bg-slate-50 p-3 text-[11px] text-slate-600">
+                        {(() => {
+                          const { minValue, maxValue, averageValue, purchasePrice, averageDifference, valueCount } =
+                            marketValueSummary;
+                          const hasRange =
+                            Number.isFinite(minValue) &&
+                            Number.isFinite(maxValue) &&
+                            Math.abs(maxValue - minValue) > 1;
+                          const anchorValue = Number.isFinite(averageValue)
+                            ? averageValue
+                            : Number.isFinite(minValue)
+                            ? minValue
+                            : Number.isFinite(maxValue)
+                            ? maxValue
+                            : null;
+                          const segments = [];
+                          if (hasRange && Number.isFinite(minValue) && Number.isFinite(maxValue)) {
+                            segments.push(`Implied value range ${currency(minValue)} – ${currency(maxValue)}`);
+                          } else if (Number.isFinite(anchorValue)) {
+                            segments.push(`Implied value ${currency(anchorValue)}`);
+                          }
+                          if (Number.isFinite(purchasePrice) && Number.isFinite(averageDifference)) {
+                            segments.push(
+                              `vs purchase price ${currency(purchasePrice)} (${formatCurrencyDelta(averageDifference)})`
+                            );
+                          }
+                          const messages = [];
+                          if (segments.length > 0) {
+                            messages.push(`${segments.join('. ')}.`);
+                          }
+                          messages.push(
+                            valueCount === 1
+                              ? '1 method informed this estimate.'
+                              : `${valueCount} methods informed this estimate.`
+                          );
+                          return messages.join(' ');
+                        })()}
+                      </div>
+                    ) : (
+                      <div className="mb-3 rounded-xl border border-dashed border-slate-200 p-3 text-center text-[11px] text-slate-500">
+                        Provide income, expense, and valuation assumptions to generate market value estimates.
+                      </div>
+                    )}
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {(marketValueSummary?.factors ?? []).map((factor) => {
+                        const differenceText =
+                          Number.isFinite(factor.difference) && Number.isFinite(marketValueSummary?.purchasePrice)
+                            ? `Δ vs purchase price: ${formatCurrencyDelta(factor.difference)}`
+                            : '';
+                        return (
+                          <div
+                            key={factor.key}
+                            className="flex h-full flex-col rounded-xl border border-slate-200 bg-slate-50 p-3"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-xs font-semibold text-slate-700">{factor.label}</div>
+                                <div className="mt-1 text-[11px] text-slate-500">{factor.purpose}</div>
+                                <div className="mt-1 text-[11px] text-slate-500">
+                                  <span className="font-semibold text-slate-600">Used by:</span> {factor.usedBy}
+                                </div>
+                              </div>
+                              <div className="text-right text-sm font-semibold text-slate-800">
+                                {Number.isFinite(factor.impliedValue) ? currency(factor.impliedValue) : '—'}
+                              </div>
+                            </div>
+                            <div className="mt-3 rounded-lg bg-white p-2 text-[11px] text-slate-600">
+                              <div className="font-semibold uppercase tracking-wide text-slate-400">Formula</div>
+                              <div className="font-mono text-[11px] text-slate-700">{factor.formula}</div>
+                            </div>
+                            {factor.details.length > 0 ? (
+                              <dl className="mt-2 space-y-1 text-[11px] text-slate-600">
+                                {factor.details.map((detail) => (
+                                  <div
+                                    key={`${factor.key}-${detail.label}`}
+                                    className="flex items-center justify-between gap-2"
+                                  >
+                                    <dt className="text-slate-500">{detail.label}</dt>
+                                    <dd className="font-medium text-slate-700">{detail.value}</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            ) : null}
+                            {factor.available && differenceText ? (
+                              <div className="mt-2 text-[11px] font-semibold text-slate-700">{differenceText}</div>
+                            ) : null}
+                            {factor.available ? (
+                              factor.note ? (
+                                <div className="mt-1 text-[10px] text-slate-500">{factor.note}</div>
+                              ) : null
+                            ) : (
+                              <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white/60 p-2 text-[11px] text-slate-500">
+                                {factor.note || 'Provide the required inputs to calculate this valuation.'}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
+              </div>
               <div
                 className={`rounded-2xl bg-white p-3 shadow-sm ${
                   collapsedSections.investmentProfile ? 'md:col-span-1' : 'md:col-span-2'
@@ -17949,42 +19789,249 @@ export default function App() {
 
         <section className="mt-6">
           <div className="p-3">
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">Review &amp; Optimise</h3>
-            <p className="text-xs text-slate-600">
-              Compare performance across scenarios or let the optimiser suggest improved purchase and exit timings.
-            </p>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setShowTableModal(true)}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Comparison
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowOptimizationModal(true)}
-                className="no-print inline-flex items-center gap-1 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-500"
-              >
-                Optimise this investment
-              </button>
-              <button
-                type="button"
-                onClick={handleOpenPlanModal}
-                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-              >
-                Optimise Multiple Investments
-              </button>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-800">Deal discovery</h3>
+                <p className="text-xs text-slate-600">
+                  Capture many leads quickly, compare asking prices against comparable values, and shortlist deals before full underwriting.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddCurrentToDiscovery}
+                  className="no-print inline-flex items-center gap-1 rounded-full border border-emerald-300 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                >
+                  Add current deal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDiscoveryPanel((prev) => !prev)}
+                  className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  aria-expanded={showDiscoveryPanel}
+                >
+                  {showDiscoveryPanel ? 'Hide pipeline' : 'Show pipeline'}
+                </button>
+              </div>
             </div>
-            {planNotice ? (
-              <p className="mt-2 text-xs font-semibold text-emerald-600">{planNotice}</p>
+            <div className="grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-slate-500">Leads tracked</div>
+                <div className="mt-1 text-base font-semibold text-slate-800">{discoveryPipelineStats.total}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-slate-500">Offer ready</div>
+                <div className="mt-1 text-base font-semibold text-emerald-700">{discoveryPipelineStats.offerReady}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-slate-500">Needs comps</div>
+                <div className="mt-1 text-base font-semibold text-amber-700">{discoveryPipelineStats.needsComps}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-slate-500">Comp coverage</div>
+                <div className="mt-1 text-base font-semibold text-slate-800">
+                  {Number.isFinite(discoveryPipelineStats.compCoverage)
+                    ? formatPercent(discoveryPipelineStats.compCoverage, 0)
+                    : '—'}
+                </div>
+              </div>
+            </div>
+            {showDiscoveryPanel ? (
+              <div className="mt-3 space-y-3">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <label className="text-xs font-semibold text-slate-700">Bulk import leads</label>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Paste CSV/tab-separated rows in this order: {DISCOVERY_IMPORT_PLACEHOLDER}.
+                  </p>
+                  <textarea
+                    value={discoveryImportText}
+                    onChange={(event) => setDiscoveryImportText(event.target.value)}
+                    rows={3}
+                    placeholder={DISCOVERY_IMPORT_PLACEHOLDER}
+                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-700"
+                  />
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDiscoveryImport}
+                      disabled={discoveryImportText.trim() === ''}
+                      className="inline-flex items-center rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      Import leads
+                    </button>
+                    <select
+                      value={discoveryStatusFilter}
+                      onChange={(event) => setDiscoveryStatusFilter(event.target.value)}
+                      className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700"
+                    >
+                      <option value="all">All statuses</option>
+                      {DISCOVERY_STATUS_OPTIONS.map((option) => (
+                        <option key={`discovery-filter-${option.value}`} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                {discoveryLeadRows.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-xs text-slate-500">
+                    Add a current deal or bulk import leads to start building a discovery pipeline.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="min-w-full divide-y divide-slate-200 text-xs">
+                      <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-semibold">Lead</th>
+                          <th className="px-3 py-2 text-left font-semibold">Status</th>
+                          <th className="px-3 py-2 text-right font-semibold">Asking</th>
+                          <th className="px-3 py-2 text-right font-semibold">Rent</th>
+                          <th className="px-3 py-2 text-right font-semibold">Yield</th>
+                          <th className="px-3 py-2 text-right font-semibold">Comp value</th>
+                          <th className="px-3 py-2 text-right font-semibold">BMV</th>
+                          <th className="px-3 py-2 text-right font-semibold">Score</th>
+                          <th className="px-3 py-2 text-right font-semibold">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white">
+                        {discoveryLeadRows.map(({ lead, yieldValue, compDiscount, quickScore, missingComps }) => (
+                          <tr key={lead.id} className="align-top odd:bg-white even:bg-slate-50">
+                            <td className="px-3 py-2">
+                              <div className="font-semibold text-slate-800">{lead.address || 'Untitled lead'}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {Number.isFinite(lead.bedrooms) ? `${lead.bedrooms} bed` : 'Beds n/a'}
+                                {lead.sourceUrl ? ' · ' : ''}
+                                {lead.sourceUrl ? (
+                                  <a href={lead.sourceUrl} target="_blank" rel="noreferrer" className="underline-offset-2 hover:underline">
+                                    Listing
+                                  </a>
+                                ) : null}
+                              </div>
+                              {lead.notes ? <div className="mt-1 text-[11px] text-slate-500">{lead.notes}</div> : null}
+                              {lead.rejectReason ? (
+                                <div className="mt-1 text-[11px] font-semibold text-rose-600">{lead.rejectReason}</div>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2">
+                              <select
+                                value={lead.status}
+                                onChange={(event) => updateDiscoveryLead(lead.id, { status: event.target.value })}
+                                className="w-32 rounded-lg border border-slate-300 px-2 py-1 text-[11px]"
+                              >
+                                {DISCOVERY_STATUS_OPTIONS.map((option) => (
+                                  <option key={`${lead.id}-${option.value}`} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                              {lead.status === 'rejected' ? (
+                                <select
+                                  value={lead.rejectReason}
+                                  onChange={(event) => updateDiscoveryLead(lead.id, { rejectReason: event.target.value })}
+                                  className="mt-1 w-32 rounded-lg border border-rose-200 px-2 py-1 text-[11px] text-rose-700"
+                                >
+                                  <option value="">Reason</option>
+                                  {DISCOVERY_REJECT_REASONS.map((reason) => (
+                                    <option key={`${lead.id}-${reason}`} value={reason}>
+                                      {reason}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              {Number.isFinite(lead.askingPrice) ? currency(lead.askingPrice) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              {Number.isFinite(lead.rentEstimate) ? currency(lead.rentEstimate) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              {Number.isFinite(yieldValue) ? formatPercent(yieldValue) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              <input
+                                type="number"
+                                value={Number.isFinite(lead.comparableValue) ? lead.comparableValue : ''}
+                                onChange={(event) =>
+                                  updateDiscoveryLead(lead.id, {
+                                    comparableValue: parseMoneyLikeValue(event.target.value),
+                                    status: lead.status === 'new' ? 'needs_comps' : lead.status,
+                                  })
+                                }
+                                className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-right text-[11px]"
+                                placeholder="£"
+                              />
+                            </td>
+                            <td className={`px-3 py-2 text-right font-semibold ${
+                              Number.isFinite(compDiscount) && compDiscount > 0
+                                ? 'text-emerald-700'
+                                : 'text-slate-700'
+                            }`}>
+                              {Number.isFinite(compDiscount) ? formatPercent(compDiscount) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <span
+                                className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                                  missingComps
+                                    ? 'bg-amber-100 text-amber-700'
+                                    : quickScore >= 70
+                                    ? 'bg-emerald-100 text-emerald-700'
+                                    : quickScore >= 45
+                                    ? 'bg-slate-100 text-slate-700'
+                                    : 'bg-rose-100 text-rose-700'
+                                }`}
+                              >
+                                {missingComps ? 'Needs comps' : Math.round(quickScore)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <div className="flex flex-wrap justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleLoadDiscoveryLead(lead)}
+                                  className="rounded-full border border-indigo-200 px-2 py-1 text-[11px] font-semibold text-indigo-700 transition hover:bg-indigo-50"
+                                >
+                                  Load
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCreateScenarioFromLead(lead)}
+                                  className="rounded-full border border-emerald-200 px-2 py-1 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                                >
+                                  Scenario
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteDiscoveryLead(lead.id)}
+                                  className="rounded-full border border-rose-200 px-2 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             ) : null}
           </div>
         </section>
 
         <section className="mt-6">
           <div className="p-3">
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">Scenario history</h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-slate-800">Scenario history</h3>
+              <button
+                type="button"
+                onClick={() => setShowTableModal(true)}
+                className="no-print inline-flex items-center gap-1 rounded-full border border-slate-300 px-4 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+              >
+                Comparison
+              </button>
+            </div>
             <p className="text-xs text-slate-600">
               Save your current inputs and reload any previous scenario to compare different deals quickly.
             </p>
@@ -18441,6 +20488,8 @@ export default function App() {
                     {pctInput('sellingCostsPct', 'Selling costs %')}
                     {extraSettingPctInput('discountRate', 'Discount rate %', 0.001)}
                     {extraSettingPctInput('irrHurdle', 'IRR hurdle %', 0.001)}
+                    {extraSettingPctInput('capRateBenchmark', 'Cap rate benchmark %', 0.001)}
+                    {extraSettingNumberInput('grmBenchmark', 'GRM benchmark')}
                   </div>
                 </div>
                 <div>
@@ -20244,10 +22293,30 @@ export default function App() {
     )}
 
     {showTableModal && (
-      <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
-        <div className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white shadow-xl">
+      <div className="no-print fixed inset-0 z-50 flex flex-col bg-slate-900/70 backdrop-blur-sm">
+        <div className="flex h-full w-full flex-col bg-white shadow-2xl">
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
-              <h2 className="text-base font-semibold text-slate-800">Saved scenarios overview</h2>
+            <h2 className="text-base font-semibold text-slate-800">Saved scenarios overview</h2>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleComparisonOptimise}
+                disabled={scenarioTableData.length === 0}
+                className="inline-flex items-center gap-2 rounded-full border border-emerald-500 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400"
+                title="Optimise purchase price for cash-out targets"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className="h-3.5 w-3.5"
+                  aria-hidden="true"
+                >
+                  <path d="M10 2.5a.75.75 0 0 1 .71.517l1.2 3.48 3.48 1.2a.75.75 0 0 1 0 1.416l-3.48 1.2-1.2 3.48a.75.75 0 0 1-1.416 0l-1.2-3.48-3.48-1.2a.75.75 0 0 1 0-1.416l3.48-1.2 1.2-3.48A.75.75 0 0 1 10 2.5Z" />
+                  <path d="M4.5 11a.75.75 0 0 1 .71.517l.62 1.79 1.79.62a.75.75 0 0 1 0 1.416l-1.79.62-.62 1.79a.75.75 0 0 1-1.416 0l-.62-1.79-1.79-.62a.75.75 0 0 1 0-1.416l1.79-.62.62-1.79A.75.75 0 0 1 4.5 11Z" />
+                </svg>
+                <span>Optimise</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setShowTableModal(false)}
@@ -20256,13 +22325,14 @@ export default function App() {
                 Close
               </button>
             </div>
-            <div className="max-h-[65vh] overflow-auto px-5 py-4">
-              {scenarioTableData.length === 0 ? (
-                <p className="text-sm text-slate-600">No scenarios saved yet.</p>
-              ) : (
-                <div className="space-y-6">
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+          </div>
+          <div className="flex-1 overflow-auto px-5 py-4">
+            {scenarioTableData.length === 0 ? (
+              <p className="text-sm text-slate-600">No scenarios saved yet.</p>
+            ) : (
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
                       <div className="flex items-center gap-2 rounded-full border border-slate-300 px-2.5 py-1">
                         <span className="font-semibold text-slate-700">View</span>
                         <div className="inline-flex overflow-hidden rounded-full border border-slate-200">
@@ -20335,6 +22405,66 @@ export default function App() {
                         <span className="font-semibold text-slate-600">Use current deal inputs (keep price & rent)</span>
                       </label>
                     </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-semibold text-slate-700">Table columns</span>
+                        <button
+                          type="button"
+                          onClick={() => setScenarioTableColumnKeys(DEFAULT_SCENARIO_TABLE_COLUMN_KEYS)}
+                          className="inline-flex items-center rounded-full border border-slate-300 px-2 py-0.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                        >
+                          Reset columns
+                        </button>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                        {SCENARIO_TABLE_COLUMN_DEFINITIONS.map((column) => {
+                          const label =
+                            column.key === 'propertyNetAfterTax'
+                              ? propertyNetAfterTaxLabel
+                              : column.label;
+                          return (
+                            <label
+                              key={`scenario-column-${column.key}`}
+                              className="flex items-center gap-2 rounded-lg border border-transparent px-2 py-1 hover:border-slate-200"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={scenarioTableColumnKeys.includes(column.key)}
+                                onChange={() => toggleScenarioTableColumn(column.key)}
+                              />
+                              <span>{label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    {comparisonOptimization ? (
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-semibold">
+                            Optimised purchase prices for {comparisonOptimization.scenarioName}
+                          </div>
+                          <span className="text-[11px] text-emerald-700">
+                            Based on cash-out at 75% LTV refinance using current rent, costs, and renovation inputs
+                          </span>
+                        </div>
+                        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                          {comparisonOptimization.targets.map((target) => (
+                            <div
+                              key={`target-${comparisonOptimization.scenarioId}-${target.targetPct}`}
+                              className="rounded-lg border border-emerald-200 bg-white px-3 py-2"
+                            >
+                              <div className="text-[11px] text-emerald-700">
+                                {Math.round(target.targetPct * 100)}% of cash in
+                              </div>
+                              <div className="text-sm font-semibold text-emerald-900">
+                                {Number.isFinite(target.price) ? currency(target.price) : '—'}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="h-72 w-full">
                       {scenarioOverviewMode === 'map' ? (
                         scenarioMapPoints.length === 0 ? (
@@ -20458,37 +22588,31 @@ export default function App() {
                           >
                             {renderScenarioHeader('Saved', 'savedAt')}
                           </th>
-                          <th
-                            className="px-4 py-2 text-right font-semibold"
-                            aria-sort={
-                              scenarioSort.key === 'propertyNetAfterTax'
-                                ? scenarioSort.direction === 'asc'
-                                  ? 'ascending'
-                                  : 'descending'
-                                : 'none'
-                            }
-                          >
-                            {renderScenarioHeader(propertyNetAfterTaxLabel, 'propertyNetAfterTax', 'right')}
-                          </th>
-                          {SCENARIO_RATIO_PERCENT_COLUMNS.map((column) => (
-                            <th
-                              key={`header-${column.key}`}
-                              className="px-4 py-2 text-right font-semibold"
-                              aria-sort={
-                                scenarioSort.key === column.key
-                                  ? scenarioSort.direction === 'asc'
-                                    ? 'ascending'
-                                    : 'descending'
-                                  : 'none'
-                              }
-                            >
-                              {renderScenarioHeader(column.label, column.key, 'right')}
-                            </th>
-                          ))}
+                          {scenarioTableColumns.map((column) => {
+                            const label =
+                              column.key === 'propertyNetAfterTax'
+                                ? propertyNetAfterTaxLabel
+                                : column.label;
+                            return (
+                              <th
+                                key={`header-${column.key}`}
+                                className="px-4 py-2 text-right font-semibold"
+                                aria-sort={
+                                  scenarioSort.key === column.key
+                                    ? scenarioSort.direction === 'asc'
+                                      ? 'ascending'
+                                      : 'descending'
+                                    : 'none'
+                                }
+                              >
+                                {renderScenarioHeader(label, column.key, column.align ?? 'right')}
+                              </th>
+                            );
+                          })}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200">
-                        {scenarioTableSorted.map(({ scenario, metrics, ratios }) => (
+                        {scenarioTableSorted.map(({ scenario, metrics, tableValues }) => (
                           <tr key={`table-${scenario.id}`} className="odd:bg-white even:bg-slate-50">
                             <td className="px-4 py-2 font-semibold">
                               <button
@@ -20508,15 +22632,34 @@ export default function App() {
                               </button>
                             </td>
                             <td className="px-4 py-2 text-slate-600">{friendlyDateTime(scenario.savedAt)}</td>
-                            <td className="px-4 py-2 text-right text-slate-700">
-                              {currency(metrics.propertyNetWealthAfterTax)}
-                              {metrics.exitYear ? ` (Y${metrics.exitYear})` : ''}
-                            </td>
-                            {SCENARIO_RATIO_PERCENT_COLUMNS.map((column) => (
-                              <td key={`${scenario.id}-${column.key}`} className="px-4 py-2 text-right text-slate-700">
-                                {formatPercent(ratios?.[column.key])}
-                              </td>
-                            ))}
+                            {scenarioTableColumns.map((column) => {
+                              const value = tableValues?.[column.key];
+                              let formatted = '—';
+                              if (Number.isFinite(value)) {
+                                if (typeof column.format === 'function') {
+                                  formatted = column.format(value);
+                                } else if (column.format === 'percent') {
+                                  formatted = formatPercent(value);
+                                } else {
+                                  formatted = value;
+                                }
+                              }
+                              return (
+                                <td
+                                  key={`${scenario.id}-${column.key}`}
+                                  className="px-4 py-2 text-right text-slate-700"
+                                >
+                                  {column.key === 'propertyNetAfterTax' ? (
+                                    <>
+                                      {formatted}
+                                      {metrics.exitYear ? ` (Y${metrics.exitYear})` : ''}
+                                    </>
+                                  ) : (
+                                    formatted
+                                  )}
+                                </td>
+                              );
+                            })}
                           </tr>
                         ))}
                       </tbody>
@@ -22940,32 +25083,95 @@ function PlanItemDetail({ item, onUpdate, onExitYearChange }) {
             checked={bridgingChecked}
             onChange={(event) => handleCheckboxChange('useBridgingLoan', event.target.checked)}
           />
-          <span>Use bridging loan for deposit</span>
+          <span>Use bridging loan to complete purchase</span>
         </label>
         {bridgingChecked ? (
-          <div className="mt-2 grid gap-2 md:grid-cols-2">
-            <label className="flex flex-col gap-1">
-              <span className="font-medium text-slate-600">Bridging term (months)</span>
-              <input
-                type="number"
-                min={1}
-              value={numericValue('bridgingLoanTermMonths')}
-                onChange={(event) => handleNumberChange('bridgingLoanTermMonths', event.target.value)}
-                className="rounded-lg border border-slate-300 px-3 py-1.5"
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="font-medium text-slate-600">Bridging rate %</span>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={0.01}
-                value={percentValue('bridgingLoanInterestRate')}
-                onChange={(event) => handlePercentChange('bridgingLoanInterestRate', event.target.value)}
-                className="rounded-lg border border-slate-300 px-3 py-1.5"
-              />
-            </label>
+          <div className="mt-2 space-y-3">
+            <div className="grid gap-2 md:grid-cols-2">
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Bridging term (months)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={numericValue('bridgingLoanTermMonths')}
+                  onChange={(event) => handleNumberChange('bridgingLoanTermMonths', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Bridging rate %</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.01}
+                  value={percentValue('bridgingLoanInterestRate')}
+                  onChange={(event) => handlePercentChange('bridgingLoanInterestRate', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Bridge deposit %</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.01}
+                  value={percentValue('bridgingLoanDepositPct')}
+                  onChange={(event) => handlePercentChange('bridgingLoanDepositPct', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Value added (£)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={numericValue('bridgingValueAdded')}
+                  onChange={(event) => handleNumberChange('bridgingValueAdded', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="font-medium text-slate-600">Cost of bridge (£)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={numericValue('bridgingCost')}
+                  onChange={(event) => handleNumberChange('bridgingCost', event.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5"
+                />
+              </label>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700">
+              <div className="font-semibold">Interest handling</div>
+              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name={`${loanTypeName}-bridge-interest`}
+                    checked={inputs.bridgingInterestPaymentMode !== 'roll_up'}
+                    onChange={() => handleTextChange('bridgingInterestPaymentMode', 'monthly')}
+                  />
+                  <span>Monthly</span>
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name={`${loanTypeName}-bridge-interest`}
+                    checked={inputs.bridgingInterestPaymentMode === 'roll_up'}
+                    onChange={() => handleTextChange('bridgingInterestPaymentMode', 'roll_up')}
+                  />
+                  <span>Roll up</span>
+                </label>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              The bridge covers the purchase price less your selected bridge deposit during the term before converting to your
+              standard mortgage. Added value is included in the refinance valuation once the bridge ends.
+            </p>
           </div>
         ) : null}
       </div>
