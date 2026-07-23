@@ -16382,23 +16382,32 @@ export default function App() {
       setListingExtractionError('Enter a Rightmove property URL first.');
       return;
     }
-    if (!remoteEnabled) {
-      setListingExtractionStatus('error');
-      setListingExtractionError('Listing extraction needs the backend service. Set VITE_SCENARIO_API_URL and run npm run server.');
-      return;
-    }
     setListingExtractionStatus('loading');
     setListingExtractionError('');
     setExtractedListing(null);
     try {
-      const response = await apiFetch(
-        '/listing/extract',
-        {
-          method: 'POST',
-          body: JSON.stringify({ url: normalizedUrl }),
-        },
-        authCredentials
-      );
+      const requestOptions = {
+        method: 'POST',
+        body: JSON.stringify({ url: normalizedUrl }),
+      };
+      const response = remoteEnabled
+        ? await apiFetch('/listing/extract', requestOptions, authCredentials)
+        : await fetch('/api/listing/extract', {
+            ...requestOptions,
+            headers: { 'Content-Type': 'application/json' },
+          });
+      if (!response.ok) {
+        let detail = null;
+        try {
+          detail = await response.json();
+        } catch {
+          detail = null;
+        }
+        const failure = new Error(detail?.error || `Request failed with status ${response.status}`);
+        failure.status = response.status;
+        failure.detail = detail;
+        throw failure;
+      }
       const listing = await response.json();
       setExtractedListing(listing);
       applyExtractedListingToInputs(listing);
