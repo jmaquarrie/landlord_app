@@ -142,6 +142,247 @@ app.use('/api', requireAuth);
 
 const now = () => new Date().toISOString();
 
+const LISTING_FETCH_TIMEOUT_MS = Number(process.env.LISTING_FETCH_TIMEOUT_MS) || 12000;
+const RIGHTMOVE_HOST_PATTERN = /(^|\.)rightmove\.co\.uk$/i;
+
+const normalizeListingUrl = (value) => {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+  const trimmed = value.trim();
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    return null;
+  }
+  parsed.hash = '';
+  return parsed;
+};
+
+const parseMoneyText = (value) => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = value.replace(/&pound;/gi, '£').match(/£\s*([0-9][0-9,\s.]*)/);
+  if (!match) {
+    return null;
+  }
+  const numeric = Number(match[1].replace(/[,\s]/g, ''));
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const parseIntegerText = (value) => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const numeric = Number(value.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const decodeHtmlEntities = (value) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value
+    .replace(/&pound;/gi, '£')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#x27;|&#39;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const stripHtml = (value) => decodeHtmlEntities(String(value ?? '').replace(/<[^>]*>/g, ' '));
+
+const pickFirstString = (...values) => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim() !== '') {
+      return decodeHtmlEntities(value);
+    }
+  }
+  return '';
+};
+
+const pickFirstNumber = (...values) => {
+  for (const value of values) {
+    const numeric = typeof value === 'number' ? value : parseIntegerText(String(value ?? ''));
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
+};
+
+const inferPropertyType = (...values) => {
+  const text = values
+    .filter((value) => typeof value === 'string')
+    .join(' ')
+    .toLowerCase();
+  if (/\bflat\b|\bapartment\b|\bmaisonette\b/.test(text)) return 'flat_maisonette';
+  if (/\bterraced\b|\bterrace\b/.test(text)) return 'terraced';
+  if (/\bsemi[-\s]?detached\b/.test(text)) return 'semi_detached';
+  if (/\bdetached\b/.test(text)) return 'detached';
+  return '';
+};
+
+const readNested = (item, path) =>
+  path.split('.').reduce((current, key) => (current && current[key] !== undefined ? current[key] : undefined), item);
+
+const findDeepValue = (item, keys) => {
+  if (!item || typeof item !== 'object') {
+    return undefined;
+  }
+  const queue = [item];
+  const seen = new Set();
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object' || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    for (const key of keys) {
+      if (current[key] !== undefined && current[key] !== null && current[key] !== '') {
+        return current[key];
+      }
+    }
+    Object.values(current).forEach((value) => {
+      if (value && typeof value === 'object') {
+        queue.push(value);
+      }
+    });
+  }
+  return undefined;
+};
+
+const safeJsonParse = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const extractJsonScriptBlocks = (html) => {
+  const blocks = [];
+  const scriptPattern = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptPattern.exec(html)) !== null) {
+    const content = match[1]?.trim();
+    if (!content) continue;
+    if (content.startsWith('{') || content.startsWith('[')) {
+      const parsed = safeJsonParse(content);
+      if (parsed) blocks.push(parsed);
+      continue;
+    }
+    const firstBrace = content.indexOf('{');
+    const lastBrace = content.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace && /=\s*{/.test(content.slice(0, firstBrace + 1))) {
+      const parsed = safeJsonParse(content.slice(firstBrace, lastBrace + 1));
+      if (parsed) blocks.push(parsed);
+    }
+  }
+  return blocks;
+};
+
+const extractMetaContent = (html, name) => {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `<meta\\b(?=[^>]*(?:property|name)=["']${escapedName}["'])(?=[^>]*content=["']([^"']*)["'])[^>]*>`,
+    'i'
+  );
+  const match = html.match(pattern);
+  return match ? decodeHtmlEntities(match[1]) : '';
+};
+
+const extractRightmoveListing = (html, sourceUrl) => {
+  const jsonBlocks = extractJsonScriptBlocks(html);
+  const allStructuredItems = [];
+  jsonBlocks.forEach((block) => {
+    allStructuredItems.push(block);
+    const props = readNested(block, 'props.pageProps') ?? readNested(block, 'props.initialProps.pageProps');
+    if (props) allStructuredItems.push(props);
+  });
+
+  const primaryStructured = allStructuredItems.find((item) => findDeepValue(item, ['price', 'bedrooms', 'bathrooms', 'address', 'displayAddress'])) ?? {};
+  const title = pickFirstString(
+    findDeepValue(primaryStructured, ['title', 'summary']),
+    extractMetaContent(html, 'og:title'),
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+  );
+  const displayAddress = pickFirstString(
+    findDeepValue(primaryStructured, ['displayAddress', 'address', 'addressDisplay']),
+    title.replace(/\s*-\s*Rightmove.*$/i, '')
+  );
+  const description = pickFirstString(
+    findDeepValue(primaryStructured, ['description', 'propertyDescription']),
+    extractMetaContent(html, 'description'),
+    extractMetaContent(html, 'og:description')
+  );
+  const priceValue = findDeepValue(primaryStructured, ['amount', 'price', 'displayPrice']);
+  const askingPrice =
+    typeof priceValue === 'number'
+      ? priceValue
+      : parseMoneyText(String(priceValue ?? '')) ?? parseMoneyText(title) ?? parseMoneyText(html);
+  const bedrooms = pickFirstNumber(
+    findDeepValue(primaryStructured, ['bedrooms', 'numberOfBedrooms']),
+    title.match(/(\d+)\s+bed/i)?.[1],
+    html.match(/(\d+)\s+bed(?:room)?/i)?.[1]
+  );
+  const bathrooms = pickFirstNumber(
+    findDeepValue(primaryStructured, ['bathrooms', 'numberOfBathrooms']),
+    title.match(/(\d+)\s+bath/i)?.[1],
+    html.match(/(\d+)\s+bath(?:room)?/i)?.[1]
+  );
+  const imageCandidates = [];
+  const imageValue = findDeepValue(primaryStructured, ['images', 'propertyImages', 'image', 'imageUrl']);
+  if (Array.isArray(imageValue)) {
+    imageValue.forEach((item) => {
+      if (typeof item === 'string') imageCandidates.push(item);
+      if (item && typeof item === 'object') {
+        imageCandidates.push(item.url, item.src, item.imageUrl);
+      }
+    });
+  } else if (typeof imageValue === 'string') {
+    imageCandidates.push(imageValue);
+  }
+  const ogImage = extractMetaContent(html, 'og:image');
+  if (ogImage) imageCandidates.push(ogImage);
+
+  const listingId = sourceUrl.pathname.match(/\/properties\/(\d+)/i)?.[1] ?? '';
+  const agentName = pickFirstString(findDeepValue(primaryStructured, ['customer', 'branchName', 'agentName', 'brandName']));
+  const latitude = pickFirstNumber(findDeepValue(primaryStructured, ['latitude', 'lat']));
+  const longitude = pickFirstNumber(findDeepValue(primaryStructured, ['longitude', 'lng', 'lon']));
+
+  return {
+    source: 'rightmove',
+    sourceUrl: sourceUrl.toString(),
+    listingId,
+    address: displayAddress,
+    displayName: title,
+    askingPrice,
+    bedrooms,
+    bathrooms,
+    propertyType: inferPropertyType(title, description, displayAddress),
+    description: stripHtml(description).slice(0, 1000),
+    agentName,
+    images: [...new Set(imageCandidates.filter((item) => typeof item === 'string' && item.trim() !== ''))].slice(0, 12),
+    latitude,
+    longitude,
+    warnings: [
+      ...(displayAddress ? [] : ['Address was not detected; please confirm manually.']),
+      ...(Number.isFinite(askingPrice) ? [] : ['Asking price was not detected; please confirm manually.']),
+    ],
+  };
+};
+
 const safeParseJson = (value, fallback) => {
   if (typeof value !== 'string' || value === '') {
     return fallback;
@@ -210,6 +451,51 @@ try {
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: now() });
+});
+
+app.post('/api/listing/extract', async (req, res) => {
+  const normalizedUrl = normalizeListingUrl(req.body?.url);
+  if (!normalizedUrl) {
+    return res.status(400).json({ error: 'Enter a valid listing URL.' });
+  }
+  if (!RIGHTMOVE_HOST_PATTERN.test(normalizedUrl.hostname)) {
+    return res.status(400).json({ error: 'Only Rightmove listing URLs are supported in this first version.' });
+  }
+  if (!/\/properties\/\d+/i.test(normalizedUrl.pathname)) {
+    return res.status(400).json({ error: 'Enter a Rightmove property listing URL.' });
+  }
+  if (typeof fetch !== 'function') {
+    return res.status(500).json({ error: 'Listing extraction requires a Node.js runtime with fetch support.' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LISTING_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(normalizedUrl, {
+      signal: controller.signal,
+      headers: {
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'accept-language': 'en-GB,en;q=0.9',
+        'user-agent':
+          'Mozilla/5.0 (compatible; PropertyForecaster/1.0; +https://example.invalid/listing-extractor)',
+      },
+    });
+    if (!response.ok) {
+      return res.status(502).json({
+        error: `Rightmove returned status ${response.status}. Try opening the listing manually or paste the details instead.`,
+      });
+    }
+    const html = await response.text();
+    res.json(extractRightmoveListing(html, normalizedUrl));
+  } catch (error) {
+    const message =
+      error?.name === 'AbortError'
+        ? 'Rightmove did not respond before the extraction timeout.'
+        : 'Unable to fetch or parse the Rightmove listing.';
+    respondWithError(res, 502, error, message);
+  } finally {
+    clearTimeout(timeout);
+  }
 });
 
 app.get('/api/scenarios', async (req, res) => {

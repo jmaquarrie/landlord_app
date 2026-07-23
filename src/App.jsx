@@ -8384,6 +8384,9 @@ export default function App() {
   const [previewStatus, setPreviewStatus] = useState('idle');
   const [previewError, setPreviewError] = useState('');
   const [previewKey, setPreviewKey] = useState(0);
+  const [listingExtractionStatus, setListingExtractionStatus] = useState('idle');
+  const [listingExtractionError, setListingExtractionError] = useState('');
+  const [extractedListing, setExtractedListing] = useState(null);
   const [isMapModalOpen, setIsMapModalOpen] = useState(false);
   const remoteEnabled = Boolean(SCENARIO_API_URL);
   const [authCredentials, setAuthCredentials] = useState(() => {
@@ -14606,6 +14609,9 @@ export default function App() {
     setInputs((prev) => ({ ...prev, [key]: value }));
     if (key === 'propertyUrl') {
       clearPreview();
+      setExtractedListing(null);
+      setListingExtractionStatus('idle');
+      setListingExtractionError('');
     }
   };
   const onBuyerType = (value) =>
@@ -16343,6 +16349,109 @@ export default function App() {
     openPreviewForUrl(inputs.propertyUrl, { force: true });
   };
 
+  const applyExtractedListingToInputs = useCallback(
+    (listing) => {
+      if (!listing || typeof listing !== 'object') {
+        return;
+      }
+      setInputs((prev) => ({
+        ...prev,
+        propertyAddress: listing.address || prev.propertyAddress,
+        propertyDisplayName: listing.displayName || listing.address || prev.propertyDisplayName,
+        propertyUrl: listing.sourceUrl || prev.propertyUrl,
+        propertyLatitude: Number.isFinite(listing.latitude) ? listing.latitude : prev.propertyLatitude,
+        propertyLongitude: Number.isFinite(listing.longitude) ? listing.longitude : prev.propertyLongitude,
+        purchasePrice: Number.isFinite(listing.askingPrice) ? listing.askingPrice : prev.purchasePrice,
+        bedrooms: Number.isFinite(listing.bedrooms) ? listing.bedrooms : prev.bedrooms,
+        bathrooms: Number.isFinite(listing.bathrooms) ? listing.bathrooms : prev.bathrooms,
+        propertyType: PROPERTY_TYPE_OPTIONS.some((option) => option.value === listing.propertyType)
+          ? listing.propertyType
+          : prev.propertyType,
+      }));
+      if (listing.sourceUrl) {
+        openPreviewForUrl(listing.sourceUrl, { force: true });
+      }
+    },
+    [openPreviewForUrl]
+  );
+
+  const handleExtractListingDetails = useCallback(async () => {
+    const normalizedUrl = ensureAbsoluteUrl(inputs.propertyUrl ?? '');
+    if (!normalizedUrl) {
+      setListingExtractionStatus('error');
+      setListingExtractionError('Enter a Rightmove property URL first.');
+      return;
+    }
+    if (!remoteEnabled) {
+      setListingExtractionStatus('error');
+      setListingExtractionError('Listing extraction needs the backend service. Set VITE_SCENARIO_API_URL and run npm run server.');
+      return;
+    }
+    setListingExtractionStatus('loading');
+    setListingExtractionError('');
+    setExtractedListing(null);
+    try {
+      const response = await apiFetch(
+        '/listing/extract',
+        {
+          method: 'POST',
+          body: JSON.stringify({ url: normalizedUrl }),
+        },
+        authCredentials
+      );
+      const listing = await response.json();
+      setExtractedListing(listing);
+      applyExtractedListingToInputs(listing);
+      setListingExtractionStatus('ready');
+    } catch (error) {
+      if (error?.status === 401) {
+        setAuthStatus('unauthorized');
+        setAuthError('Session expired. Sign in again to pull listing details.');
+      }
+      const detailMessage =
+        typeof error?.detail?.error === 'string'
+          ? error.detail.error
+          : error instanceof Error
+          ? error.message
+          : 'Unable to pull listing details.';
+      setListingExtractionStatus('error');
+      setListingExtractionError(detailMessage);
+    }
+  }, [
+    apiFetch,
+    applyExtractedListingToInputs,
+    authCredentials,
+    inputs.propertyUrl,
+    remoteEnabled,
+  ]);
+
+  const handleAddExtractedListingToDiscovery = useCallback(() => {
+    if (!extractedListing) {
+      return;
+    }
+    const lead = normalizeDiscoveryLead({
+      address: extractedListing.address || extractedListing.displayName || '',
+      sourceUrl: extractedListing.sourceUrl || inputs.propertyUrl || '',
+      askingPrice: extractedListing.askingPrice,
+      bedrooms: extractedListing.bedrooms,
+      bathrooms: extractedListing.bathrooms,
+      propertyType: extractedListing.propertyType || inputs.propertyType,
+      notes: [
+        extractedListing.agentName ? `Agent: ${extractedListing.agentName}` : '',
+        extractedListing.listingId ? `Rightmove ID: ${extractedListing.listingId}` : '',
+        extractedListing.description || '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      status: 'new',
+    });
+    if (!lead) {
+      return;
+    }
+    setDiscoveryLeads((prev) => normalizeDiscoveryLeads([lead, ...prev]));
+    setShowDiscoveryPanel(true);
+  }, [extractedListing, inputs.propertyType, inputs.propertyUrl]);
+
   const handleRenameScenario = async (id) => {
     if (typeof window === 'undefined') return;
     const scenario = savedScenarios.find((item) => item.id === id);
@@ -16727,17 +16836,57 @@ export default function App() {
                           </svg>
                         </a>
                       ) : null}
-                      <button
-                        type="button"
-                        onClick={handleLoadPreview}
-                        className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                        disabled={!hasPropertyUrl || previewLoading}
-                      >
-                        {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
+	                      <button
+	                        type="button"
+	                        onClick={handleLoadPreview}
+	                        className="inline-flex items-center rounded-full border border-indigo-200 px-3 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
+	                        disabled={!hasPropertyUrl || previewLoading}
+	                      >
+	                        {previewLoading ? 'Loading…' : previewActive ? 'Reload' : 'Preview'}
+	                      </button>
+	                      <button
+	                        type="button"
+	                        onClick={handleExtractListingDetails}
+	                        className="inline-flex items-center rounded-full border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-50"
+	                        disabled={!hasPropertyUrl || listingExtractionStatus === 'loading'}
+	                      >
+	                        {listingExtractionStatus === 'loading' ? 'Pulling…' : 'Pull details'}
+	                      </button>
+	                    </div>
+	                    {listingExtractionError ? (
+	                      <p className="text-[11px] text-rose-600">{listingExtractionError}</p>
+	                    ) : null}
+	                    {extractedListing ? (
+	                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-[11px] text-emerald-900">
+	                        <div className="flex flex-wrap items-center justify-between gap-2">
+	                          <p className="font-semibold">Pulled from Rightmove</p>
+	                          <button
+	                            type="button"
+	                            onClick={handleAddExtractedListingToDiscovery}
+	                            className="rounded-full border border-emerald-300 bg-white px-2.5 py-1 font-semibold text-emerald-700 transition hover:bg-emerald-100"
+	                          >
+	                            Add to discovery
+	                          </button>
+	                        </div>
+	                        <p className="mt-1">
+	                          {(extractedListing.displayName || extractedListing.address || 'Listing details')}
+	                          {Number.isFinite(extractedListing.askingPrice)
+	                            ? ` · Asking ${currency(extractedListing.askingPrice)}`
+	                            : ''}
+	                          {Number.isFinite(extractedListing.bedrooms)
+	                            ? ` · ${extractedListing.bedrooms} bed`
+	                            : ''}
+	                          {Number.isFinite(extractedListing.bathrooms)
+	                            ? ` · ${extractedListing.bathrooms} bath`
+	                            : ''}
+	                        </p>
+	                        {Array.isArray(extractedListing.warnings) && extractedListing.warnings.length > 0 ? (
+	                          <p className="mt-1 text-amber-700">{extractedListing.warnings.join(' ')}</p>
+	                        ) : null}
+	                      </div>
+	                    ) : null}
+	                  </div>
+	                </div>
                 <div className="mt-2 space-y-1 text-[11px] leading-snug text-slate-500">
                   <div>
                     {previewActive
